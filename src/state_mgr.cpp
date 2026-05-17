@@ -18,7 +18,7 @@ namespace {
 
 static constexpr uint8_t state_init_data[63] = {
     0xfd, 0xf7, 0x0, 0x0,
-    0x7f, 0x7f, // Headphones, Speaker
+    0x7f, 0x64, // Headphones, Speaker
     0xff, 0x9, 0x0, 0x0F, 0x0, 0x0, 0x0, 0x0,
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
@@ -58,24 +58,38 @@ void state_update(const uint8_t *data, const uint8_t size) {
             memcpy(state + offset, data + offset, length);
         }
     };
-    auto set_bit = [](uint8_t& byte, int bit, bool value) {
+    auto set_bit = [](uint8_t &byte, const int bit, const bool value) {
         byte = (byte & ~(1 << bit)) | (value << bit);
     };
 
-    set_bit(state[0],1,update.UseRumbleNotHaptics);
-    set_bit(state[38],2,update.EnableImprovedRumbleEmulation);
+    set_bit(state[0], 1, update.UseRumbleNotHaptics);
+    set_bit(state[38], 2, update.EnableImprovedRumbleEmulation);
     copy_if_allowed(
         update.EnableRumbleEmulation,
         offsetof(SetStateData, RumbleEmulationRight),
         2
     );
 
-    // copy_if_allowed(update.AllowHeadphoneVolume, offsetof(SetStateData, VolumeHeadphones),
-    //                 sizeof(update.VolumeHeadphones));
-    // copy_if_allowed(update.AllowSpeakerVolume, offsetof(SetStateData, VolumeSpeaker),
-    //                 sizeof(update.VolumeSpeaker));
-    // copy_if_allowed(update.AllowMicVolume, offsetof(SetStateData, VolumeMic), sizeof(update.VolumeMic));
-    // copy_if_allowed(update.AllowAudioControl, kAudioControlOffset, sizeof(uint8_t));
+    /*copy_if_allowed(
+        update.AllowHeadphoneVolume,
+        offsetof(SetStateData, VolumeHeadphones),
+        sizeof(update.VolumeHeadphones)
+    );*/
+    /*copy_if_allowed(
+        update.AllowSpeakerVolume,
+        offsetof(SetStateData, VolumeSpeaker),
+        sizeof(update.VolumeSpeaker)
+    );*/
+    /*copy_if_allowed(
+        update.AllowMicVolume,
+        offsetof(SetStateData, VolumeMic),
+        sizeof(update.VolumeMic)
+    );*/
+    /*copy_if_allowed(
+        update.AllowAudioControl,
+        kAudioControlOffset,
+        sizeof(uint8_t)
+    );*/
 
     copy_if_allowed(
         update.AllowMuteLight,
@@ -83,7 +97,11 @@ void state_update(const uint8_t *data, const uint8_t size) {
         sizeof(update.MuteLightMode)
     );
 
-    // copy_if_allowed(update.AllowAudioMute, kMuteControlOffset, sizeof(uint8_t));
+    /*copy_if_allowed(
+        update.AllowAudioMute,
+        kMuteControlOffset,
+        sizeof(uint8_t)
+    );*/
 
     copy_if_allowed(
         update.AllowRightTriggerFFB,
@@ -96,9 +114,21 @@ void state_update(const uint8_t *data, const uint8_t size) {
         sizeof(update.LeftTriggerFFB)
     );
 
-    // copy_if_allowed(update.AllowMotorPowerLevel, kMotorPowerLevelOffset, sizeof(uint8_t));
-    // copy_if_allowed(update.AllowAudioControl2, kAudioControl2Offset, sizeof(uint8_t));
-    // copy_if_allowed(update.AllowHapticLowPassFilter, kHapticLowPassFilterOffset, sizeof(uint8_t));
+    /*copy_if_allowed(
+        update.AllowMotorPowerLevel,
+        kMotorPowerLevelOffset,
+        sizeof(uint8_t)
+    );*/
+    /*copy_if_allowed(
+        update.AllowAudioControl2,
+        kAudioControl2Offset,
+        sizeof(uint8_t)
+    );*/
+    /*copy_if_allowed(
+        update.AllowHapticLowPassFilter,
+        kHapticLowPassFilterOffset,
+        sizeof(uint8_t)
+    );*/
 
     copy_if_allowed(
         update.AllowColorLightFadeAnimation,
