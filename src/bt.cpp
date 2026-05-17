@@ -16,6 +16,7 @@
 #include "bsp/board_api.h"
 #include "classic/sdp_server.h"
 #include "config.h"
+#include "state_mgr.h"
 #include "pico/util/queue.h"
 
 #define MTU_CONTROL 672
@@ -41,7 +42,6 @@ static bool check_dse = false;
 static int8_t bt_rssi = 0;
 unordered_map<uint8_t, vector<uint8_t> > feature_data;
 queue_t send_fifo;
-queue_t priority_send_fifo;
 
 struct send_element {
     uint8_t data[512];
@@ -101,7 +101,6 @@ void bt_l2cap_init() {
 
 int bt_init() {
     queue_init(&send_fifo, sizeof(send_element), 10);
-    queue_init(&priority_send_fifo, sizeof(send_element), 10);
 
     bt_l2cap_init();
 
@@ -448,30 +447,19 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t 
 
                     init_feature();
                     // 初始化手柄状态
-                    uint8_t report32[142];
+                    uint8_t report32[142]{};
                     report32[0] = 0x32;
                     report32[1] = 0x10; // reportSeqCounter
-                    uint8_t packet_0x10[] =
-                    {
-                        0x90, // Packet: 0x10
-                        0x3f, // 63
-                        // SetStateData
-                        0xfd, 0xf7, 0x0, 0x0,
-                        0x7f, 0x7f, // Headphones, Speaker
-                        0xff, 0x9, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-                        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-                        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-                        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xa,
-                        0x7, 0x0, 0x0, 0x2, 0x1,
-                        0x00,
-                        0xff, 0xd7, 0x00 // RGB LED: R, G, B (Nijika Color!)✨
-                    };
-                    memcpy(report32 + 2, packet_0x10, sizeof(packet_0x10));
+                    report32[2] = 0x10 | 0 << 6 | 1 << 7;
+                    report32[3] = 0x3f; // 63 bytes
+                    state_set(report32 + 4,sizeof(SetStateData));
                     bt_write(report32, sizeof(report32));
 
                     const auto mtu = l2cap_get_remote_mtu_for_local_cid(hid_interrupt_cid);
                     printf("[L2CAP] Remote Interrupt MTU: %d\n",mtu);
 
+                    gap_connectable_control(false);
+                    gap_discoverable_control(false);
                     // tud_connect();
                 } else {
                     printf("[L2CAP] Unknown Channel psm: 0x%02X", psm);
@@ -521,19 +509,13 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t 
             // printf("[L2CAP] L2CAP_EVENT_CAN_SEND_NOW\n");
 
             send_element send_packet{};
-            bool get_data = false;
-            if (!queue_is_empty(&priority_send_fifo)) {
-                get_data = queue_try_remove(&priority_send_fifo, &send_packet);
-            }else {
-                get_data = queue_try_remove(&send_fifo, &send_packet);
-            }
-            if (get_data) {
+            if (queue_try_remove(&send_fifo, &send_packet)) {
                 const uint8_t status = l2cap_send(hid_interrupt_cid, send_packet.data, send_packet.len);
                 if (status != 0) {
                     printf("[L2CAP] L2CAP Send Error, Status: 0x%02X\n", status);
                 }
             }
-            if (!queue_is_empty(&priority_send_fifo) || !queue_is_empty(&send_fifo)) {
+            if (!queue_is_empty(&send_fifo)) {
                 l2cap_request_can_send_now_event(hid_interrupt_cid);
             }
             break;
@@ -541,7 +523,7 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t 
     }
 }
 
-void bt_write(const uint8_t *data, const uint16_t len, const bool priority) {
+void bt_write(const uint8_t *data, const uint16_t len) {
     if (hid_interrupt_cid == 0) return;
     static send_element packet{};
     memset(packet.data, 0, 512);
@@ -550,18 +532,11 @@ void bt_write(const uint8_t *data, const uint16_t len, const bool priority) {
     memcpy(packet.data + 1, data, len);
     fill_output_report_checksum(packet.data + 1, len);
 
-    if (priority) {
-        if (!queue_try_add(&priority_send_fifo, &packet)) {
-            printf("[L2CAP bt_write] Error: Failed to add packet to priority send FIFO\n");
-            return;
-        }
-    }else {
-        if (!queue_try_add(&send_fifo, &packet)) {
-            printf("[L2CAP bt_write] Error: Failed to add packet to send FIFO\n");
-            return;
-        }
+    if (!queue_try_add(&send_fifo, &packet)) {
+        printf("[L2CAP bt_write] Error: Failed to add packet to send FIFO\n");
+        return;
     }
-    if (queue_get_level(&send_fifo) + queue_get_level(&priority_send_fifo) == 1) {
+    if (queue_get_level(&send_fifo) == 1) {
         l2cap_request_can_send_now_event(hid_interrupt_cid);
     }
 }
