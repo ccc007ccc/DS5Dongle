@@ -154,6 +154,18 @@ jobs:
           cmake --build build/debug --target ds5-bridge
           cp build/debug/ds5-bridge.uf2 "artifacts/ds5-bridge-debug${{ inputs.asset_suffix }}.uf2"
 
+      - name: Build No Speaker firmware (no overclock)
+        run: |
+          VERSION_ARG=()
+          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
+          cmake -S . -B build/nospeaker -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
+            -DDISABLE_SPEAKER_PROC=ON \
+            "${VERSION_ARG[@]}"
+          cmake --build build/nospeaker --target ds5-bridge
+          cp build/debug/ds5-bridge.uf2 "artifacts/ds5-bridge-no-oc-and-spk${{ inputs.asset_suffix }}.uf2"
+
       - name: Build Pico W firmware
         if: inputs.picow
         run: |
@@ -199,12 +211,25 @@ jobs:
           archive: false
           if-no-files-found: error
 
+      - name: Upload No Speaker firmware (no overclock)
+        uses: actions/upload-artifact@v7
+        with:
+          path: artifacts/ds5-bridge-no-oc-and-spk${{ inputs.asset_suffix }}.uf2
+          archive: false
+          if-no-files-found: error
+
       - name: Upload PicoW UF2 artifact
+        if: inputs.picow
         uses: actions/upload-artifact@v7
         with:
           path: artifacts/ds5-bridge-picow${{ inputs.asset_suffix }}.uf2
           archive: false
           if-no-files-found: error
+
+      - name: Remove debug firmware before release upload
+        if: inputs.upload_tag != ''
+        run: |
+          rm -f "artifacts/ds5-bridge-debug${{ inputs.asset_suffix }}.uf2"
 
       - name: Attach UF2s to release
         if: inputs.upload_tag != ''

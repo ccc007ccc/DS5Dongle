@@ -182,7 +182,7 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
                 }
                 outputData[2] = 0x10;
                 // memcpy(outputData + 3, buffer + 1, bufsize - 1);
-                state_set(outputData + 3,sizeof(SetStateData));
+                state_set(outputData + 3, sizeof(SetStateData));
                 bt_write(outputData, sizeof(outputData));
                 break;
             }
@@ -199,9 +199,11 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
 }
 
 int main() {
+#if SYS_CLOCK_KHZ != 150000
     vreg_set_voltage(VREG_VOLTAGE_1_20);
     sleep_ms(1000);
     set_sys_clock_khz(SYS_CLOCK_KHZ, true);
+#endif
 
     board_init();
     tusb_rhport_init_t dev_init = {
