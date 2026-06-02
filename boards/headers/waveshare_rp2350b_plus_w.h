@@ -16,6 +16,7 @@
 
 pico_board_cmake_set(PICO_PLATFORM, rp2350)
 pico_board_cmake_set(PICO_CYW43_SUPPORTED, 1)
+pico_board_cmake_set(PICO_DEFAULT_BOOT_STAGE2, boot2_w25q080)
 
 // For board detection
 #define WAVESHARE_RP2350B_PLUS_W
