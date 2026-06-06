@@ -141,7 +141,7 @@ int bt_init() {
 }*/
 
 void bt_inquiring_led() {
-    if (device_found) {
+    if (hid_interrupt_cid != 0) {
         return;
     }
     static bool led_status = false;
@@ -201,10 +201,10 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
             }
             break;
         }
-
         case GAP_EVENT_INQUIRY_COMPLETE:
         case HCI_EVENT_INQUIRY_COMPLETE: {
             printf("[HCI] Inquiry complete.\n");
+            bt_inquiring = false;
             if (device_found) {
                 printf("[HCI] Connecting to %s...\n", bd_addr_to_str(current_device_addr));
                 new_pair = true;
@@ -213,11 +213,9 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                 break;
             }
             if (event_type == HCI_EVENT_INQUIRY_COMPLETE) {
-                printf("[HCI] Inquiry Complete\n");
                 // gap_inquiry_start(30);
                 gap_connectable_control(1);
                 gap_discoverable_control(1);
-                bt_inquiring = false;
             }
             break;
         }
@@ -229,8 +227,10 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                 device_found = false;
                 new_pair = false;
                 printf("[HCI] Create connection rejected\n");
-                bt_inquiring = false;
                 // gap_inquiry_start(30);
+            }
+            if (opcode == HCI_OPCODE_HCI_INQUIRY_CANCEL) {
+                bt_inquiring = false;
             }
             break;
         }
@@ -263,7 +263,6 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                 device_found = false;
                 new_pair = false;
                 printf("[HCI] ACL connect failed status=0x%02X\n", status);
-                bt_inquiring = false;
                 // gap_inquiry_start(30);
             }
             break;
@@ -315,7 +314,6 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                 printf("[HCI] Authentication failed, drop stored key for %s\n", bd_addr_to_str(current_device_addr));
                 gap_drop_link_key_for_bd_addr(current_device_addr);
                 // gap_inquiry_start(30);
-                bt_inquiring = false;
             } else {
                 hci_send_cmd(&hci_set_connection_encryption, handle, 1);
             }
