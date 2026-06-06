@@ -100,6 +100,10 @@ void config_valid() {
         body->lock_volume = 0;
         printf("[Config] lock_volume is invalid\n");
     }
+    if (body->disable_usb_sn > 1) {
+        body->disable_usb_sn = 0;
+        printf("[Config] Warning: disable_usb_sn is invalid\n");
+    }
 }
 
 void config_load() {

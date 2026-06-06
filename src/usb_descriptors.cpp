@@ -117,7 +117,7 @@ tusb_desc_device_t desc_device =
 
     .iManufacturer = 0x01,
     .iProduct = 0x02,
-    .iSerialNumber = 0x00,
+    // .iSerialNumber = 0x00,
 
     .bNumConfigurations = 0x01
 };
@@ -126,6 +126,7 @@ tusb_desc_device_t desc_device =
 // Application return pointer to descriptor
 uint8_t const *tud_descriptor_device_cb(void) {
     desc_device.idProduct = ds_mode() ? 0x0CE6 : 0x0DF2;
+    desc_device.iSerialNumber = get_config().disable_usb_sn ? 0x00 : 0x03;
     return reinterpret_cast<uint8_t const *>(&desc_device);
 }
 
@@ -936,7 +937,8 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
             break;
 
         case STRID_SERIAL:
-            chr_count = board_usb_get_serial(_desc_str + 1, 32);
+            chr_count = board_usb_get_serial(_desc_str + 1, 32) + 1;
+            _desc_str[chr_count] = '1'; // refresh windows cache
             break;
 
         default:
