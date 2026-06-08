@@ -25,5 +25,6 @@ void bt_get_signal_strength(int8_t *rssi);
 std::vector<uint8_t> get_feature_data(uint8_t reportId,uint16_t len);
 void init_feature();
 void set_feature_data(uint8_t reportId, uint8_t* data,uint16_t len);
+void bt_inquiring_led();
 
 #endif //DS5_BRIDGE_BT_H

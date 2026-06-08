@@ -297,5 +297,6 @@ int main() {
 #if ENABLE_BATT_LED
         battery_led_tick();
 #endif
+        bt_inquiring_led();
     }
 }
