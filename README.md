@@ -38,6 +38,9 @@ You have two options:
 3. The device will mount as a USB storage device
 4. Drag and drop the .uf2 firmware file onto the device
 
+> The firmware also supports a **reboot-to-BOOTSEL** command: the **Reboot to Bootloader** button in the
+> [web config](#configuration) reboots the dongle into BOOTSEL mode without holding the physical button.
+
 ### Pairing the Controller
 
 1. Put the DualSense controller into Bluetooth pairing mode
@@ -117,9 +120,11 @@ Or download precompiled firmware from GitHub Actions.
 
 ### USB Wake Feature
 
-This feature is experimental. If you need this functionality, please check out the feat/usb-wake branch to compile it,
-or use the precompiled firmware from GitHub Actions under that branch. The `ds5-bridge-wake.uf2` is the firmware with
-this feature enabled.
+Wake-on-PS is now built into the standard firmware — there is no separate `feat/usb-wake` branch or `ds5-bridge-wake.uf2`
+build. It is **disabled by default**; turn it on with the **Wake PC from sleep on PS button** toggle in the
+[web config](#configuration). When enabled, the dongle presents a HID keyboard interface and advertises USB remote
+wakeup so a controller button can wake the PC; when disabled, that interface is not enumerated. See
+[Wake-on-PS](#wake-on-ps-optional) for setup.
 
 It is recommended to read #60 and #61 before using this feature.
 
@@ -167,7 +172,7 @@ Desktop. It is safe to re-run; already-installed tools are skipped.
 
 Build a fork or a specific ref with `-Repo <url>` / `-Ref <branch|tag>`.
 
-Build a variant with `-Variant debug` or `-Variant wake`.
+Build a variant with `-Variant debug`.
 
 ### Other platforms
 
@@ -184,33 +189,38 @@ To build from source manually:
 2. Compile using standard Pico SDK toolchain
 
 On macOS, `tools/build-macos.sh` can prepare a repo-local Pico SDK checkout, prompt to install missing Homebrew build
-tools, initialize submodules, pin TinyUSB, and build the wake firmware:
+tools, initialize submodules, pin TinyUSB, and build the firmware:
 
 ```sh
 tools/build-macos.sh
 ```
 
-Use `tools/build-macos.sh --standard` for the non-wake firmware, `--clean` to rebuild from scratch, or
+Use `tools/build-macos.sh --clean` to rebuild from scratch, or
 `--sdk-dir <path>` to use an existing SDK checkout. When using `--sdk-dir`, the script asks before checking that SDK out
 to the required Pico SDK and TinyUSB versions. If Homebrew's `arm-none-eabi-gcc` formula is installed without standard C
 headers, the script asks to install the complete `gcc-arm-embedded` cask and points CMake at that toolchain.
 
 ## Wake-on-PS (optional)
 
-A `-DENABLE_WAKE_HID=ON` build adds a second HID interface (a boot keyboard) that injects an **F15** keypress when any
-controller button is pressed while the host is suspended, waking the PC from **S3 sleep**. F15 was chosen because it has
-no default Windows or app binding — a stray fire never inserts characters or triggers shortcuts.
+Enabling the **Wake PC from sleep on PS button** toggle in the [web config](#configuration) makes the dongle present a
+second HID interface (a boot keyboard) and advertise USB remote wakeup. A controller button press while the host is
+suspended then injects an **F15** keypress, waking the PC from **S3 sleep**. F15 was chosen because it has no default
+Windows or app binding — a stray fire never inserts characters or triggers shortcuts. The toggle is off by default, and
+the keyboard interface is only enumerated while it (or the Xbox Game Bar shortcut) is enabled.
 
-Scope: **S3 only.** Modern Standby (S0ix) is not supported. To check your machine, run `powercfg /a` — you need "
-Standby (S3)" listed under available sleep states.
+Scope: **S3 only.** Modern Standby (S0ix) is not supported. To check your machine, run `powercfg /a` — you need
+"Standby (S3)" listed under available sleep states.
 
-After flashing the wake build:
+After enabling the toggle (then **Reconnect USB** so the interface re-enumerates):
 
 1. Open Device Manager → the new **HID Keyboard Device** (and its parent **USB Composite Device**) → Properties → Power
    Management → tick **"Allow this device to wake the computer."**
 2. Verify with `powercfg /devicequery wake_armed`.
 3. Sleep the PC; press any button on the controller; the PC should wake within ~1 s.
 4. After a wake, `powercfg /lastwake` should attribute the wake to the HID Keyboard Device.
+
+> On some PCs `SelectiveSuspendEnabled` is only written at first install, so a runtime toggle may need that registry
+> value set manually (or the device re-installed) before wake works.
 
 ## Roadmap
 
