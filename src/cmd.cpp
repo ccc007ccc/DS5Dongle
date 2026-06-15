@@ -31,6 +31,15 @@ static bool read_config_value(T &value, uint8_t const *buffer, uint16_t bufsize)
     return true;
 }
 
+template<typename T>
+static bool write_config_value(uint8_t *buffer, uint16_t bufsize, T value) {
+    if (bufsize < sizeof(T)) {
+        return false;
+    }
+    memcpy(buffer, &value, sizeof(T));
+    return true;
+}
+
 static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t bufsize) {
     Config_body new_config = get_config();
 
@@ -146,10 +155,57 @@ static bool set_config_field(uint8_t field_id, uint8_t const *buffer, uint16_t b
     return true;
 }
 
+static bool get_config_field(uint8_t field_id, uint8_t *buffer, uint16_t bufsize) {
+    const Config_body &config = get_config();
+
+    switch (field_id) {
+        case 0x00:
+            return write_config_value(buffer, bufsize, config.config_version);
+        case 0x01:
+            return write_config_value(buffer, bufsize, config.haptics_gain);
+        case 0x02:
+            return write_config_value(buffer, bufsize, config.speaker_volume);
+        case 0x03:
+            return write_config_value(buffer, bufsize, config.headset_volume);
+        case 0x04:
+            return write_config_value(buffer, bufsize, config.sync_spk_headset_volume);
+        case 0x05:
+            return write_config_value(buffer, bufsize, config.speaker_gain);
+        case 0x06:
+            return write_config_value(buffer, bufsize, config.inactive_time);
+        case 0x07:
+            return write_config_value(buffer, bufsize, config.disable_inactive_disconnect);
+        case 0x08:
+            return write_config_value(buffer, bufsize, config.disable_pico_led);
+        case 0x09:
+            return write_config_value(buffer, bufsize, config.polling_rate_mode);
+        case 0x0a:
+            return write_config_value(buffer, bufsize, config.audio_buffer_length);
+        case 0x0b:
+            return write_config_value(buffer, bufsize, config.controller_mode);
+        case 0x0c:
+            return write_config_value(buffer, bufsize, config.lock_volume);
+        case 0x0d:
+            return write_config_value(buffer, bufsize, config.disable_usb_sn);
+        case 0x0e:
+            return write_config_value(buffer, bufsize, config.ps_shortcut_enabled);
+        case 0x0f:
+            return write_config_value(buffer, bufsize, config.disable_mic);
+        case 0x10:
+            return write_config_value(buffer, bufsize, config.disable_speaker);
+        case 0x11:
+            return write_config_value(buffer, bufsize, config.enable_wake);
+        default:
+            printf("[CMD] Unknown config field id: 0x%02X\n", field_id);
+            return false;
+    }
+}
+
 void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
     // 0x01 update config field in variable: field_id + typed value
     // 0x02 write config to flash
     // 0x03 reconnect tinyusb device;
+    // 0x04 query config field: field_id (0x00 = config_version)
 
     switch (cmd_id) {
         case 0x01: {
@@ -186,11 +242,20 @@ void pico_cmd_set(uint8_t cmd_id, uint8_t const *buffer, uint16_t bufsize) {
             break;
         }
         case 0x04: {
-            printf("[CMD] get config\n");
+            printf("[CMD] get config field\n");
             uint8_t buf[63]{};
             buf[0] = 0x66;
             buf[1] = 0x04;
-            memcpy(buf + 2, &get_config(), sizeof(Config_body));
+            if (bufsize < 1) {
+                printf("[CMD] Config get missing field id\n");
+                buf[2] = 0xff;
+            } else {
+                const uint8_t field_id = buffer[0];
+                buf[2] = field_id;
+                if (!get_config_field(field_id, buf + 3, sizeof(buf) - 3)) {
+                    printf("[CMD] Config get failed, field id: 0x%02X\n", field_id);
+                }
+            }
             feature_data[0x81].assign(buf, buf + sizeof(buf));
             break;
         }
