@@ -84,7 +84,7 @@ void state_set(uint8_t *data, const uint8_t size) {
 }
 
 void state_update(const uint8_t *data, const uint8_t size) {
-    if (size != 47 && size < sizeof(SetStateData)) {
+    if (size < 47) {
         printf(
             "[StateMgr] Error: SetStateData needs %u bytes, got %u\n",
             static_cast<unsigned>(sizeof(SetStateData)),
