@@ -1,9 +1,9 @@
 name: Build firmware (reusable)
 
-# Reusable build used by build.yml, release.yml and daily-upstream-release.yml.
-# Always builds the standard and debug UF2s for a given ref; optionally also
-# the Pico W UF2 and a no-batt-led compile check. When `upload_tag` is set the
-# built UF2s are attached to that GitHub Release.
+# Reusable build used by build.yml and release.yml.
+# Builds enabled firmware variants through a matrix. Standard/debug always run;
+# Pico W, Waveshare and no-batt-led compile checks are optional. When
+# `upload_tag` is set, release UF2s are attached to that GitHub Release.
 
 on:
   workflow_call:
@@ -63,11 +63,96 @@ env:
     ninja-build
 
 jobs:
+  plan:
+    name: Plan firmware matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Build matrix
+        id: matrix
+        env:
+          INPUT_PICOW: ${{ inputs.picow }}
+          INPUT_WAVESHARE: ${{ inputs.waveshare }}
+          INPUT_NO_BATT_LED_CHECK: ${{ inputs.no_batt_led_check }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          variants = [
+              {
+                  "id": "standard",
+                  "name": "Standard firmware",
+                  "build_dir": "standard",
+                  "cmake_args": "",
+                  "artifact": "ds5-bridge",
+                  "upload_artifact": True,
+              },
+              {
+                  "id": "debug",
+                  "name": "Debug firmware",
+                  "build_dir": "debug",
+                  "cmake_args": "-DENABLE_SERIAL=ON -DENABLE_VERBOSE=ON -DWAKE_DEBUG=ON",
+                  "artifact": "ds5-bridge-debug",
+                  "upload_artifact": True,
+              },
+          ]
+
+          if os.environ["INPUT_PICOW"] == "true":
+              variants.append(
+                  {
+                      "id": "picow",
+                      "name": "Pico W firmware",
+                      "build_dir": "picow",
+                      "cmake_args": "-DPICO_W_BUILD=ON",
+                      "artifact": "ds5-bridge-picow",
+                      "upload_artifact": True,
+                  }
+              )
+
+          if os.environ["INPUT_WAVESHARE"] == "true":
+              variants.append(
+                  {
+                      "id": "waveshare",
+                      "name": "Waveshare RP2350B-Plus-W firmware",
+                      "build_dir": "waveshare",
+                      "cmake_args": "-DWAVESHARE_RP2350B_PLUS_W_BUILD=ON",
+                      "artifact": "ds5-bridge-waveshare",
+                      "upload_artifact": True,
+                  }
+              )
+
+          if os.environ["INPUT_NO_BATT_LED_CHECK"] == "true":
+              variants.append(
+                  {
+                      "id": "no-batt-led",
+                      "name": "No battery LED compile check",
+                      "build_dir": "no-batt-led",
+                      "cmake_args": "-DENABLE_BATT_LED=OFF",
+                      "artifact": "",
+                      "upload_artifact": False,
+                  }
+              )
+
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as fh:
+              fh.write("matrix=")
+              json.dump({"include": variants}, fh, separators=(",", ":"))
+              fh.write("\n")
+          PY
+
   build:
-    name: Build UF2 artifacts
+    name: Build ${{ matrix.name }}
+    needs: plan
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -157,117 +242,69 @@ jobs:
           fi
           git -C "$PICO_SDK_PATH/lib/tinyusb" checkout --detach "$TINYUSB_REF"
 
-      - name: Build standard firmware
+      - name: Build ${{ matrix.name }}
+        shell: bash
+        env:
+          ASSET_SUFFIX: ${{ inputs.asset_suffix }}
+          ARTIFACT_BASENAME: ${{ matrix.artifact }}
+          BUILD_DIR: ${{ matrix.build_dir }}
+          EXTRA_CMAKE_ARGS: ${{ matrix.cmake_args }}
         run: |
           VERSION_ARG=()
           [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
-          cmake -S . -B build/standard -G Ninja \
+
+          EXTRA_ARGS=()
+          if [ -n "$EXTRA_CMAKE_ARGS" ]; then
+            read -r -a EXTRA_ARGS <<< "$EXTRA_CMAKE_ARGS"
+          fi
+
+          cmake -S . -B "build/$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPICO_SDK_PATH="$PICO_SDK_PATH" \
+            "${EXTRA_ARGS[@]}" \
             "${VERSION_ARG[@]}"
-          cmake --build build/standard --target ds5-bridge
-          mkdir -p artifacts
-          cp build/standard/ds5-bridge.uf2 "artifacts/ds5-bridge${{ inputs.asset_suffix }}.uf2"
+          cmake --build "build/$BUILD_DIR" --target ds5-bridge
 
-      - name: Build Debug firmware
-        run: |
-          VERSION_ARG=()
-          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
-          cmake -S . -B build/debug -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
-            -DENABLE_SERIAL=ON \
-            -DENABLE_VERBOSE=ON \
-            -DWAKE_DEBUG=ON \
-            "${VERSION_ARG[@]}"
-          cmake --build build/debug --target ds5-bridge
-          cp build/debug/ds5-bridge.uf2 "artifacts/ds5-bridge-debug${{ inputs.asset_suffix }}.uf2"
+          if [ -n "$ARTIFACT_BASENAME" ]; then
+            mkdir -p artifacts
+            cp "build/$BUILD_DIR/ds5-bridge.uf2" "artifacts/${ARTIFACT_BASENAME}${ASSET_SUFFIX}.uf2"
+          fi
 
-      - name: Build Pico W firmware
-        if: inputs.picow
-        run: |
-          VERSION_ARG=()
-          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
-          cmake -S . -B build/picow -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
-            -DPICO_W_BUILD=ON \
-            "${VERSION_ARG[@]}"
-          cmake --build build/picow --target ds5-bridge
-          cp build/picow/ds5-bridge.uf2 "artifacts/ds5-bridge-picow${{ inputs.asset_suffix }}.uf2"
-
-      - name: Build Waveshare RP2350B-Plus-W firmware
-        if: inputs.waveshare
-        run: |
-          VERSION_ARG=()
-          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
-          cmake -S . -B build/waveshare -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
-            -DWAVESHARE_RP2350B_PLUS_W_BUILD=ON \
-            "${VERSION_ARG[@]}"
-          cmake --build build/waveshare --target ds5-bridge
-          cp build/waveshare/ds5-bridge.uf2 "artifacts/ds5-bridge-waveshare${{ inputs.asset_suffix }}.uf2"
-
-#      - name: Build no-batt-led firmware (compile check only)
-#        if: inputs.no_batt_led_check
-#        run: |
-#          VERSION_ARG=()
-#          [ -n "${FW_VER:-}" ] && VERSION_ARG=(-DVERSION="$FW_VER")
-#          cmake -S . -B build/no-batt-led -G Ninja \
-#            -DCMAKE_BUILD_TYPE=Release \
-#            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
-#            -DENABLE_BATT_LED=OFF \
-#            "${VERSION_ARG[@]}"
-#          cmake --build build/no-batt-led --target ds5-bridge
-
-      # - name: Upload UF2 artifacts
-        # uses: actions/upload-artifact@v7
-        # with:
-          # name: ds5-bridge-uf2${{ inputs.asset_suffix }}
-          # path: artifacts/*.uf2
-          # if-no-files-found: error- name: Upload standard UF2 artifact
-
-      - uses: actions/upload-artifact@v7
-        with:
-          path: artifacts/ds5-bridge${{ inputs.asset_suffix }}.uf2
-          archive: false
-          if-no-files-found: error
-
-      - name: Upload Debug UF2 artifact
+      - name: Upload ${{ matrix.name }} artifact
+        if: matrix.upload_artifact
         uses: actions/upload-artifact@v7
         with:
-          path: artifacts/ds5-bridge-debug${{ inputs.asset_suffix }}.uf2
+          name: ${{ matrix.artifact }}${{ inputs.asset_suffix }}
+          path: artifacts/${{ matrix.artifact }}${{ inputs.asset_suffix }}.uf2
           archive: false
           if-no-files-found: error
 
-      - name: Upload PicoW UF2 artifact
-        if: inputs.picow
-        uses: actions/upload-artifact@v7
-        with:
-          path: artifacts/ds5-bridge-picow${{ inputs.asset_suffix }}.uf2
-          archive: false
-          if-no-files-found: error
+  release:
+    name: Attach UF2s to release
+    needs: build
+    if: inputs.upload_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-      - name: Upload Waveshare UF2 artifact
-        if: inputs.waveshare
-        uses: actions/upload-artifact@v7
+    steps:
+      - name: Download UF2 artifacts
+        uses: actions/download-artifact@v7
         with:
-          path: artifacts/ds5-bridge-waveshare${{ inputs.asset_suffix }}.uf2
-          archive: false
-          if-no-files-found: error
+          pattern: ds5-bridge*
+          path: artifacts
+          merge-multiple: true
 
       - name: Remove debug firmware before release upload
-        if: inputs.upload_tag != ''
         run: |
           rm -f "artifacts/ds5-bridge-debug${{ inputs.asset_suffix }}.uf2"
 
       - name: Attach UF2s to release
-        if: inputs.upload_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Pin to the workflow's own repo: when inputs.repo is set we checked
           # out a different repo, so the local git remote must not decide this.
-          gh release upload "${{ inputs.upload_tag }}" artifacts/*.uf2 \
+          gh release upload "${{ inputs.upload_tag }}" \
+            artifacts/*.uf2 \
             --repo "${{ github.repository }}" --clobber
