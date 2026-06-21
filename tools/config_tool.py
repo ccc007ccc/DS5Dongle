@@ -48,6 +48,7 @@ FUNC_SAVE = 0x02         # persist to flash
 FUNC_RECONNECT = 0x03    # reconnect tinyusb device
 
 SET_DATA_LEN = 63        # data bytes after the report id (descriptor report count 0x3F)
+FEATURE_REPORT_LEN = SET_DATA_LEN + 1  # report id + descriptor report count
 
 CONFIG_VERSION = 5       # src/config.cpp CONFIG_VERSION (display only)
 
@@ -121,8 +122,13 @@ def open_device():
 
 
 def read_config(dev):
-    # hidapi prepends the report id; ask for report id + body.
-    data = dev.get_feature_report(REPORT_GET_CONFIG, BODY_SIZE + 1)
+    # Windows hidapi expects the buffer to match the HID feature report length.
+    # The config body is shorter than the descriptor report count, so read the
+    # full report and unpack only Config_body.
+    try:
+        data = dev.get_feature_report(REPORT_GET_CONFIG, FEATURE_REPORT_LEN)
+    except OSError as exc:
+        sys.exit(f"Failed reading config report 0x{REPORT_GET_CONFIG:02X}: {exc}")
     if not data:
         sys.exit("Empty response reading config (report 0xF7). Is the firmware current?")
     body = bytes(data[1:1 + BODY_SIZE]) if data[0] == REPORT_GET_CONFIG else bytes(data[:BODY_SIZE])
@@ -131,12 +137,13 @@ def read_config(dev):
     values = struct.unpack(STRUCT_FMT, body)
     return dict(zip(FIELD_NAMES, values))
 
-
 def read_version(dev):
-    data = dev.get_feature_report(REPORT_GET_VERSION, 64)
+    try:
+        data = dev.get_feature_report(REPORT_GET_VERSION, FEATURE_REPORT_LEN)
+    except OSError:
+        return ""
     raw = bytes(data[1:]) if data and data[0] == REPORT_GET_VERSION else bytes(data or b"")
     return raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip()
-
 
 def write_config(dev, cfg, save):
     body = struct.pack(STRUCT_FMT, *[cfg[name] for name in FIELD_NAMES])
