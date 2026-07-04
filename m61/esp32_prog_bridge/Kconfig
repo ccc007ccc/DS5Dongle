@@ -1,0 +1,62 @@
+mainmenu "M61 ESP32 Programming Bridge"
+
+source "$BL_SDK_BASE/Kconfig"
+
+menu "M61 ESP32 programming bridge"
+
+config M61_TARGET_UART_ID
+    int "UART id connected to ESP32 UART0"
+    default 1
+    help
+        0 selects uart0, 1 selects uart1. BL616 boards usually expose uart1
+        on general-purpose pins; avoid the UART used by the SDK console.
+
+config M61_HOST_UART_ENABLE
+    bool "Enable host UART bridge for board CH340"
+    default y
+    help
+        Ai-M61-32S-Kit exposes the BL618 UART0 console through the on-board
+        CH340. Enabling this lets the PC use that COM port for bridge commands
+        and ESP32 UART forwarding when native USB CDC is not available.
+
+config M61_HOST_UART_ID
+    int "UART id connected to PC/CH340"
+    default 0
+
+config M61_HOST_UART_BAUD
+    int "Fixed host UART baud"
+    default 115200
+
+config M61_HOST_UART_TX_PIN
+    int "Host UART TX pin"
+    default 21
+
+config M61_HOST_UART_RX_PIN
+    int "Host UART RX pin"
+    default 22
+
+config M61_TARGET_UART_TX_PIN
+    int "M61 UART TX pin"
+    default 23
+
+config M61_TARGET_UART_RX_PIN
+    int "M61 UART RX pin"
+    default 24
+
+config M61_BOOT_PIN
+    int "M61 GPIO wired to ESP32 BOOT/IO0"
+    default 27
+
+config M61_EN_PIN
+    int "M61 GPIO wired to ESP32 EN/RST"
+    default 28
+
+config M61_MAP_CDC_LINES_TO_BOOT_RESET
+    bool "Map CDC DTR/RTS to ESP32 BOOT/EN"
+    default n
+    help
+        Optional compatibility mode for esptool-style serial control lines.
+        Direct GPIO wiring may not match transistor-inverted dev-board reset
+        circuits, so the text commands are safer and enabled regardless.
+
+endmenu

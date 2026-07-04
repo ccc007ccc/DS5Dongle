@@ -1,300 +1,137 @@
-# Pico2W DualSense 5 Bridge
+# M61 DualSense USB Adapter
 
-[中文](./README.CN.md)
+这个 fork 已改成我们的 Ai-M61/BL616/BL618 DualSense 转 USB 项目。当前主线是 **M61 直接通过 Classic Bluetooth HIDP 连接 DualSense，再通过原生 USB Device 枚举成 USB HID Gamepad**。ESP32 相关代码保留为历史 fallback，不再是默认推进方向。
 
-> Turn a Raspberry Pi Pico2W (or other compatible board) into a wireless adapter for the DualSense (DS5) controller.
+## 当前状态
 
-***This repository only implements the core functionality of DS5Dongle — making a wireless controller appear as a wired
-connection. For additional features, please refer to [Community Fork](#Community-Fork)***
+- M61 Classic Bluetooth HIDP 已实机打通：可以连接 DualSense，并持续收到 `report=0x31 mode=full` 输入报文。
+- M61 状态灯已接入：默认绿灯，蓝牙连接中蓝灯闪烁，连接成功蓝灯常亮，红灯默认关闭。
+- M61 固件已加入 USB HID Gamepad Device 输出：把 DualSense 的按键、方向键、左右摇杆、L2/R2 映射成标准 HID gamepad 报文。
+- USB HID 枚举还需要实机确认。电脑必须接到 BL618/M61 原生 `USB_DP/USB_DM`，板载 CH340 串口不会因为固件变成手柄。
 
-## Overview
+## 重要硬件结论
 
-This project enables the Raspberry Pi Pico2W (or other compatible board, e.g. the Waveshare RP2350B-Plus-W) to function as a Bluetooth bridge for the DualSense controller, allowing wireless connectivity with enhanced haptics support.
+Ai-M61-32S 模组本身有原生 USB2.0 引脚：
 
-## Features
+- `USB_DP`
+- `USB_DM`
 
-- 🎮 Full DualSense connectivity via Pico2W (or other compatible board)
-- 🔊 Supports HD haptics (advanced vibration feedback)
-- 🎧 Headset audio output — controller speaker and 3.5 mm jack
-- 🎤 Headset microphone input — the controller mic is exposed as a USB audio input device
-- 📡 Wireless Bluetooth bridging
-- 🔘 BOOTSEL-button controller management — pair, reboot, enter BOOTSEL for flashing, or forget all pairings without unplugging
-- ⚡ Runs at the stock 150 MHz clock — no overclock required
+但很多 Ai-M61-32S-Kit 板子的 Type-C/USB 口主要接板载 CH340，用来做串口和刷写。如果你的电脑只看到 `COM5` 这类 CH340 串口，而没有新的 HID 设备，说明当前线缆接到的是串口桥，不是 BL618 原生 USB Device。
 
-## Getting Started
+要让电脑看到手柄，需要满足其中一种：
 
-### Get the firmware
+- 板子的这个 USB 口确实接到了 BL618 原生 USB D+/D-。
+- 或者从模块/开发板上的 `USB_DP`、`USB_DM`、`GND` 接到一个 USB 插头/转接板，再插电脑。
 
-You have two options:
+不要把 CH340 的 USB D+/D- 和 BL618 的 USB_DP/DM 硬并在一起。
+如果板子已经由 CH340 口供电，原生 USB 数据线先只接 D+/D-/GND，不接第二路 5V。
+如果要用原生 USB 线同时供电，5V 必须接开发板的 `5V/VBUS/VIN` 供电入口或经过稳压后供电，不能直接接 Ai-M61 模组 `VCC`，规格书里的 `VCC` 是 3.3V。
 
-- **Download a pre-built `.uf2`** — grab the newest
-  [Releases](../../releases) build (`ds5-bridge-<version>.uf2`; other board
-  builds are bundled in `other board.zip`; `config_tool.py` is attached there
-  too). No tools needed.
-- **Build it yourself** — see [Build Instructions](#build-instructions)
-  below (Windows users get a one-command script).
+详细接线和排障见 [docs/M61_NATIVE_USB_WIRING.md](docs/M61_NATIVE_USB_WIRING.md)。
 
-### Flashing Firmware
+## M61 构建
 
-1. Hold the BOOTSEL button on the Pico2W
-2. Connect the Pico2W to your computer via USB
-3. The device will mount as a USB storage device
-4. Drag and drop the .uf2 firmware file onto the device
-
-> The firmware also supports a **reboot-to-BOOTSEL** command: the **Reboot to Bootloader** button in the
-> [web config](#configuration) reboots the dongle into BOOTSEL mode without holding the physical button.
-
-### Pairing the Controller
-
-1. Put the DualSense controller into Bluetooth pairing mode
-2. Wait for the Pico2W to detect and connect
-3. Once connected, the device will appear on the host system
-
-***You may need to replug the Pico when the controller is in pairing mode.***
-
-### BOOTSEL button: switch, reboot, or clear controllers
-
-While the firmware is running, the Pico's **BOOTSEL button** doubles as a
-controller and reset control — no unplugging or re-flashing needed:
-
-- **Short press (click):**
-  - If a controller is connected, the current one is disconnected (its pairing is
-    kept, so it can reconnect later). Use this to free the dongle for a different
-    already-paired controller.
-  - If nothing is connected, a 30-second scan starts to pair a new controller.
-    Put the DualSense into pairing mode (hold **PS + Create/Share** until the
-    light bar flashes) while the scan runs.
-- **Double click:** **Reboot the Pico** — a normal firmware restart: re-enters
-  pairing inquiry, drops the current connection, and recovers from a transient
-  glitch. (Clicks register after a brief pause, to allow for a second/third click.)
-- **Triple click:** **Reboot into BOOTSEL** — the dongle re-enumerates as a USB
-  mass-storage drive so you can drag on a new `.uf2`, without holding BOOTSEL while
-  plugging in.
-- **Long press (~1.5 s):** Disconnect and **forget every paired controller** — all
-  stored pairings are deleted and blacklisted so they won't silently auto-reconnect,
-  even across a power cycle. The onboard LED flashes six times to confirm. To use a
-  forgotten controller again, put it back into **PS + Create/Share** pairing mode.
-
-> Triple click is a software path into the bootloader; you can also still enter it
-> the hardware way by holding BOOTSEL **while plugging in** the Pico (see
-> [Flashing Firmware](#flashing-firmware) above). All of these act on
-> click / double / triple / long-press **while the firmware is already running**.
-
-## Configuration
-
-You can modify the Pico settings via the web config.
-
-- For release: https://ds5.awalol.eu.org
-- For development: https://ds5-dev.awalol.eu.org
-
-## Community Fork
-
-### Audio Auto Haptics fork [loteran/DS5Dongle](https://github.com/loteran/DS5Dongle)
-
-> Adds real-time haptic feedback generated from game audio.
-> The Pico listens to the sound stream and converts bass and impact sounds into DualSense rumble — no game-side haptic
-> support needed.
-
-### DS5_Bridge [SundayMoments/DS5_Bridge](https://github.com/SundayMoments/DS5_Bridge)
-
-> More customization features, such as adjusting audio, haptics, trigger strength, lighting, button remapping, and
-> shortcuts.
-
-### OLED Edition [MarcelineVPQ/DS5Dongle-OLED-Edition](https://github.com/MarcelineVPQ/DS5Dongle-OLED-Edition)
-
-> OLED Edition is a fork of awalol/DS5Dongle (upstream) that adds an optional Pico-OLED-1.3 128×64 display add-on with
-> 11 screens (status, 4-slot multi-controller pairing, lightbar color picker with favorites and effect presets, trigger
-> test, gyro tilt, touchpad, diagnostics, CPU/clock, BT signal strength, audio VU meters, and a persistent settings menu),
-> plus a DS5 button-combo soft-reboot.
-
-### [zurce/DS5Dongle-OLED](https://github.com/zurce/DS5Dongle-OLED)
-
-## Notes
-
-The Pico device will only be visible to the system after the controller is connected
-
-Some behaviors depend on reconnection cycles to take effect
-
-### Microphone
-
-The controller microphone is exposed as a USB audio input — "Headset Microphone"
-on Windows. After selecting it as your recording device, raise its input/capture
-level in your OS: Windows in particular often defaults it to 0 (or very low),
-which makes the mic seem dead even though it is working.
-
-### Low-battery LED indicator
-
-When the connected DualSense reports its battery at or below 10% (and it is not charging), the Pico onboard LED switches
-from solid-on to a 1 Hz blink so you can see the warning at a glance. The LED returns to solid-on as soon as the
-controller is plugged in or its reported level rises again. The blink also fires when `disable_pico_led` is set — the
-warning is treated as critical and overrides the LED-off preference; the LED returns to its disabled (off) state once
-the battery recovers or the controller starts charging.
-
-To opt out at build time, configure with `-DENABLE_BATT_LED=OFF`. Default is ON.
-
-### Pico W Version
-
-Pico W only has haptics support, no speaker. You can enable Pico W firmware compilation with `-DPICO_W_BUILD=ON`, or
-download precompiled firmware from GitHub Actions.
-
-### Waveshare RP2350B-Plus-W
-
-The [Waveshare RP2350B-Plus-W](https://www.waveshare.com/wiki/RP2350B-Plus-W) is an RP2350B-based board with the RM2 wireless module (same CYW43 silicon as the Pico 2 W), 16 MB QSPI flash, and a USB-C connector. Build with:
-
-```
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DPICO_SDK_PATH=<sdk> -DWAVESHARE_RP2350B_PLUS_W_BUILD=ON
-cmake --build build --target ds5-bridge
-```
-
-Or download precompiled firmware from GitHub Actions.
-
-### USB Wake Feature
-
-Wake-on-PS is now built into the standard firmware — there is no separate `feat/usb-wake` branch or `ds5-bridge-wake.uf2`
-build. It is **disabled by default**; turn it on with the **Wake PC from sleep on PS button** toggle in the
-[web config](#configuration). When enabled, the dongle presents a HID keyboard interface and advertises USB remote
-wakeup so a controller button can wake the PC; when disabled, that interface is not enumerated. See
-[Wake-on-PS](#wake-on-ps-optional) for setup.
-
-It is recommended to read #60 and #61 before using this feature.
-
-## Known Issues
-
-- ⚠️ Audio may experience slight stuttering
-
-## Performance
-
-The audio path — libopus encode/decode, the resampler, and the Bluetooth/USB
-packet handling on the hot path — executes from **RAM** instead of flash. This
-removes flash-fetch (XIP cache miss) stalls from the time-critical audio loop,
-which previously forced the RP2350 to be overclocked just to keep up with audio
-encoding.
-
-As a result, the firmware runs the **full audio path (haptics, speaker, 3.5 mm
-output, and microphone) at the stock 150 MHz clock — no overclock and no
-core-voltage bump.**
-
-> Earlier releases required 320 MHz @ 1.2 V; overclocking is no longer needed.
-> If you build for a different board and it fails to boot, reduce the CPU
-> frequency (and/or raise the voltage) in `CMakeLists.txt`.
-
-## Build Instructions
-
-### Windows 11 (one command, no WSL)
-
-You don't even need to clone this repo. Download just
-[`tools/build-windows.ps1`](tools/build-windows.ps1) to any folder and run
-it in **PowerShell**:
+在 Windows PowerShell 中：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
+wsl bash /mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh
 ```
 
-(If you already have a checkout, run `tools\build-windows.ps1` from the
-repo root instead — it detects and uses your local checkout.)
+产物：
 
-The script installs every prerequisite (CMake, Ninja, Python, Git and the
-ARM GNU toolchain — via `winget`, falling back to portable downloads if
-`winget` is unavailable), clones the project (if not run from a checkout)
-plus the pinned Pico SDK + TinyUSB into `%USERPROFILE%\.ds5-build`, builds
-the firmware, and drops `ds5-bridge.uf2` next to the script and on your
-Desktop. It is safe to re-run; already-installed tools are skipped.
-
-Build a fork or a specific ref with `-Repo <url>` / `-Ref <branch|tag>`.
-
-Build a variant with `-Variant debug`.
-
-### Other platforms
-
-To build from source manually:
-
-1. Install the Pico SDK 2.2.0 and switch its TinyUSB submodule to tag 0.20.0
-   i.e. ***Update TinyUSB in the Pico SDK to the latest version***
-2. Initialise this repo's submodules: `git submodule update --init --recursive`
-3. Configure and build with the standard Pico SDK toolchain:
-   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_PATH=<sdk>`
-   then `cmake --build build --target ds5-bridge`
-
-1. ***Update TinyUSB in the Pico SDK to the latest version***
-2. Compile using standard Pico SDK toolchain
-
-On macOS, `tools/build-macos.sh` can prepare a repo-local Pico SDK checkout, prompt to install missing Homebrew build
-tools, initialize submodules, pin TinyUSB, and build the firmware:
-
-```sh
-tools/build-macos.sh
+```text
+m61/dualsense_hidp_probe/build/build_out/m61_dualsense_hidp_probe_bl616.bin
 ```
 
-Use `tools/build-macos.sh --clean` to rebuild from scratch, or
-`--sdk-dir <path>` to use an existing SDK checkout. When using `--sdk-dir`, the script asks before checking that SDK out
-to the required Pico SDK and TinyUSB versions. If Homebrew's `arm-none-eabi-gcc` formula is installed without standard C
-headers, the script asks to install the complete `gcc-arm-embedded` cask and points CMake at that toolchain.
+## M61 刷写
 
-## Xbox Game Bar (optional)
+如果当前 M61 固件已经支持 `ds5 reboot-isp`：
 
-The **PS button = Xbox Game Bar** toggle in the [web config](#configuration) maps the controller's PS button to
-keyboard shortcuts, sent over the same HID keyboard interface used by [Wake-on-PS](#wake-on-ps-optional):
+```powershell
+python tools\flash_m61_firmware.py --app hidp-probe -p COM5 -b 115200 --reboot-isp
+```
 
-- **Short press** (tap and release) → `Win`+`G`, which opens the **Xbox Game Bar** overlay.
-- **Long press** (hold ≥ 750 ms) → `Win`+`Tab`, which opens **Task View**.
+如果自动进入下载失败，手动进入 M61 UART 下载模式：
 
-The toggle is off by default, and the keyboard interface is only enumerated while it (or wake) is enabled. 
-> If the Game Bar overlay opens but does not respond to controller inputs, Windows may be missing the modern input stack. Installing or updating **Microsoft GameInput** will resolve this and restore controller navigation. You can install the service directly by opening an elevated command prompt and running `winget install Microsoft.GameInput`, or read the [official documentation](https://learn.microsoft.com/en-us/gaming/gdk/docs/features/common/input/overviews/input-overview) for more details.
+```text
+按住 M61 BOOT
+按一下 RESET/RST 并松开
+松开 BOOT
+```
 
-## Wake-on-PS (optional)
+然后刷：
 
-Enabling the **Wake PC from sleep on PS button** toggle in the [web config](#configuration) makes the dongle present a
-second HID interface (a boot keyboard) and advertise USB remote wakeup. A controller button press while the host is
-suspended then injects an **F15** keypress, waking the PC from **S3 sleep**. F15 was chosen because it has no default
-Windows or app binding — a stray fire never inserts characters or triggers shortcuts. The toggle is off by default, and
-the keyboard interface is only enumerated while it (or the Xbox Game Bar shortcut) is enabled.
+```powershell
+python tools\flash_m61_firmware.py --app hidp-probe -p COM5 -b 115200 --manual-hint
+```
 
-Scope: **S3 only.** Modern Standby (S0ix) is not supported. To check your machine, run `powercfg /a` — you need
-"Standby (S3)" listed under available sleep states.
+刷写工具的 `--reset` 目前不一定能让板子回到 normal boot。如果刷完串口只回 `OK`，说明还停在 UART 下载口；让 `GPIO2/BOOT` 保持低电平，按一下 `RESET/RST` 正常启动。
 
-After enabling the toggle (then **Reconnect USB** so the interface re-enumerates):
+## 运行验证
 
-1. Open Device Manager → the new **HID Keyboard Device** (and its parent **USB Composite Device**) → Properties → Power
-   Management → tick **"Allow this device to wake the computer."**
-2. Verify with `powercfg /devicequery wake_armed`.
-3. Sleep the PC; press any button on the controller; the PC should wake within ~1 s.
-4. After a wake, `powercfg /lastwake` should attribute the wake to the HID Keyboard Device.
+先确认 Windows 是否看到了 M61 原生 USB HID，而不是只看到 CH340 串口：
 
-> Wake also needs `SelectiveSuspendEnabled = 1` (a `REG_DWORD`) on the controller's audio interface (`MI_00`). Windows
-> only writes it at first install, so a runtime toggle may need it set manually. It lives under each per-instance
-> `Device Parameters` key:
->
-> ```
-> HKLM\SYSTEM\CurrentControlSet\Enum\USB\VID_054C&PID_0CE6&MI_00\<instance>\Device Parameters
->     SelectiveSuspendEnabled    (REG_DWORD) = 1
-> ```
->
-> `PID_0CE6` is the DualSense (`PID_0DF2` for the Edge), and `<instance>` is device/port-specific (e.g.
-> `6&212078ea&1&0000`), so there can be more than one node — set it on every one. An elevated PowerShell one-liner that
-> covers all present instances:
->
-> ```powershell
-> Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\USB\VID_054C&PID_0CE6&MI_00' | ForEach-Object {
->   New-ItemProperty "$($_.PSPath)\Device Parameters" SelectiveSuspendEnabled -Value 1 -PropertyType DWord -Force }
-> ```
->
-> Then Reconnect USB or reboot. (Re-installing the device — clearing its Windows device cache and replugging — also
-> makes Windows write the value itself.)
+```powershell
+python tools\check_m61_usb_windows.py
+```
 
-## Roadmap
+接好 BL618 原生 USB 后，可以直接跑 USB 硬件 gate：
 
-- Please check out [DS5Dongle plan](https://github.com/users/awalol/projects/5)
+```powershell
+python tools\validate_m61_usb_hardware.py -p COM5
+```
 
-## Community
+启动后先看串口状态：
 
-- Join the Discord server: [Discord Server](https://discord.gg/hM4ntchGCa)
-- If you have a bug, please open an issue instead.
+```powershell
+python tools\probe_m61_serial.py -p COM5 -b 115200 --dump
+```
 
-## References
+如果要验证连续 HIDP 报文：
 
-- [rafaelvaloto/Pico_W-Dualsense](https://github.com/rafaelvaloto/Pico_W-Dualsense) — Project inspiration
-- [egormanga/SAxense](https://github.com/egormanga/SAxense) — Bluetooth Haptics POC
-- [https://controllers.fandom.com/wiki/Sony_DualSense](https://controllers.fandom.com/wiki/Sony_DualSense) - DualSense
-  data report structure documentation
-- [Paliverse/DualSenseX](https://github.com/Paliverse/DualSenseX) — Speaker report packet
+```powershell
+python tools\capture_m61_hidp_log.py -p COM5 -o m61_hidp.log --duration 20 --command "ds5 status"
+python tools\check_m61_hidp_log.py m61_hidp.log --min-reports 20 --require-full-report --allow-connected-stream
+```
+
+如果手柄已经连接、串口被报文刷屏、只想读 USB 状态：
+
+```powershell
+python tools\capture_m61_hidp_log.py -p COM5 -o m61_usb_status.log --duration 3 --usb-status
+```
+
+`--usb-status` 会先发送 `ds5 log quiet`，再发送 `ds5 status`。
+
+`ds5 status` 会打印：
+
+```text
+usb_gamepad ready=<0|1> configured=<0|1> busy=<0|1> sent=<n> dropped=<n>
+hidp_reports parsed=<n> full=<n> mic_audio=<n> log=<normal|quiet>
+```
+
+含义：
+
+- `configured=1`：电脑已经完成 USB HID 枚举。
+- `sent>0` 或持续增长：M61 正在把 DualSense 输入送到 USB HID endpoint。
+- `dropped` 增长且 `configured=0`：蓝牙输入正常，但 USB 端没有被电脑枚举。
+
+## 当前源码入口
+
+- `m61/dualsense_hidp_probe/main.c`：Classic BT HIDP 连接、配对、SDP、L2CAP、输入解析、自动重连、状态灯。
+- `m61/dualsense_hidp_probe/m61_usb_gamepad.c`：CherryUSB HID Gamepad Device 描述符和输入报文发送。
+- `main/dualsense_parser.c`：DualSense 0x31/0x01 输入报文解析。
+- `main/dualsense_output.c`：DualSense 蓝牙 output/feature 初始化报文构造。
+- `tools/check_m61_usb_windows.py`：Windows 侧 USB 枚举检查，区分 M61 HID 与 CH340 串口。
+- `tools/validate_m61_usb_hardware.py`：组合 Windows 枚举和 `ds5 status` 的 M61 原生 USB 硬件 gate。
+
+## 离线检查
+
+```powershell
+python tools\run_offline_checks.py
+```
+
+构建 M61 固件：
+
+```powershell
+python tools\run_offline_checks.py --include-m61-build
+```
