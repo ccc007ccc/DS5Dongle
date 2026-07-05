@@ -3,7 +3,7 @@
 本文档用于从中断状态继续当前 M61 DualSense USB Adapter 调试。当前主线是：
 
 ```text
-DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC/主机
+DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC/主机
 ```
 
 判断依据以串口输出、USB 枚举和刷写工具校验为准，不以板载黄灯、电源灯或复位瞬间灯色为准。
@@ -11,9 +11,9 @@ DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC/主机
 ## 当前边界
 
 - M61-only 是默认主线；ESP32 只作为 fallback 和历史调试工具保留。
-- M61 已能连接 DualSense 并接收 `report=0x31 mode=full`，下一步重点是 BL618 原生 USB HID 枚举。
+- M61 已能连接 DualSense 并接收 `report=0x31 mode=full`，BL618 原生 USB 复合设备枚举已打通。
 - CH340 口只提供串口/刷写，不能因为固件改成 USB 手柄。
-- M61 原生 USB HID 必须接 BL618 `USB_DP`/`USB_DM`。
+- M61 原生 USB 必须接 BL618 `USB_DP`/`USB_DM`。
 - 如果 M61 串口无响应，不能靠脚本强制进入 bootrom；需要手动让 M61 `GPIO2/BOOT` 在复位瞬间为高电平。
 
 ## M61 PDF 关键结论
@@ -35,7 +35,7 @@ python tools\check_m61_usb_windows.py
 结果解释：
 
 - 只看到 `USB-SERIAL CH340 (COMx)`：当前插的是串口桥，不是 M61 原生 USB 手柄口。
-- 看到 `VID_1209&PID_5D51` 或 `M61 DualSense Gamepad`：PC 已枚举到当前固件的 USB HID。
+- 看到 `VID_054C&PID_0CE6`、`DualSense Wireless Controller`、HID game controller 或 DualSense 音频端点：PC 已枚举到当前固件的 DualSense 复合 USB 设备。
 - 看到未知 USB 设备：优先检查 `USB_DP/USB_DM` 是否接反、线太长、供电路径是否冲突。
 
 ## 原生 USB 接线
@@ -96,10 +96,11 @@ python tools\validate_m61_usb_hardware.py -p COM5
 
 ```text
 usb_gamepad ready=<0|1> configured=<0|1> busy=<0|1> sent=<n> dropped=<n>
+usb_audio open=<n> close=<n> out_open=<0|1> in_open=<0|1> ...
 hidp_reports parsed=<n> full=<n> mic_audio=<n> log=<normal|quiet>
 ```
 
-- `configured=1`：PC 已枚举 BL618 原生 USB HID。
+- `configured=1`：PC 已完成 BL618 原生 USB 复合设备配置。
 - `sent>0` 或持续增长：M61 正在把 DualSense 输入发送到 USB endpoint。
 - `configured=0` 且 PC 只看到 CH340：USB 线没有接到 BL618 原生 D+/D-。
 - `dropped` 增长且 `configured=0`：蓝牙输入正常，USB 主机端没完成枚举。
@@ -136,7 +137,7 @@ python tools\flash_m61_firmware.py --app hidp-probe -p COM5 -b 115200 --manual-h
 
 ## ESP32 fallback
 
-只有当 M61 Classic HIDP 或原生 USB HID 被硬件证据否定时，再回到 ESP32 fallback：
+只有当 M61 Classic HIDP 或原生 USB 被硬件证据否定时，再回到 ESP32 fallback：
 
 - `m61/esp32_prog_bridge`：让 M61 控制 ESP32 下载/复位。
 - `tools/flash_stage1_m61.py`、`tools/flash_stage1_auto.py`、`tools/flash_stage1_manual.py`：刷 ESP32 stage-1 固件。

@@ -57,6 +57,7 @@ def main() -> int:
         "tools/capture_m61_hidp_log.py",
         "tools/check_m61_hidp_log.py",
         "tools/check_m61_usb_windows.py",
+        "tools/ds5_windows_test_app.py",
         "tools/validate_m61_hidp_hardware.py",
         "tools/validate_m61_usb_hardware.py",
         "tools/test_m61_hidp_log_checker.py",
@@ -87,9 +88,9 @@ def main() -> int:
         failures,
     )
     require_contains(
-        "docs/PROJECT_STANDARD.md",
+            "docs/PROJECT_STANDARD.md",
         [
-            "DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC",
+            "DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC",
             "ESP32 双芯片方案仍保留为 fallback",
             "BL618 的 `USB_DP`/`USB_DM`",
             "只接 CH340",
@@ -108,7 +109,7 @@ def main() -> int:
         [
             "M61 DualSense USB Adapter",
             "M61 直接通过 Classic Bluetooth HIDP",
-            "USB HID Gamepad Device",
+            "DualSense USB composite",
             "板载 CH340 串口不会因为固件变成手柄",
             "不能直接接 Ai-M61 模组 `VCC`",
             "docs/M61_NATIVE_USB_WIRING.md",
@@ -135,17 +136,17 @@ def main() -> int:
         failures,
     )
     require_contains(
-        "docs/REQUIREMENTS_AUDIT.md",
+            "docs/REQUIREMENTS_AUDIT.md",
         [
             "M61-first",
-            "M61 USB HID Gamepad",
+            "M61 USB DualSense composite",
             "BL618 原生 `USB_DP/USB_DM`",
             "ESP32 双芯片方案作为 fallback",
         ],
         failures,
     )
     require_contains(
-        "docs/SPEC_ALIGNMENT.md",
+            "docs/SPEC_ALIGNMENT.md",
         [
             "规格演进和当前对齐",
             "M61 是当前默认主线",
@@ -170,8 +171,8 @@ def main() -> int:
         "docs/M61_BLUETOOTH_CAPABILITY.md",
         [
             "M61-only 路线已经从“可行性探针”推进为当前主线",
-            "USB HID Gamepad 已加入固件",
-            "VID/PID：`1209:5D51`",
+            "USB DualSense 复合设备状态",
+            "VID/PID：`054C:0CE6`",
             "configured=1",
         ],
         failures,
@@ -181,7 +182,7 @@ def main() -> int:
         [
             "USB_DP` | D+",
             "USB_DM` | D-",
-            "VID_1209&PID_5D51",
+            "VID_054C&PID_0CE6",
             "VID_0000&PID_0002",
             "不要把 USB 5V 直接接 Ai-M61 模组 `VCC`",
             "python tools\\validate_m61_usb_hardware.py -p COM5",
@@ -193,7 +194,7 @@ def main() -> int:
         [
             "ESP32 fallback stage-1 validation",
             "只用于 ESP32 fallback 路线",
-            "该路线不会解决 M61 当前 USB 不枚举的问题",
+            "该路线不会替代 M61 原生 USB",
         ],
         failures,
     )
@@ -249,13 +250,15 @@ def main() -> int:
         failures,
     )
     require_contains(
-        "m61/dualsense_hidp_probe/m61_usb_gamepad.c",
+            "m61/dualsense_hidp_probe/m61_usb_gamepad.c",
         [
+            "usbd_audio_init_intf",
             "usbd_hid_init_intf",
-            "M61 DualSense Gamepad",
-            "M61 DualSense Gamepad",
-            "HID_GAMEPAD_REPORT_SIZE 9",
-            "map_buttons",
+            "DualSense Wireless Controller",
+            "AUDIO_IN_EP 0x82",
+            "HID_DUALSENSE_REPORT_DESC_SIZE",
+            "AUDIO_OUT_PACKET_SIZE",
+            "HID_IN_EP 0x84",
             "m61_usb_gamepad_send_state",
             "usbd_ep_start_write",
             "usbd_hid_get_report",
@@ -285,12 +288,25 @@ def main() -> int:
     require_contains(
         "tools/check_m61_usb_windows.py",
         [
-            "VID_1209",
-            "PID_5D51",
+            "VID_054C",
+            "PID_0CE6",
             "VID_1A86",
             "PID_7523",
             "--self-test",
             "USB_DP -> USB D+",
+        ],
+        failures,
+    )
+    require_contains(
+        "tools/ds5_windows_test_app.py",
+        [
+            "tkinter",
+            "HidD_GetHidGuid",
+            "SetupDiGetClassDevsW",
+            "VID = 0x054C",
+            "PID = 0x0CE6",
+            "DS5_OUTPUT_REPORT_ID = 0x02",
+            "--smoke-test",
         ],
         failures,
     )

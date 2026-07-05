@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check whether Windows can see the M61 native USB HID gamepad."""
+"""Check whether Windows can see the M61 DualSense composite USB device."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import sys
 from typing import Any
 
 
-M61_VID_PID = ("VID_1209", "PID_5D51")
+DUALSENSE_VID_PID = ("VID_054C", "PID_0CE6")
 CH340_VID_PID = ("VID_1A86", "PID_7523")
 DESCRIPTOR_FAIL = ("VID_0000", "PID_0002")
 
@@ -27,14 +27,24 @@ class UsbDevice:
 
 @dataclass(frozen=True)
 class UsbClassification:
-    m61_devices: list[UsbDevice]
+    dualsense_devices: list[UsbDevice]
+    hid_devices: list[UsbDevice]
+    audio_devices: list[UsbDevice]
     ch340_devices: list[UsbDevice]
     descriptor_failures: list[UsbDevice]
     matching_devices: list[UsbDevice]
 
     @property
     def found_m61(self) -> bool:
-        return bool(self.m61_devices)
+        return bool(self.dualsense_devices)
+
+    @property
+    def found_hid(self) -> bool:
+        return bool(self.hid_devices)
+
+    @property
+    def found_audio(self) -> bool:
+        return bool(self.audio_devices)
 
 
 def _text(value: Any) -> str:
@@ -72,9 +82,9 @@ def pnp_query_json() -> str:
     command = r"""
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$devices = Get-PnpDevice | Where-Object {
-  $_.InstanceId -match 'VID_1209|PID_5D51|VID_1A86|PID_7523|VID_0000|PID_0002' -or
-  $_.FriendlyName -match 'M61|DualSense|Gamepad|CH340|Unknown USB'
+$devices = Get-PnpDevice -PresentOnly | Where-Object {
+  $_.InstanceId -match 'VID_054C|PID_0CE6|VID_1A86|PID_7523|VID_0000|PID_0002' -or
+  $_.FriendlyName -match 'M61|DualSense|Wireless Controller|Gamepad|CH340|Unknown USB'
 }
 @($devices | Select-Object Status,Class,FriendlyName,InstanceId) | ConvertTo-Json -Compress
 """
@@ -98,27 +108,41 @@ def has_vid_pid(device: UsbDevice, vid_pid: tuple[str, str]) -> bool:
 
 def classify_devices(devices: list[UsbDevice]) -> UsbClassification:
     matching: list[UsbDevice] = []
-    m61: list[UsbDevice] = []
+    dualsense: list[UsbDevice] = []
+    hid: list[UsbDevice] = []
+    audio: list[UsbDevice] = []
     ch340: list[UsbDevice] = []
     descriptor_failures: list[UsbDevice] = []
 
     for device in devices:
         upper = f"{device.instance_id} {device.friendly_name}".upper()
-        is_m61 = has_vid_pid(device, M61_VID_PID) or "M61 DUALSENSE GAMEPAD" in upper
+        is_ds = has_vid_pid(device, DUALSENSE_VID_PID) or "DUALSENSE WIRELESS CONTROLLER" in upper
+        is_hid = is_ds and (device.device_class.upper() == "HIDCLASS" or "HID" in upper or "GAME CONTROLLER" in upper)
+        is_audio = is_ds and (
+            device.device_class.upper() in ("MEDIA", "AUDIOENDPOINT") or
+            "MI_00" in upper or "MI_01" in upper or "MI_02" in upper or
+            "AUDIO" in upper or "MICROPHONE" in upper or "SPEAKER" in upper
+        )
         is_ch340 = has_vid_pid(device, CH340_VID_PID) or "CH340" in upper
         is_descriptor_failure = has_vid_pid(device, DESCRIPTOR_FAIL)
 
-        if is_m61 or is_ch340 or is_descriptor_failure:
+        if is_ds or is_ch340 or is_descriptor_failure:
             matching.append(device)
-        if is_m61:
-            m61.append(device)
+        if is_ds:
+            dualsense.append(device)
+        if is_hid:
+            hid.append(device)
+        if is_audio:
+            audio.append(device)
         if is_ch340:
             ch340.append(device)
         if is_descriptor_failure:
             descriptor_failures.append(device)
 
     return UsbClassification(
-        m61_devices=m61,
+        dualsense_devices=dualsense,
+        hid_devices=hid,
+        audio_devices=audio,
         ch340_devices=ch340,
         descriptor_failures=descriptor_failures,
         matching_devices=matching,
@@ -132,15 +156,20 @@ def print_device(device: UsbDevice) -> None:
 
 
 def print_report(classification: UsbClassification) -> None:
-    if classification.m61_devices:
-        print("PASS: Windows sees the M61 native USB HID gamepad.")
-        for device in classification.m61_devices:
+    if classification.dualsense_devices:
+        print("PASS: Windows sees VID_054C&PID_0CE6 / DualSense Wireless Controller.")
+        for device in classification.dualsense_devices:
             print_device(device)
     else:
-        print("PENDING: Windows does not see VID_1209&PID_5D51 / M61 DualSense Gamepad.")
+        print("PENDING: Windows does not see VID_054C&PID_0CE6 / DualSense Wireless Controller.")
+
+    if classification.hid_devices:
+        print("PASS: Windows sees a DualSense HID function.")
+    if classification.audio_devices:
+        print("PASS: Windows sees a DualSense USB Audio function.")
 
     if classification.ch340_devices:
-        print("CH340 serial ports are present; these cannot become a HID gamepad in firmware.")
+        print("CH340 serial ports are present; these cannot become the DualSense USB composite device in firmware.")
         for device in classification.ch340_devices:
             print_device(device)
 
@@ -149,19 +178,31 @@ def print_report(classification: UsbClassification) -> None:
         for device in classification.descriptor_failures:
             print_device(device)
 
-    if not classification.m61_devices:
+    if not classification.dualsense_devices:
         print("Next hardware check: connect BL618 USB_DP -> USB D+, USB_DM -> USB D-, and GND -> GND.")
-        print("If CH340 already powers the board, leave the second USB 5V wire disconnected at first.")
+        print("If the board was just flashed through UART download mode, press RST/EN once to boot the app.")
 
 
 def self_test() -> int:
     samples = {
-        "m61": json.dumps([
+        "dualsense": json.dumps([
+            {
+                "Status": "OK",
+                "Class": "USB",
+                "FriendlyName": "USB Composite Device",
+                "InstanceId": r"USB\VID_054C&PID_0CE6\M61DS5COMPOSITE1",
+            },
             {
                 "Status": "OK",
                 "Class": "HIDClass",
-                "FriendlyName": "M61 DualSense Gamepad",
-                "InstanceId": r"HID\VID_1209&PID_5D51\0001",
+                "FriendlyName": "HID-compliant game controller",
+                "InstanceId": r"HID\VID_054C&PID_0CE6&MI_03\8&1",
+            },
+            {
+                "Status": "OK",
+                "Class": "MEDIA",
+                "FriendlyName": "USB Audio Device",
+                "InstanceId": r"USB\VID_054C&PID_0CE6&MI_00\8&2",
             }
         ]),
         "ch340": json.dumps([
@@ -183,7 +224,9 @@ def self_test() -> int:
     }
 
     checks = [
-        ("m61 detected", classify_devices(parse_devices(samples["m61"])).found_m61),
+        ("dualsense detected", classify_devices(parse_devices(samples["dualsense"])).found_m61),
+        ("dualsense hid detected", classify_devices(parse_devices(samples["dualsense"])).found_hid),
+        ("dualsense audio detected", classify_devices(parse_devices(samples["dualsense"])).found_audio),
         ("ch340 not m61", not classify_devices(parse_devices(samples["ch340"])).found_m61),
         (
             "descriptor failure classified",

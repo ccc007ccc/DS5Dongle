@@ -5,7 +5,7 @@
 当前默认主线不是这个桥，而是：
 
 ```text
-DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC/主机
+DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC/主机
 ```
 
 只有当 M61-only 路线被硬件证据否定时，才回到 ESP32 fallback。
@@ -13,10 +13,10 @@ DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC/主机
 ## 角色边界
 
 - M61 ESP32 调试桥只用于刷写/复位 ESP32。
-- 它不负责当前产品的 USB HID Gamepad 输出。
+- 它不负责当前产品的 USB DualSense composite 输出。
 - 当前 M61 HIDP+USB 固件在 `m61/dualsense_hidp_probe`。
 - 当前 Ai-M61-32S-Kit 实测可用主机口是板载 CH340 暴露的 M61 UART0，Windows 上通常为 `COM5 @ 115200`。
-- M61 原生 USB HID 要走 BL618 `USB_DP`/`USB_DM`，这和 CH340 串口桥是两条不同硬件链路。
+- M61 原生 USB 要走 BL618 `USB_DP`/`USB_DM`，这和 CH340 串口桥是两条不同硬件链路。
 
 ## 推荐接线
 

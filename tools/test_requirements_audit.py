@@ -77,7 +77,7 @@ def main() -> int:
         })()
         items = audit_requirements.collect_audit(args)
         m61_gate = find_item(items, "M61 hardware log proves full DualSense report=0x31 input")
-        usb_gate = find_item(items, "PC enumerates M61 native USB HID gamepad and accepts reports")
+        usb_gate = find_item(items, "PC enumerates M61 native USB DualSense composite device and accepts reports")
         manual_gate = find_item(items, "manual end-to-end validation covers mapping, latency, and 5 minute stability")
         if m61_gate.status != "PASS":
             failures.append("synthetic M61 full-report log should satisfy the M61 audit item")
@@ -92,7 +92,7 @@ def main() -> int:
         no_sent_items = audit_requirements.collect_audit(args_no_sent)
         no_sent_usb_gate = find_item(
             no_sent_items,
-            "PC enumerates M61 native USB HID gamepad and accepts reports",
+            "PC enumerates M61 native USB DualSense composite device and accepts reports",
         )
         if no_sent_usb_gate.status != "PENDING":
             failures.append("configured=1 with sent=0 must not satisfy the USB audit item")

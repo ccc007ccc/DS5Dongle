@@ -42,7 +42,7 @@ python tools\check_m61_usb_windows.py
 
 结果解释：
 
-- 看到 `VID_1209&PID_5D51` 或 `M61 DualSense Gamepad`：PC 已经枚举到 M61 原生 USB HID。
+- 看到 `VID_054C&PID_0CE6`、`DualSense Wireless Controller` 或 `USB Composite Device`：PC 已经枚举到 M61 原生 DualSense 复合 USB 设备。
 - 只看到 `USB-SERIAL CH340 (COMx)`：当前只是串口桥；M61 原生 USB 没接到 PC。
 - 看到 `未知 USB 设备(设备描述符请求失败)` / `VID_0000&PID_0002`：PC 检测到某个 USB 物理设备但读不到描述符，优先检查 D+/D- 是否接反、线是否太长、GND 是否共地、供电是否冲突。
 
@@ -54,7 +54,7 @@ python tools\validate_m61_usb_hardware.py -p COM5
 
 通过条件：
 
-- Windows 看到 `VID_1209&PID_5D51`。
+- Windows 看到 `VID_054C&PID_0CE6`，并出现 HID game controller 与 DualSense 音频端点。
 - `ds5 status` 显示 `usb_gamepad configured=1`。
 - `usb_gamepad sent>0`，说明手柄输入已经发到 USB HID endpoint。
 
@@ -67,7 +67,7 @@ python tools\validate_m61_usb_hardware.py -p COM5
 5. 线短一点，D+/D- 绞一起，减少面包板和杜邦线长度。
 6. 插 PC 后运行 `python tools\check_m61_usb_windows.py`。
 7. 如果仍是描述符失败，交换 D+/D- 测一次；如果变成完全无设备，再换回并检查焊点/测试点。
-8. 如果 Windows 已看到 `VID_1209&PID_5D51`，但 `validate_m61_usb_hardware.py` 没有 `usb_gamepad` 状态，刷入最新 `m61/dualsense_hidp_probe` 固件。
+8. 如果 Windows 已看到 `VID_054C&PID_0CE6`，但 `validate_m61_usb_hardware.py` 没有 `usb_gamepad` 状态，刷入最新 `m61/dualsense_hidp_probe` 固件。
 
 ## 不要混淆的脚
 

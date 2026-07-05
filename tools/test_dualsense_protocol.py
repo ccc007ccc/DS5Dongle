@@ -16,6 +16,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PARSER = ROOT / "main" / "dualsense_parser.c"
 OUTPUT = ROOT / "main" / "dualsense_output.c"
+M61_USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
+M61_CMAKE = ROOT / "m61" / "dualsense_hidp_probe" / "CMakeLists.txt"
 
 DS5_BT_HIDP_INPUT = 0xA1
 DS5_BT_INPUT_REPORT_ID = 0x31
@@ -24,7 +26,9 @@ DS5_BASIC_INPUT_REPORT_ID = 0x01
 DS5_BASIC_PAYLOAD_LEN = 9
 DS5_OUTPUT_REPORT31_BT_LEN = 78
 DS5_OUTPUT_REPORT32_BT_LEN = 142
+DS5_OUTPUT_REPORT36_BT_LEN = 398
 DS5_OUTPUT_SET_STATE_LEN = 63
+DS5_OUTPUT_HAPTICS_BLOCK_LEN = 64
 
 BUTTON_SQUARE = 1 << 0
 BUTTON_CROSS = 1 << 1
@@ -159,6 +163,25 @@ def make_output32(seq: int) -> bytes:
     report[2] = 0x90
     report[3] = DS5_OUTPUT_SET_STATE_LEN
     report[4:4 + DS5_OUTPUT_SET_STATE_LEN] = DEFAULT_SET_STATE
+    fill_output_crc(report)
+    return bytes(report)
+
+
+def make_output36_haptics(seq: int, packet_counter: int, haptics: bytes, mic_active: bool = False) -> bytes:
+    report = bytearray(DS5_OUTPUT_REPORT36_BT_LEN)
+    report[0] = 0x36
+    report[1] = (seq & 0x0F) << 4
+    report[2] = 0x91
+    report[3] = 7
+    report[4] = 0xFF if mic_active else 0xFE
+    report[5:10] = bytes([64, 64, 64, 64, 64])
+    report[10] = packet_counter & 0xFF
+    report[11] = 0x90
+    report[12] = DS5_OUTPUT_SET_STATE_LEN
+    report[13:13 + DS5_OUTPUT_SET_STATE_LEN] = DEFAULT_SET_STATE
+    report[76] = 0x92
+    report[77] = DS5_OUTPUT_HAPTICS_BLOCK_LEN
+    report[78:78 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] = haptics
     fill_output_crc(report)
     return bytes(report)
 
@@ -386,10 +409,21 @@ def test_output_vectors() -> None:
     assert report32[4:4 + DS5_OUTPUT_SET_STATE_LEN] == DEFAULT_SET_STATE
     assert int.from_bytes(report32[-4:], "little") == dualsense_output_crc32(report32[:-4])
 
+    haptics = bytes(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN))
+    report36 = make_output36_haptics(2, 3, haptics)
+    assert len(report36) == DS5_OUTPUT_REPORT36_BT_LEN
+    assert report36[0:13] == bytes([0x36, 0x20, 0x91, 7, 0xFE, 64, 64, 64, 64, 64, 3, 0x90, 63])
+    assert report36[13:13 + DS5_OUTPUT_SET_STATE_LEN] == DEFAULT_SET_STATE
+    assert report36[76:78] == bytes([0x92, DS5_OUTPUT_HAPTICS_BLOCK_LEN])
+    assert report36[78:78 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] == haptics
+    assert int.from_bytes(report36[-4:], "little") == dualsense_output_crc32(report36[:-4])
+
 
 def test_c_source_contract() -> None:
     source = PARSER.read_text(encoding="utf-8")
     output_source = OUTPUT.read_text(encoding="utf-8")
+    m61_usb_source = M61_USB.read_text(encoding="utf-8")
+    m61_cmake_source = M61_CMAKE.read_text(encoding="utf-8")
     required_snippets = [
         "payload_offset = 3;",
         "payload_offset = 2;",
@@ -411,16 +445,41 @@ def test_c_source_contract() -> None:
     output_snippets = [
         "#define DS5_OUTPUT_CRC32_SEED 0xA2",
         "s_ds5_set_state_default",
+        "DS5_USB_SET_STATE_LEN",
+        "apply_usb_set_state",
+        "DS5_STATE_ALLOW_RIGHT_TRIGGER_FFB",
+        "DS5_STATE_ALLOW_LED_COLOR",
+        "copy_set_state",
         "DS5_OUTPUT_REPORT31_BT_LEN",
         "DS5_OUTPUT_REPORT32_BT_LEN",
+        "DS5_OUTPUT_REPORT36_BT_LEN",
+        "dualsense_output_make_report36_haptics",
+        "report[2] = DS5_OUTPUT_AUDIO_TAG;",
+        "report[76] = DS5_OUTPUT_HAPTICS_TAG;",
         "report[2] = DS5_OUTPUT_TAG;",
         "report[2] = 0x90;",
         "report[3] = DS5_OUTPUT_SET_STATE_LEN;",
         "fill_crc(report, DS5_OUTPUT_REPORT31_BT_LEN);",
         "fill_crc(report, DS5_OUTPUT_REPORT32_BT_LEN);",
+        "fill_crc(report, DS5_OUTPUT_REPORT36_BT_LEN);",
     ]
     for snippet in output_snippets:
         assert snippet in output_source, f"missing C output snippet: {snippet}"
+
+    m61_haptics_snippets = [
+        "HAPTICS_RESAMPLE_MODE_WDL_EQUIV",
+        "haptics_prev_valid",
+        "haptics_phase",
+        "haptic_pcm16_to_i8",
+        "read_i16_le(frame + 4)",
+        "read_i16_le(frame + 6)",
+        "if (haptics_phase == 0)",
+        "haptics_phase >= HAPTICS_DOWNSAMPLE_FACTOR",
+    ]
+    for snippet in m61_haptics_snippets:
+        assert snippet in m61_usb_source, f"missing M61 USB haptics snippet: {snippet}"
+    assert "m61_haptics_resampler" not in m61_cmake_source
+    assert "resample.cpp" not in m61_cmake_source
 
 
 def main() -> int:

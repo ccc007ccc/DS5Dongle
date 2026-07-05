@@ -1,8 +1,9 @@
 # M61 DualSense HIDP Probe
 
 This is the Ai-M61/BL616/BL618 M61-only DualSense path. It connects to a real
-DualSense over Classic Bluetooth HIDP and now also exposes a USB HID gamepad
-through the BL618 native USB device peripheral.
+DualSense over Classic Bluetooth HIDP and now also exposes a Sony
+`054C:0CE6` DualSense composite USB device through the BL618 native USB device
+peripheral.
 
 The probe validates these pieces:
 
@@ -17,11 +18,12 @@ The probe validates these pieces:
 - L2CAP HID Interrupt PSM `0x13`
 - raw HIDP packet logging, shared DualSense input parsing, and optional raw packet send commands
 - HIDP bring-up attempts for Set Protocol, feature report reads, and DualSense output init reports
-- USB HID Gamepad Device output for buttons, dpad, sticks, L2, and R2
+- USB DualSense composite device with Audio Control, Audio OUT, Audio IN, and
+  HID interface 3
 
-The USB gamepad appears on the BL618 native USB `USB_DP`/`USB_DM` pins. A board
-USB connector wired only to CH340 remains a serial/debug port and will not show
-up as a controller.
+The USB composite device appears on the BL618 native USB `USB_DP`/`USB_DM`
+pins. A board USB connector wired only to CH340 remains a serial/debug port and
+will not show up as a controller or audio device.
 
 Build:
 

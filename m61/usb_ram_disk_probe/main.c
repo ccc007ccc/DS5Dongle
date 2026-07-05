@@ -1,0 +1,40 @@
+#include <FreeRTOS.h>
+#include "task.h"
+
+#include "board.h"
+#include "bflb_mtimer.h"
+
+#if defined(BOARD_USB_VIA_GPIO)
+#include "board_gpio.h"
+#endif
+
+#define MSC_RAM_STACK_SIZE 1536
+#define MSC_RAM_TASK_PRIORITY 16
+
+void msc_ram_init(uint8_t busid, uintptr_t reg_base);
+
+static void msc_ram_task(void *params)
+{
+    (void)params;
+
+    msc_ram_init(0, 0);
+
+    while (1) {
+        bflb_mtimer_delay_ms(500);
+    }
+}
+
+int main(void)
+{
+    board_init();
+
+#if defined(BOARD_USB_VIA_GPIO)
+    board_usb_gpio_init();
+#endif
+
+    xTaskCreate(msc_ram_task, "msc_ram", MSC_RAM_STACK_SIZE, NULL, MSC_RAM_TASK_PRIORITY, NULL);
+    vTaskStartScheduler();
+
+    while (1) {
+    }
+}

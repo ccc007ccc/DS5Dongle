@@ -57,8 +57,9 @@
 #define HIDP_REPORT_TYPE_FEATURE 0x03
 #define HIDP_DISCOVERY_SLOTS 10
 #define HIDP_EIR_MAX_LEN 240
-#define HIDP_TX_MAX_LEN 192
+#define HIDP_TX_MAX_LEN 512
 #define DS5_LAST_ADDR_KEY "ds5_last_bda"
+#define DS5_AUDIO_BUFFER_LENGTH_DEFAULT 64
 
 #ifndef CONFIG_M61_DS5_AUTO_START
 #define CONFIG_M61_DS5_AUTO_START 1
@@ -72,6 +73,10 @@
 #define CONFIG_M61_DS5_AUTO_RETRY_MS 5000
 #endif
 
+#ifndef CONFIG_M61_DS5_AUTO_SAVED_ADDR_ATTEMPTS
+#define CONFIG_M61_DS5_AUTO_SAVED_ADDR_ATTEMPTS 3
+#endif
+
 #ifndef CONFIG_M61_DS5_SECURITY_TIMEOUT_MS
 #define CONFIG_M61_DS5_SECURITY_TIMEOUT_MS 2500
 #endif
@@ -82,6 +87,14 @@
 
 #ifndef CONFIG_M61_DS5_AUTO_BRINGUP_RETRY_MS
 #define CONFIG_M61_DS5_AUTO_BRINGUP_RETRY_MS 750
+#endif
+
+#ifndef CONFIG_M61_USB_START_AFTER_BT_TIMEOUT_MS
+#define CONFIG_M61_USB_START_AFTER_BT_TIMEOUT_MS 3000
+#endif
+
+#ifndef CONFIG_M61_USB_START_DELAY_AFTER_BT_MS
+#define CONFIG_M61_USB_START_DELAY_AFTER_BT_MS 200
 #endif
 
 #ifndef CONFIG_M61_STATUS_LED_ENABLE
@@ -109,6 +122,7 @@
 #endif
 
 #define DS5_AUTO_TASK_PERIOD_MS 250
+#define DS5_DISCONNECT_CLEANUP_DELAY_MS 750
 
 struct hidp_channel {
     struct bt_l2cap_br_chan br;
@@ -139,19 +153,29 @@ static bt_addr_t last_dualsense_addr;
 static bool have_last_dualsense_addr;
 static bool bt_ready;
 static bool storage_ready;
+static bool br_discovery_active;
 static bool auto_connect_after_scan;
 static bool auto_sequence_started;
 static bool auto_security_requested;
 static bool auto_sdp_requested;
 static bool auto_hidp_requested;
 static bool br_security_ready;
+static bool hidp_active_open_allowed;
+static bool br_connectable_enabled;
+static bool br_discoverable_enabled;
+static bool hidp_l2cap_servers_registered;
 static bool full_report_seen;
-static bool hidp_report_log_enabled = true;
+static bool hidp_report_log_enabled;
 static bool hidp_full_report_banner_printed;
 static uint32_t hidp_parsed_reports;
 static uint32_t hidp_full_reports;
 static uint32_t hidp_mic_audio_reports;
+static uint32_t hidp_haptics_reports_sent;
+static uint32_t hidp_haptics_send_errors;
+static uint32_t hidp_haptics_not_connected;
+static int hidp_haptics_last_error;
 static uint8_t auto_bringup_attempts;
+static uint8_t auto_saved_addr_attempts;
 static TickType_t br_connected_tick;
 static TickType_t auto_next_action_tick;
 static TickType_t auto_next_hidp_tick;
@@ -160,6 +184,10 @@ static dualsense_output_context_t output_ctx;
 static struct bflb_device_s *status_led_gpio;
 static bool status_led_override;
 static enum status_led_mode status_led_override_mode;
+static bool hid_control_prepare_pending;
+static bool hid_interrupt_prepare_pending;
+static bool disconnect_cleanup_scheduled;
+static TickType_t disconnect_cleanup_tick;
 
 #if CONFIG_M61_DS5_AUTO_START
 static bool auto_start_enabled = true;
@@ -171,6 +199,9 @@ static struct bt_uuid_16 hid_service_uuid = BT_UUID_INIT_16(BT_SDP_HID_SVCLASS);
 extern struct net_buf_pool sdp_pool;
 static struct bt_sdp_discover_params sdp_params;
 
+static int hidp_control_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan);
+static int hidp_interrupt_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan);
+
 static struct hidp_channel hid_control = {
     .name = "control",
     .psm = HIDP_PSM_CONTROL,
@@ -179,6 +210,18 @@ static struct hidp_channel hid_control = {
 static struct hidp_channel hid_interrupt = {
     .name = "interrupt",
     .psm = HIDP_PSM_INTERRUPT,
+};
+
+static struct bt_l2cap_server hid_control_server = {
+    .psm = HIDP_PSM_CONTROL,
+    .sec_level = BT_SECURITY_L2,
+    .accept = hidp_control_l2cap_accept,
+};
+
+static struct bt_l2cap_server hid_interrupt_server = {
+    .psm = HIDP_PSM_INTERRUPT,
+    .sec_level = BT_SECURITY_L2,
+    .accept = hidp_interrupt_l2cap_accept,
 };
 
 extern void shell_init_with_task(struct bflb_device_s *shell);
@@ -219,9 +262,71 @@ static void auto_reset_link_state(void)
     br_connected_tick = xTaskGetTickCount();
 }
 
+static void auto_reset_saved_addr_attempts(void)
+{
+    auto_saved_addr_attempts = 0;
+}
+
+static void schedule_deferred_disconnect_cleanup(uint32_t delay_ms)
+{
+    disconnect_cleanup_tick = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
+    disconnect_cleanup_scheduled = true;
+}
+
+static bool deferred_conn_unref_pending(void)
+{
+    return false;
+}
+
+static bool deferred_disconnect_cleanup_active(void)
+{
+    return disconnect_cleanup_scheduled ||
+           hid_control_prepare_pending ||
+           hid_interrupt_prepare_pending ||
+           deferred_conn_unref_pending();
+}
+
 static bool request_is_pending_or_done(int err)
 {
     return err == 0 || err == -EALREADY;
+}
+
+static int br_scan_state_result(const char *action, int err, bool *state, bool target)
+{
+    if (err == 0 || err == -EALREADY) {
+        *state = target;
+        return 0;
+    }
+
+    printf("BR/EDR %s failed: %d\r\n", action, err);
+    return err;
+}
+
+static void br_set_pairable(bool enable, const char *reason)
+{
+    int err;
+
+    if (!bt_ready) {
+        return;
+    }
+
+    if (enable) {
+        err = bt_br_set_connectable(true);
+        br_scan_state_result("set connectable", err, &br_connectable_enabled, true);
+        err = bt_br_set_discoverable(true);
+        br_scan_state_result("set discoverable", err, &br_discoverable_enabled, true);
+    } else {
+        err = bt_br_set_discoverable(false);
+        br_scan_state_result("clear discoverable", err, &br_discoverable_enabled, false);
+        err = bt_br_set_connectable(false);
+        br_scan_state_result("clear connectable", err, &br_connectable_enabled, false);
+    }
+
+    printf("BR/EDR pairable=%d reason=%s connectable=%d discoverable=%d\r\n",
+           enable ? 1 : 0,
+           reason ? reason : "manual",
+           br_connectable_enabled ? 1 : 0,
+           br_discoverable_enabled ? 1 : 0);
 }
 
 static void persist_last_dualsense_addr(void)
@@ -259,6 +364,8 @@ static void load_last_dualsense_addr(void)
         memcpy(last_dualsense_addr.val, raw, sizeof(raw));
         have_last_dualsense_addr = true;
         print_addr("loaded saved DualSense addr ", &last_dualsense_addr);
+    } else {
+        printf("no saved DualSense addr loaded\r\n");
     }
 #endif
 }
@@ -267,6 +374,7 @@ static void remember_dualsense_addr(const bt_addr_t *addr, bool persist)
 {
     last_dualsense_addr = *addr;
     have_last_dualsense_addr = true;
+    auto_reset_saved_addr_attempts();
     print_addr("stored DualSense addr ", &last_dualsense_addr);
     if (persist) {
         persist_last_dualsense_addr();
@@ -276,6 +384,7 @@ static void remember_dualsense_addr(const bt_addr_t *addr, bool persist)
 static void forget_dualsense_addr(void)
 {
     have_last_dualsense_addr = false;
+    auto_reset_saved_addr_attempts();
     memset(&last_dualsense_addr, 0, sizeof(last_dualsense_addr));
 #if defined(CONFIG_BT_SETTINGS)
     if (storage_ready) {
@@ -435,6 +544,140 @@ static void m61_reboot_to_uart_download(void)
 #else
     printf("M61 UART download reboot unsupported on this chip\r\n");
 #endif
+}
+
+static void m61_native_usb_gpio_init(void)
+{
+    struct bflb_device_s *gpio = bflb_device_get_by_name("gpio");
+
+    if (!gpio) {
+        printf("USB gpio device not found; native USB pins not configured\r\n");
+        return;
+    }
+
+#if defined(BL616)
+    bflb_gpio_init(gpio, GPIO_PIN_32, GPIO_ANALOG | GPIO_SMT_EN | GPIO_DRV_0);
+    bflb_gpio_init(gpio, GPIO_PIN_33, GPIO_ANALOG | GPIO_SMT_EN | GPIO_DRV_0);
+    printf("M61 native USB pins configured: BL616 GPIO32=USB_DP GPIO33=USB_DM\r\n");
+#elif defined(BL618DG)
+    bflb_gpio_init(gpio, GPIO_PIN_40, GPIO_ANALOG | GPIO_SMT_EN | GPIO_DRV_0);
+    bflb_gpio_init(gpio, GPIO_PIN_41, GPIO_ANALOG | GPIO_SMT_EN | GPIO_DRV_0);
+    printf("M61 native USB pins configured: BL618DG GPIO40=USB_DP GPIO41=USB_DM\r\n");
+#else
+    printf("M61 native USB pin override unsupported on this chip\r\n");
+#endif
+}
+
+static int m61_usb_pins_command(int argc, char **argv)
+{
+    struct bflb_device_s *gpio = bflb_device_get_by_name("gpio");
+
+    if (!gpio) {
+        printf("USB gpio device not found\r\n");
+        return -ENODEV;
+    }
+
+#if defined(BL616)
+    const uint32_t dp_pin = GPIO_PIN_32;
+    const uint32_t dm_pin = GPIO_PIN_33;
+    const char *target = "BL616 GPIO32=USB_DP GPIO33=USB_DM";
+#elif defined(BL618DG)
+    const uint32_t dp_pin = GPIO_PIN_40;
+    const uint32_t dm_pin = GPIO_PIN_41;
+    const char *target = "BL618DG GPIO40=USB_DP GPIO41=USB_DM";
+#else
+    printf("USB pin test unsupported on this chip\r\n");
+    return -ENOTSUP;
+#endif
+
+    if (argc < 3 || strcmp(argv[2], "help") == 0 || strcmp(argv[2], "status") == 0) {
+        printf("USB pin test target: %s\r\n", target);
+        printf("Disconnect native USB from PC before driving pins. Keep CH340 power/serial connected.\r\n");
+        printf("Usage:\r\n");
+        printf("  ds5 usb-pins dp-high\r\n");
+        printf("  ds5 usb-pins dm-high\r\n");
+        printf("  ds5 usb-pins both-low\r\n");
+        printf("  ds5 usb-pins both-high\r\n");
+        printf("  ds5 usb-pins restore\r\n");
+        return 0;
+    }
+
+    if (strcmp(argv[2], "restore") == 0) {
+        m61_native_usb_gpio_init();
+        printf("USB pins restored to native USB mode; reset or replug native USB for a clean enum retry\r\n");
+        return 0;
+    }
+
+    bflb_gpio_init(gpio, dp_pin, GPIO_OUTPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_1);
+    bflb_gpio_init(gpio, dm_pin, GPIO_OUTPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_1);
+
+    if (strcmp(argv[2], "dp-high") == 0) {
+        bflb_gpio_set(gpio, dp_pin);
+        bflb_gpio_reset(gpio, dm_pin);
+        printf("USB pin test: DP high, DM low on %s\r\n", target);
+        return 0;
+    }
+
+    if (strcmp(argv[2], "dm-high") == 0) {
+        bflb_gpio_reset(gpio, dp_pin);
+        bflb_gpio_set(gpio, dm_pin);
+        printf("USB pin test: DP low, DM high on %s\r\n", target);
+        return 0;
+    }
+
+    if (strcmp(argv[2], "both-low") == 0) {
+        bflb_gpio_reset(gpio, dp_pin);
+        bflb_gpio_reset(gpio, dm_pin);
+        printf("USB pin test: DP low, DM low on %s\r\n", target);
+        return 0;
+    }
+
+    if (strcmp(argv[2], "both-high") == 0) {
+        bflb_gpio_set(gpio, dp_pin);
+        bflb_gpio_set(gpio, dm_pin);
+        printf("USB pin test: DP high, DM high on %s\r\n", target);
+        return 0;
+    }
+
+    printf("usage: ds5 usb-pins [dp-high|dm-high|both-low|both-high|restore]\r\n");
+    return -EINVAL;
+}
+
+static void m61_usb_bus_detach_pulse(uint32_t delay_ms)
+{
+    struct bflb_device_s *gpio = bflb_device_get_by_name("gpio");
+
+    if (!gpio) {
+        printf("USB gpio device not found; skipping detach pulse\r\n");
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        return;
+    }
+
+#if defined(BL616)
+    const uint32_t dp_pin = GPIO_PIN_32;
+    const uint32_t dm_pin = GPIO_PIN_33;
+#elif defined(BL618DG)
+    const uint32_t dp_pin = GPIO_PIN_40;
+    const uint32_t dm_pin = GPIO_PIN_41;
+#else
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    return;
+#endif
+
+    bflb_gpio_init(gpio, dp_pin, GPIO_OUTPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_1);
+    bflb_gpio_init(gpio, dm_pin, GPIO_OUTPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_1);
+    bflb_gpio_reset(gpio, dp_pin);
+    bflb_gpio_reset(gpio, dm_pin);
+    printf("USB bus detach pulse: DP/DM low for %lu ms\r\n", (unsigned long)delay_ms);
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    m61_native_usb_gpio_init();
+}
+
+static int m61_usb_cycle_command(void)
+{
+    m61_usb_gamepad_deinit();
+    m61_usb_bus_detach_pulse(350);
+    return m61_usb_gamepad_reinit();
 }
 
 #if CONFIG_M61_STATUS_LED_ENABLE
@@ -689,6 +932,8 @@ static bool eir_name_matches(const uint8_t *eir, size_t eir_len, const char *nee
 }
 
 static void hidp_channel_prepare(struct hidp_channel *channel);
+static void schedule_hidp_channel_prepare(struct hidp_channel *channel, uint32_t delay_ms);
+static void process_deferred_disconnect_cleanup(TickType_t now);
 static void bt_br_discv_cb(struct bt_br_discovery_result *results, size_t count);
 
 static void hidp_l2cap_connected(struct bt_l2cap_chan *chan)
@@ -704,6 +949,7 @@ static void hidp_l2cap_connected(struct bt_l2cap_chan *chan)
            channel->br.tx.mtu);
 
     if (hid_control.connected && hid_interrupt.connected) {
+        br_set_pairable(false, "hidp-ready");
         auto_next_bringup_tick = xTaskGetTickCount();
     }
 }
@@ -714,7 +960,10 @@ static void hidp_l2cap_disconnected(struct bt_l2cap_chan *chan)
 
     printf("HIDP %s disconnected\r\n", channel->name);
     channel->connected = false;
-    hidp_channel_prepare(channel);
+    auto_hidp_requested = false;
+    auto_next_hidp_tick =
+        xTaskGetTickCount() + pdMS_TO_TICKS(DS5_DISCONNECT_CLEANUP_DELAY_MS);
+    schedule_hidp_channel_prepare(channel, DS5_DISCONNECT_CLEANUP_DELAY_MS);
 }
 
 static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
@@ -734,6 +983,10 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
         print_hex_line(buf->data, buf->len > 32 ? 32 : buf->len);
     }
 
+    if (channel == &hid_control && buf->len >= 3 && buf->data[0] == 0xA3) {
+        m61_usb_gamepad_store_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
+    }
+
     if (channel == &hid_interrupt &&
         dualsense_parse_report(buf->data, buf->len, &state, &parse)) {
         bool first_full_report = state.is_full_report && !full_report_seen;
@@ -748,7 +1001,12 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
             dualsense_format_state(&state, line, sizeof(line));
             printf("parsed %s\r\n", line);
         }
-        m61_usb_gamepad_send_state(&state);
+        if (state.is_full_report && parse.payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN) {
+            m61_usb_gamepad_send_report01(buf->data + parse.payload_offset,
+                                          M61_DS5_USB_INPUT_PAYLOAD_LEN);
+        } else {
+            m61_usb_gamepad_send_state(&state);
+        }
         if (state.is_full_report) {
             full_report_seen = true;
             if (first_full_report || !hidp_full_report_banner_printed) {
@@ -788,10 +1046,127 @@ static void hidp_channel_prepare(struct hidp_channel *channel)
 #endif
 }
 
+static int hidp_l2cap_accept_channel(struct hidp_channel *channel,
+                                     struct bt_conn *conn,
+                                     struct bt_l2cap_chan **chan)
+{
+    struct bt_conn_info info;
+    char addr_str[BT_ADDR_STR_LEN] = "<unknown>";
+
+    if (!channel || !conn || !chan || conn->type != BT_CONN_TYPE_BR) {
+        return -EACCES;
+    }
+
+    process_deferred_disconnect_cleanup(xTaskGetTickCount());
+    if (channel->connected || channel->br.chan.conn || deferred_disconnect_cleanup_active()) {
+        printf("HIDP %s incoming busy connected=%d chan_conn=%d cleanup=%d\r\n",
+               channel->name,
+               channel->connected ? 1 : 0,
+               channel->br.chan.conn ? 1 : 0,
+               deferred_disconnect_cleanup_active() ? 1 : 0);
+        return -ENOMEM;
+    }
+
+    if (bt_conn_get_info(conn, &info) == 0) {
+        bt_addr_to_str(info.br.dst, addr_str, sizeof(addr_str));
+    }
+
+    hidp_channel_prepare(channel);
+    *chan = &channel->br.chan;
+    auto_hidp_requested = true;
+    printf("HIDP %s incoming accepted from %s PSM 0x%04x\r\n",
+           channel->name,
+           addr_str,
+           channel->psm);
+
+    return 0;
+}
+
+static int hidp_control_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan)
+{
+    return hidp_l2cap_accept_channel(&hid_control, conn, chan);
+}
+
+static int hidp_interrupt_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan)
+{
+    return hidp_l2cap_accept_channel(&hid_interrupt, conn, chan);
+}
+
+static int hidp_l2cap_servers_register(void)
+{
+    int ctrl_err;
+    int intr_err;
+
+    if (hidp_l2cap_servers_registered) {
+        return 0;
+    }
+
+    ctrl_err = bt_l2cap_br_server_register(&hid_control_server);
+    intr_err = bt_l2cap_br_server_register(&hid_interrupt_server);
+    if (ctrl_err && ctrl_err != -EADDRINUSE) {
+        printf("HIDP control server register failed: %d\r\n", ctrl_err);
+    }
+    if (intr_err && intr_err != -EADDRINUSE) {
+        printf("HIDP interrupt server register failed: %d\r\n", intr_err);
+    }
+
+    if ((ctrl_err == 0 || ctrl_err == -EADDRINUSE) &&
+        (intr_err == 0 || intr_err == -EADDRINUSE)) {
+        hidp_l2cap_servers_registered = true;
+        printf("HIDP BR/EDR servers ready control=0x%04x interrupt=0x%04x\r\n",
+               HIDP_PSM_CONTROL,
+               HIDP_PSM_INTERRUPT);
+        return 0;
+    }
+
+    return ctrl_err ? ctrl_err : intr_err;
+}
+
+static void schedule_hidp_channel_prepare(struct hidp_channel *channel, uint32_t delay_ms)
+{
+    if (channel == &hid_control) {
+        hid_control_prepare_pending = true;
+    } else if (channel == &hid_interrupt) {
+        hid_interrupt_prepare_pending = true;
+    }
+    schedule_deferred_disconnect_cleanup(delay_ms);
+}
+
+static void process_deferred_disconnect_cleanup(TickType_t now)
+{
+    if (!deferred_disconnect_cleanup_active()) {
+        return;
+    }
+    if (disconnect_cleanup_scheduled && !tick_due(now, disconnect_cleanup_tick)) {
+        return;
+    }
+
+    if (hid_control_prepare_pending) {
+        if (!hid_control.connected) {
+            hidp_channel_prepare(&hid_control);
+            printf("HIDP control cleanup prepared\r\n");
+        }
+        hid_control_prepare_pending = false;
+    }
+    if (hid_interrupt_prepare_pending) {
+        if (!hid_interrupt.connected) {
+            hidp_channel_prepare(&hid_interrupt);
+            printf("HIDP interrupt cleanup prepared\r\n");
+        }
+        hid_interrupt_prepare_pending = false;
+    }
+
+    disconnect_cleanup_scheduled = false;
+}
+
 static int hidp_channel_connect(struct hidp_channel *channel)
 {
     int err;
 
+    process_deferred_disconnect_cleanup(xTaskGetTickCount());
+    if (deferred_disconnect_cleanup_active()) {
+        return -EAGAIN;
+    }
     if (!default_conn) {
         return -ENOTCONN;
     }
@@ -944,6 +1319,167 @@ static int hidp_dualsense_bringup(void)
     return first_err;
 }
 
+static int hidp_set_feature_from_usb(uint8_t report_id, const uint8_t *data, size_t len)
+{
+    uint8_t packet[HIDP_TX_MAX_LEN];
+
+    if (!data || len + 2 > sizeof(packet)) {
+        return -EMSGSIZE;
+    }
+
+    packet[0] = (uint8_t)(HIDP_TRANSACTION_SET_REPORT | HIDP_REPORT_TYPE_FEATURE);
+    packet[1] = report_id;
+    memcpy(packet + 2, data, len);
+    dualsense_feature_fill_crc(packet + 1, len + 1);
+    return hidp_send_raw(&hid_control, packet, len + 2);
+}
+
+static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool includes_report_id)
+{
+    uint8_t report31[DS5_OUTPUT_REPORT31_BT_LEN];
+    const uint8_t *payload = data;
+    size_t payload_len = len;
+
+    if (!data || len == 0) {
+        return -EINVAL;
+    }
+
+    if (includes_report_id) {
+        if (data[0] != 0x02 || len < 2) {
+            return -EINVAL;
+        }
+        payload = data + 1;
+        payload_len = len - 1;
+    }
+
+    if (!dualsense_output_make_report31_from_usb(&output_ctx,
+                                                 payload,
+                                                 payload_len,
+                                                 report31,
+                                                 sizeof(report31))) {
+        return -EINVAL;
+    }
+
+    return hidp_send_data_output(report31, sizeof(report31));
+}
+
+static int hidp_send_haptics_report(const uint8_t *haptics)
+{
+    uint8_t report36[DS5_OUTPUT_REPORT36_BT_LEN];
+    int err;
+
+    if (!haptics) {
+        return -EINVAL;
+    }
+
+    if (!hid_interrupt.connected) {
+        hidp_haptics_not_connected++;
+        hidp_haptics_last_error = -ENOTCONN;
+        return -ENOTCONN;
+    }
+
+    if (!dualsense_output_make_report36_haptics(&output_ctx,
+                                                haptics,
+                                                M61_DS5_HAPTICS_BLOCK_LEN,
+                                                false,
+                                                DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                                report36,
+                                                sizeof(report36))) {
+        hidp_haptics_send_errors++;
+        hidp_haptics_last_error = -EINVAL;
+        return -EINVAL;
+    }
+
+    err = hidp_send_data_output(report36, sizeof(report36));
+    if (err) {
+        hidp_haptics_send_errors++;
+        hidp_haptics_last_error = err;
+    } else {
+        hidp_haptics_reports_sent++;
+        hidp_haptics_last_error = 0;
+    }
+    return err;
+}
+
+static void handle_usb_host_report(const m61_usb_gamepad_host_report_t *report)
+{
+    uint8_t report_id;
+    const uint8_t *payload;
+    size_t payload_len;
+    int err = 0;
+
+    if (!report || report->len == 0) {
+        return;
+    }
+
+    report_id = report->report_id;
+    payload = report->data;
+    payload_len = report->len;
+
+    if (report->report_type == HIDP_REPORT_TYPE_OUTPUT) {
+        bool includes_report_id = (report_id == 0);
+
+        err = hidp_send_usb_output_report(payload, payload_len, includes_report_id);
+        if (err) {
+            printf("usb output report forward failed id=0x%02x len=%u err=%d\r\n",
+                   includes_report_id ? payload[0] : report_id,
+                   (unsigned int)payload_len,
+                   err);
+        }
+        return;
+    }
+
+    if (report->report_type == HIDP_REPORT_TYPE_FEATURE) {
+        if (report_id == 0) {
+            report_id = payload[0];
+            payload++;
+            payload_len--;
+        }
+        err = hidp_set_feature_from_usb(report_id, payload, payload_len);
+        if (err) {
+            printf("usb feature set forward failed id=0x%02x len=%u err=%d\r\n",
+                   report_id,
+                   (unsigned int)payload_len,
+                   err);
+        }
+    }
+}
+
+static void usb_hid_bridge_task(void *pvParameters)
+{
+    (void)pvParameters;
+
+    while (1) {
+        uint8_t feature_report_id;
+        uint32_t requested_len;
+        m61_usb_gamepad_host_report_t host_report;
+        uint8_t haptics[M61_DS5_HAPTICS_BLOCK_LEN];
+        uint8_t haptics_sent_this_tick = 0;
+
+        while (m61_usb_gamepad_take_feature_request(&feature_report_id, &requested_len)) {
+            int err = hidp_get_report(HIDP_REPORT_TYPE_FEATURE, feature_report_id);
+            if (err && err != -ENOTCONN) {
+                printf("usb feature get forward failed id=0x%02x requested=%lu err=%d\r\n",
+                       feature_report_id,
+                       (unsigned long)requested_len,
+                       err);
+            }
+        }
+
+        while (m61_usb_gamepad_take_host_report(&host_report)) {
+            handle_usb_host_report(&host_report);
+        }
+
+        while (haptics_sent_this_tick < 4 &&
+               m61_usb_gamepad_take_haptics_block(haptics, sizeof(haptics))) {
+            hidp_send_haptics_report(haptics);
+            haptics_sent_this_tick++;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
 static uint8_t hid_sdp_discover_cb(struct bt_conn *conn, struct bt_sdp_client_result *result)
 {
     (void)conn;
@@ -994,6 +1530,10 @@ static int start_inquiry(void)
         printf("Bluetooth not ready\r\n");
         return -EAGAIN;
     }
+    if (br_discovery_active) {
+        printf("BR/EDR discovery already active\r\n");
+        return -EALREADY;
+    }
 
     memset(discovery_results, 0, sizeof(discovery_results));
     err = bt_br_discovery_start(&param,
@@ -1003,6 +1543,7 @@ static int start_inquiry(void)
     if (err) {
         printf("BR/EDR discovery failed: %d\r\n", err);
     } else {
+        br_discovery_active = true;
         printf("BR/EDR discovery started\r\n");
     }
     return err;
@@ -1016,6 +1557,15 @@ static int connect_addr(const bt_addr_t *addr)
     struct bt_conn *conn;
 
     if (!bt_ready) {
+        return -EAGAIN;
+    }
+    process_deferred_disconnect_cleanup(xTaskGetTickCount());
+    if (deferred_disconnect_cleanup_active()) {
+        printf("BR/EDR cleanup pending; retry later\r\n");
+        return -EAGAIN;
+    }
+    if (br_discovery_active) {
+        printf("BR/EDR discovery active; retry connect later\r\n");
         return -EAGAIN;
     }
     if (default_conn || pending_conn) {
@@ -1038,6 +1588,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 {
     struct bt_conn_info info;
     char addr_str[BT_ADDR_STR_LEN];
+    bool outgoing_conn;
 
     if (conn->type != BT_CONN_TYPE_BR) {
         return;
@@ -1049,26 +1600,31 @@ static void connected(struct bt_conn *conn, uint8_t err)
     if (err) {
         printf("BR/EDR connect failed: %s err=%u\r\n", addr_str, err);
         if (pending_conn == conn) {
-            bt_conn_unref(pending_conn);
             pending_conn = NULL;
         }
         if (auto_start_enabled) {
             auto_schedule_retry(CONFIG_M61_DS5_AUTO_RETRY_MS);
         }
+        br_set_pairable(true, "connect-failed");
         return;
     }
 
-    printf("BR/EDR connected: %s\r\n", addr_str);
-    if (pending_conn == conn) {
+    outgoing_conn = (pending_conn == conn);
+    printf("BR/EDR connected: %s role=%s\r\n",
+           addr_str,
+           outgoing_conn ? "outgoing" : "incoming");
+    auto_reset_saved_addr_attempts();
+    if (outgoing_conn) {
         default_conn = pending_conn;
         pending_conn = NULL;
     } else {
         if (default_conn && default_conn != conn) {
-            bt_conn_unref(default_conn);
+            printf("BR/EDR replacing stale default_conn\r\n");
         }
-        default_conn = bt_conn_ref(conn);
+        default_conn = conn;
     }
     auto_sequence_started = true;
+    hidp_active_open_allowed = outgoing_conn;
     auto_reset_link_state();
     remember_dualsense_addr(info.br.dst, true);
     hidp_channel_prepare(&hid_control);
@@ -1093,20 +1649,20 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     printf("BR/EDR disconnected: %s reason=%u\r\n", addr_str, reason);
 
     if (default_conn == conn) {
-        bt_conn_unref(default_conn);
         default_conn = NULL;
     }
     if (pending_conn == conn) {
-        bt_conn_unref(pending_conn);
         pending_conn = NULL;
     }
+    hidp_active_open_allowed = false;
     auto_connect_after_scan = false;
     auto_reset_link_state();
-    if (auto_start_enabled) {
-        auto_schedule_retry(CONFIG_M61_DS5_AUTO_RETRY_MS);
-    }
-    hidp_channel_prepare(&hid_control);
-    hidp_channel_prepare(&hid_interrupt);
+    auto_reset_saved_addr_attempts();
+    schedule_hidp_channel_prepare(&hid_control, DS5_DISCONNECT_CLEANUP_DELAY_MS);
+    schedule_hidp_channel_prepare(&hid_interrupt, DS5_DISCONNECT_CLEANUP_DELAY_MS);
+    br_set_pairable(true, "disconnected");
+    auto_sequence_started = true;
+    printf("auto: idle after disconnect; waiting for incoming reconnect or 'ds5 auto now'\r\n");
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
@@ -1181,6 +1737,8 @@ static const struct bt_conn_auth_cb auth_callbacks = {
 
 static void bt_br_discv_cb(struct bt_br_discovery_result *results, size_t count)
 {
+    br_discovery_active = false;
+
     for (size_t i = 0; results && i < count; i++) {
         char addr_str[BT_ADDR_STR_LEN];
         uint32_t dev_class;
@@ -1245,6 +1803,8 @@ static void bt_enable_cb(int err)
     bt_conn_auth_cb_register(&auth_callbacks);
     bt_set_bondable(true);
     bt_ready = true;
+    hidp_l2cap_servers_register();
+    br_set_pairable(true, "bt-ready");
 
     printf("M61 DualSense HIDP probe ready. Use 'ds5 scan'.\r\n");
 }
@@ -1256,6 +1816,18 @@ static void app_start_task(void *pvParameters)
     btble_controller_init(configMAX_PRIORITIES - 1);
     hci_driver_init();
     bt_enable(bt_enable_cb);
+
+    TickType_t deadline =
+        xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_M61_USB_START_AFTER_BT_TIMEOUT_MS);
+    while (!bt_ready && !tick_due(xTaskGetTickCount(), deadline)) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!bt_ready) {
+        printf("Bluetooth ready timeout; starting USB anyway\r\n");
+    }
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
+    m61_usb_bus_detach_pulse(350);
+    m61_usb_gamepad_init();
 
     vTaskDelete(NULL);
 }
@@ -1270,6 +1842,8 @@ static void auto_connect_task(void *pvParameters)
     while (1) {
         TickType_t now = xTaskGetTickCount();
 
+        process_deferred_disconnect_cleanup(now);
+
         if (!auto_start_enabled || !bt_ready) {
             vTaskDelay(pdMS_TO_TICKS(DS5_AUTO_TASK_PERIOD_MS));
             continue;
@@ -1279,11 +1853,20 @@ static void auto_connect_task(void *pvParameters)
             if (!auto_sequence_started && tick_due(now, auto_next_action_tick)) {
                 int err;
 
-                if (have_last_dualsense_addr) {
+                if (have_last_dualsense_addr &&
+                    auto_saved_addr_attempts < CONFIG_M61_DS5_AUTO_SAVED_ADDR_ATTEMPTS) {
+                    auto_saved_addr_attempts++;
+                    printf("auto: saved-address connect attempt %u/%u\r\n",
+                           (unsigned int)auto_saved_addr_attempts,
+                           (unsigned int)CONFIG_M61_DS5_AUTO_SAVED_ADDR_ATTEMPTS);
                     print_addr("auto: connecting saved DualSense ", &last_dualsense_addr);
                     err = connect_addr(&last_dualsense_addr);
                 } else {
-                    printf("auto: no saved DualSense address; scanning\r\n");
+                    if (have_last_dualsense_addr) {
+                        printf("auto: saved-address attempts exhausted; scanning for DualSense\r\n");
+                    } else {
+                        printf("auto: no saved DualSense address; scanning\r\n");
+                    }
                     auto_connect_after_scan = true;
                     err = start_inquiry();
                 }
@@ -1318,7 +1901,12 @@ static void auto_connect_task(void *pvParameters)
                 printf("auto: SDP HID discover result=%d\r\n", err);
             }
 
-            if (!auto_hidp_requested && tick_due(now, auto_next_hidp_tick)) {
+            if (!hidp_active_open_allowed) {
+                if (!auto_hidp_requested) {
+                    auto_hidp_requested = true;
+                    printf("auto: waiting for incoming HIDP channels\r\n");
+                }
+            } else if (!auto_hidp_requested && tick_due(now, auto_next_hidp_tick)) {
                 int ctrl_err = hidp_channel_connect(&hid_control);
                 int intr_err = hidp_channel_connect(&hid_interrupt);
                 auto_hidp_requested =
@@ -1378,6 +1966,9 @@ static void print_help(void)
     printf("  ds5 send-intr <hex bytes>\r\n");
     printf("  ds5 forget\r\n");
     printf("  ds5 disconnect\r\n");
+    printf("  ds5 usb-reinit\r\n");
+    printf("  ds5 usb-cycle\r\n");
+    printf("  ds5 usb-pins [status|dp-high|dm-high|both-low|both-high|restore]\r\n");
     printf("  ds5 reboot-isp\r\n");
 }
 
@@ -1393,8 +1984,12 @@ int cmd_ds5(int argc, char **argv)
     }
 
     if (strcmp(argv[1], "status") == 0) {
-        printf("bt_ready=%d pending=%d connected=%d hid_control=%d hid_interrupt=%d have_last=%d\r\n",
+        m61_usb_gamepad_diag_t usb_diag;
+        m61_usb_gamepad_get_diag(&usb_diag);
+
+        printf("bt_ready=%d discovery=%d pending=%d connected=%d hid_control=%d hid_interrupt=%d have_last=%d\r\n",
                bt_ready ? 1 : 0,
+               br_discovery_active ? 1 : 0,
                pending_conn ? 1 : 0,
                default_conn ? 1 : 0,
                hid_control.connected ? 1 : 0,
@@ -1409,17 +2004,114 @@ int cmd_ds5(int argc, char **argv)
                full_report_seen ? 1 : 0,
                (unsigned int)auto_bringup_attempts,
                (unsigned int)CONFIG_M61_DS5_AUTO_BRINGUP_RETRIES);
+        printf("bredr servers=%d connectable=%d discoverable=%d hidp_active_open=%d\r\n",
+               hidp_l2cap_servers_registered ? 1 : 0,
+               br_connectable_enabled ? 1 : 0,
+               br_discoverable_enabled ? 1 : 0,
+               hidp_active_open_allowed ? 1 : 0);
+        printf("auto_saved attempts=%u/%u scan_after=%d\r\n",
+               (unsigned int)auto_saved_addr_attempts,
+               (unsigned int)CONFIG_M61_DS5_AUTO_SAVED_ADDR_ATTEMPTS,
+               auto_connect_after_scan ? 1 : 0);
+        printf("cleanup scheduled=%d control_prepare=%d interrupt_prepare=%d conn_unref=%d\r\n",
+               disconnect_cleanup_scheduled ? 1 : 0,
+               hid_control_prepare_pending ? 1 : 0,
+               hid_interrupt_prepare_pending ? 1 : 0,
+               deferred_conn_unref_pending() ? 1 : 0);
         printf("usb_gamepad ready=%d configured=%d busy=%d sent=%lu dropped=%lu\r\n",
                m61_usb_gamepad_ready() ? 1 : 0,
                m61_usb_gamepad_configured() ? 1 : 0,
                m61_usb_gamepad_busy() ? 1 : 0,
                (unsigned long)m61_usb_gamepad_sent_count(),
                (unsigned long)m61_usb_gamepad_drop_count());
+        printf("usb_events init_result=%d last=%u error=%lu reset=%lu connected=%lu disconnected=%lu suspend=%lu resume=%lu configured=%lu init=%lu\r\n",
+               m61_usb_gamepad_init_result(),
+               (unsigned int)m61_usb_gamepad_last_event(),
+               (unsigned long)m61_usb_gamepad_event_count(0),
+               (unsigned long)m61_usb_gamepad_event_count(1),
+               (unsigned long)m61_usb_gamepad_event_count(3),
+               (unsigned long)m61_usb_gamepad_event_count(4),
+               (unsigned long)m61_usb_gamepad_event_count(5),
+               (unsigned long)m61_usb_gamepad_event_count(6),
+               (unsigned long)m61_usb_gamepad_event_count(7),
+               (unsigned long)m61_usb_gamepad_event_count(11));
+        printf("usb_desc dev=%lu cfg=%lu qual=%lu str=%lu str0=%lu last_speed=%u last_str=%u\r\n",
+               (unsigned long)usb_diag.device_desc,
+               (unsigned long)usb_diag.config_desc,
+               (unsigned long)usb_diag.qualifier_desc,
+               (unsigned long)usb_diag.string_desc,
+               (unsigned long)usb_diag.string0_desc,
+               (unsigned int)usb_diag.last_speed,
+               (unsigned int)usb_diag.last_string_index);
+        printf("usb_hid get_report=%lu get_idle=%lu get_protocol=%lu set_report=%lu set_idle=%lu set_protocol=%lu last_report=0x%02x/%u\r\n",
+               (unsigned long)usb_diag.hid_get_report,
+               (unsigned long)usb_diag.hid_get_idle,
+               (unsigned long)usb_diag.hid_get_protocol,
+               (unsigned long)usb_diag.hid_set_report,
+               (unsigned long)usb_diag.hid_set_idle,
+               (unsigned long)usb_diag.hid_set_protocol,
+               (unsigned int)usb_diag.last_report_id,
+               (unsigned int)usb_diag.last_report_type);
+        printf("usb_ds5 out=%lu last_out=0x%02x/%lu feature hit=%lu miss=%lu store=%lu host_drop=%lu\r\n",
+               (unsigned long)usb_diag.hid_out_report,
+               (unsigned int)usb_diag.last_out_report_id,
+               (unsigned long)usb_diag.last_out_report_len,
+               (unsigned long)usb_diag.feature_cache_hits,
+               (unsigned long)usb_diag.feature_cache_misses,
+               (unsigned long)usb_diag.feature_cache_stores,
+               (unsigned long)usb_diag.host_report_dropped);
+        printf("usb_audio open=%lu close=%lu out_open=%u in_open=%u last_open=%u last_close=%u out_pkts=%lu out_bytes=%lu in_pkts=%lu in_bytes=%lu\r\n",
+               (unsigned long)usb_diag.audio_open,
+               (unsigned long)usb_diag.audio_close,
+               (unsigned int)usb_diag.audio_out_open,
+               (unsigned int)usb_diag.audio_in_open,
+               (unsigned int)usb_diag.audio_last_open_intf,
+               (unsigned int)usb_diag.audio_last_close_intf,
+               (unsigned long)usb_diag.audio_out_packets,
+               (unsigned long)usb_diag.audio_out_bytes,
+               (unsigned long)usb_diag.audio_in_packets,
+               (unsigned long)usb_diag.audio_in_bytes);
+        printf("usb_haptics queued=%lu sample_pairs=%lu nonzero=%lu qdrop=%lu qdepth=%u peak=%u ds=%u mode=%u gain_q8=%u\r\n",
+               (unsigned long)usb_diag.audio_haptic_blocks,
+               (unsigned long)usb_diag.audio_haptic_sample_pairs,
+               (unsigned long)usb_diag.audio_haptic_nonzero_blocks,
+               (unsigned long)usb_diag.audio_haptic_queue_dropped,
+               (unsigned int)usb_diag.audio_haptic_queue_depth,
+               (unsigned int)usb_diag.audio_haptic_last_peak,
+               (unsigned int)usb_diag.audio_haptic_downsample,
+               (unsigned int)usb_diag.audio_haptic_resample_mode,
+               (unsigned int)usb_diag.audio_haptic_gain_q8);
+        printf("usb_audio_ctl volume=%lu mute=%lu freq=%lu spk_db=%d mic_db=%d spk_mute=%u mic_mute=%u\r\n",
+               (unsigned long)usb_diag.audio_set_volume,
+               (unsigned long)usb_diag.audio_set_mute,
+               (unsigned long)usb_diag.audio_set_freq,
+               usb_diag.audio_speaker_volume_db,
+               usb_diag.audio_mic_volume_db,
+               (unsigned int)usb_diag.audio_speaker_mute,
+               (unsigned int)usb_diag.audio_mic_mute);
+        printf("usb_regs dev_ctl=%08lx dev_adr=%08lx phy_tst=%08lx otg=%08lx glb_isr=%08lx dev_igr=%08lx\r\n",
+               (unsigned long)usb_diag.reg_dev_ctl,
+               (unsigned long)usb_diag.reg_dev_adr,
+               (unsigned long)usb_diag.reg_phy_tst,
+               (unsigned long)usb_diag.reg_otg_csr,
+               (unsigned long)usb_diag.reg_glb_isr,
+               (unsigned long)usb_diag.reg_dev_igr);
+        printf("usb_irq isg0=%08lx isg2=%08lx isg3=%08lx vdma=%08lx cxfps1=%08lx\r\n",
+               (unsigned long)usb_diag.reg_isg0,
+               (unsigned long)usb_diag.reg_isg2,
+               (unsigned long)usb_diag.reg_isg3,
+               (unsigned long)usb_diag.reg_vdma_ctrl,
+               (unsigned long)usb_diag.reg_vdma_cxfps1);
         printf("hidp_reports parsed=%lu full=%lu mic_audio=%lu log=%s\r\n",
                (unsigned long)hidp_parsed_reports,
                (unsigned long)hidp_full_reports,
                (unsigned long)hidp_mic_audio_reports,
                hidp_report_log_enabled ? "normal" : "quiet");
+        printf("hidp_haptics sent=%lu errors=%lu noconn=%lu last_err=%d\r\n",
+               (unsigned long)hidp_haptics_reports_sent,
+               (unsigned long)hidp_haptics_send_errors,
+               (unsigned long)hidp_haptics_not_connected,
+               hidp_haptics_last_error);
         if (have_last_dualsense_addr) {
             print_addr("last DualSense ", &last_dualsense_addr);
         }
@@ -1432,17 +2124,31 @@ int cmd_ds5(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(argv[1], "usb-pins") == 0) {
+        return m61_usb_pins_command(argc, argv);
+    }
+
+    if (strcmp(argv[1], "usb-reinit") == 0) {
+        return m61_usb_gamepad_reinit();
+    }
+
+    if (strcmp(argv[1], "usb-cycle") == 0) {
+        return m61_usb_cycle_command();
+    }
+
     if (strcmp(argv[1], "auto") == 0) {
         if (argc >= 3 && strcmp(argv[2], "off") == 0) {
             auto_start_enabled = false;
             auto_connect_after_scan = false;
             auto_sequence_started = false;
+            auto_reset_saved_addr_attempts();
             printf("auto-start disabled\r\n");
             return 0;
         }
 
         if (argc >= 3 && strcmp(argv[2], "on") == 0) {
             auto_start_enabled = true;
+            auto_reset_saved_addr_attempts();
             auto_schedule_retry(0);
             printf("auto-start enabled\r\n");
             return 0;
@@ -1451,6 +2157,7 @@ int cmd_ds5(int argc, char **argv)
         if (argc < 3 || strcmp(argv[2], "now") == 0) {
             auto_start_enabled = true;
             auto_connect_after_scan = false;
+            auto_reset_saved_addr_attempts();
             auto_schedule_retry(0);
             printf("auto-start requested now\r\n");
             return 0;
@@ -1499,8 +2206,9 @@ int cmd_ds5(int argc, char **argv)
             }
         }
 
-        connect_addr(&addr);
-        return 0;
+        err = connect_addr(&addr);
+        printf("connect request result=%d\r\n", err);
+        return err;
     }
 
     if (strcmp(argv[1], "security") == 0) {
@@ -1662,11 +2370,11 @@ int main(void)
 #if defined(BOARD_USB_VIA_GPIO)
     board_usb_gpio_init();
 #endif
+    m61_native_usb_gpio_init();
 
     uart0 = bflb_device_get_by_name("uart0");
     shell_init_with_task(uart0);
     status_led_init();
-    m61_usb_gamepad_init();
 
 #if defined(CONFIG_BT_SETTINGS)
     bflb_mtd_init();
@@ -1700,11 +2408,17 @@ int main(void)
                 NULL,
                 configMAX_PRIORITIES - 3,
                 &auto_task_handle);
+    xTaskCreate(usb_hid_bridge_task,
+                "usb_hid_bridge",
+                1536,
+                NULL,
+                configMAX_PRIORITIES - 4,
+                NULL);
     xTaskCreate(status_led_task,
                 "m61_led",
                 512,
                 NULL,
-                configMAX_PRIORITIES - 4,
+                configMAX_PRIORITIES - 5,
                 &led_task_handle);
 
     vTaskStartScheduler();

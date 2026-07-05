@@ -1,13 +1,14 @@
 # M61 DualSense USB Adapter
 
-这个 fork 已改成我们的 Ai-M61/BL616/BL618 DualSense 转 USB 项目。当前主线是 **M61 直接通过 Classic Bluetooth HIDP 连接 DualSense，再通过原生 USB Device 枚举成 USB HID Gamepad**。ESP32 相关代码保留为历史 fallback，不再是默认推进方向。
+这个 fork 已改成我们的 Ai-M61/BL616/BL618 DualSense 转 USB 项目。当前主线是 **M61 直接通过 Classic Bluetooth HIDP 连接 DualSense，再通过原生 USB Device 枚举成 DualSense 复合 USB 设备**。ESP32 相关代码保留为历史 fallback，不再是默认推进方向。
 
 ## 当前状态
 
 - M61 Classic Bluetooth HIDP 已实机打通：可以连接 DualSense，并持续收到 `report=0x31 mode=full` 输入报文。
 - M61 状态灯已接入：默认绿灯，蓝牙连接中蓝灯闪烁，连接成功蓝灯常亮，红灯默认关闭。
-- M61 固件已加入 USB HID Gamepad Device 输出：把 DualSense 的按键、方向键、左右摇杆、L2/R2 映射成标准 HID gamepad 报文。
-- USB HID 枚举还需要实机确认。电脑必须接到 BL618/M61 原生 `USB_DP/USB_DM`，板载 CH340 串口不会因为固件变成手柄。
+- M61 固件已加入 DualSense USB composite device：`VID_054C&PID_0CE6`，产品字符串 `DualSense Wireless Controller`，包含 Audio Control、Audio OUT、Audio IN 和 HID interface。
+- 已实测 Windows 能枚举 `USB Composite Device`、`HID-compliant game controller`、DualSense 扬声器和麦克风。电脑必须接到 BL618/M61 原生 `USB_DP/USB_DM`，板载 CH340 串口不会因为固件变成手柄。
+- 当前 USB Audio 只完成枚举和静音/drain 占位，HD haptics、扬声器、3.5mm、麦克风还未桥接到蓝牙 `0x36`。
 
 ## 重要硬件结论
 
@@ -69,7 +70,7 @@ python tools\flash_m61_firmware.py --app hidp-probe -p COM5 -b 115200 --manual-h
 
 ## 运行验证
 
-先确认 Windows 是否看到了 M61 原生 USB HID，而不是只看到 CH340 串口：
+先确认 Windows 是否看到了 M61 原生 DualSense 复合 USB 设备，而不是只看到 CH340 串口：
 
 ```powershell
 python tools\check_m61_usb_windows.py
@@ -106,22 +107,32 @@ python tools\capture_m61_hidp_log.py -p COM5 -o m61_usb_status.log --duration 3 
 
 ```text
 usb_gamepad ready=<0|1> configured=<0|1> busy=<0|1> sent=<n> dropped=<n>
+usb_audio open=<n> close=<n> out_open=<0|1> in_open=<0|1> ...
 hidp_reports parsed=<n> full=<n> mic_audio=<n> log=<normal|quiet>
 ```
 
 含义：
 
-- `configured=1`：电脑已经完成 USB HID 枚举。
+- `configured=1`：电脑已经完成 USB 复合设备配置。
 - `sent>0` 或持续增长：M61 正在把 DualSense 输入送到 USB HID endpoint。
 - `dropped` 增长且 `configured=0`：蓝牙输入正常，但 USB 端没有被电脑枚举。
+
+Windows 桌面测试程序：
+
+```powershell
+python tools\ds5_windows_test_app.py
+```
+
+这个工具会枚举 `VID_054C&PID_0CE6`，读取 HID input report `0x01`，显示摇杆、按键、触摸板、IMU、电量等字段，并可发送 USB output report `0x02` 测试 LED、普通震动和自适应扳机字段。
 
 ## 当前源码入口
 
 - `m61/dualsense_hidp_probe/main.c`：Classic BT HIDP 连接、配对、SDP、L2CAP、输入解析、自动重连、状态灯。
-- `m61/dualsense_hidp_probe/m61_usb_gamepad.c`：CherryUSB HID Gamepad Device 描述符和输入报文发送。
+- `m61/dualsense_hidp_probe/m61_usb_gamepad.c`：CherryUSB DualSense 复合 USB 描述符、Audio 占位和 HID 输入/输出报文。
 - `main/dualsense_parser.c`：DualSense 0x31/0x01 输入报文解析。
 - `main/dualsense_output.c`：DualSense 蓝牙 output/feature 初始化报文构造。
-- `tools/check_m61_usb_windows.py`：Windows 侧 USB 枚举检查，区分 M61 HID 与 CH340 串口。
+- `tools/check_m61_usb_windows.py`：Windows 侧 USB 枚举检查，区分 DualSense 复合设备与 CH340 串口。
+- `tools/ds5_windows_test_app.py`：Windows Tkinter 桌面测试工具，直接用 Windows HID API 读写 DualSense HID interface。
 - `tools/validate_m61_usb_hardware.py`：组合 Windows 枚举和 `ds5 status` 的 M61 原生 USB 硬件 gate。
 
 ## 离线检查

@@ -1,13 +1,13 @@
 #ifndef CHERRYUSB_CONFIG_H
 #define CHERRYUSB_CONFIG_H
 
-#include <stdio.h>
-
 #define CONFIG_USB_PRINTF(...) printf(__VA_ARGS__)
 
 #ifndef CONFIG_USB_DBG_LEVEL
 #define CONFIG_USB_DBG_LEVEL USB_DBG_INFO
 #endif
+
+#define CONFIG_USB_PRINTF_COLOR_ENABLE
 
 #ifdef CONFIG_USB_DCACHE_ENABLE
 #define CONFIG_USB_ALIGN_SIZE 32
@@ -21,6 +21,7 @@
 #define CONFIG_USBDEV_REQUEST_BUFFER_LEN 512
 #endif
 
+#define CONFIG_USBDEV_TEST_MODE
 #define CONFIG_USBDEV_ADVANCE_DESC
 
 #ifndef CONFIG_USBDEV_EP0_PRIO
@@ -29,6 +30,36 @@
 
 #ifndef CONFIG_USBDEV_EP0_STACKSIZE
 #define CONFIG_USBDEV_EP0_STACKSIZE 2048
+#endif
+
+#ifndef CONFIG_USBDEV_MSC_MAX_LUN
+#define CONFIG_USBDEV_MSC_MAX_LUN 1
+#endif
+
+#ifndef CONFIG_USBDEV_MSC_MAX_BUFSIZE
+#define CONFIG_USBDEV_MSC_MAX_BUFSIZE 1024
+#endif
+
+#ifndef CONFIG_USBDEV_MSC_MANUFACTURER_STRING
+#define CONFIG_USBDEV_MSC_MANUFACTURER_STRING ""
+#endif
+
+#ifndef CONFIG_USBDEV_MSC_PRODUCT_STRING
+#define CONFIG_USBDEV_MSC_PRODUCT_STRING ""
+#endif
+
+#ifndef CONFIG_USBDEV_MSC_VERSION_STRING
+#define CONFIG_USBDEV_MSC_VERSION_STRING "0.01"
+#endif
+
+#define CONFIG_USBDEV_MSC_THREAD
+
+#ifndef CONFIG_USBDEV_MSC_PRIO
+#define CONFIG_USBDEV_MSC_PRIO 15
+#endif
+
+#ifndef CONFIG_USBDEV_MSC_STACKSIZE
+#define CONFIG_USBDEV_MSC_STACKSIZE 2048
 #endif
 
 #ifndef CONFIG_USBDEV_MAX_BUS
@@ -45,7 +76,8 @@
 
 #define CONFIG_USB_MUSB_EP_NUM 8
 #define CONFIG_USB_MUSB_PIPE_NUM 8
-/* Full-speed is much more tolerant of hand-wired D+/D- leads than HS. */
+
+/* Keep the probe at full-speed first; DuPont D+/D- leads are usually not HS-safe. */
 /* #define CONFIG_USB_HS */
 
 #endif

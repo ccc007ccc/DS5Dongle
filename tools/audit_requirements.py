@@ -121,9 +121,9 @@ def collect_audit(args: argparse.Namespace) -> list[AuditItem]:
         add(items, "PASS", "legacy Pico/TinyUSB paths stay removed", ", ".join(legacy_paths))
 
     if contains_all(
-        "docs/PROJECT_STANDARD.md",
+            "docs/PROJECT_STANDARD.md",
         [
-            "DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC",
+            "DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC",
             "ESP32 双芯片方案仍保留为 fallback",
             "USB_DP",
             "USB_DM",
@@ -152,16 +152,18 @@ def collect_audit(args: argparse.Namespace) -> list[AuditItem]:
     if contains_all(
         "m61/dualsense_hidp_probe/m61_usb_gamepad.c",
         [
+            "usbd_audio_init_intf",
             "usbd_hid_init_intf",
-            "HID_GAMEPAD_REPORT_SIZE 9",
-            "M61 DualSense Gamepad",
+            "HID_DUALSENSE_REPORT_DESC_SIZE",
+            "DualSense Wireless Controller",
+            "AUDIO_OUT_PACKET_SIZE",
+            "HID_IN_EP 0x84",
             "usbd_ep_start_write",
-            "map_buttons",
         ],
     ):
-        add(items, "PASS", "M61 USB HID Gamepad output is implemented", "m61/dualsense_hidp_probe/m61_usb_gamepad.c")
+        add(items, "PASS", "M61 USB DualSense composite device is implemented", "m61/dualsense_hidp_probe/m61_usb_gamepad.c")
     else:
-        add(items, "FAIL", "M61 USB HID Gamepad output is implemented", "missing USB HID markers")
+        add(items, "FAIL", "M61 USB DualSense composite device is implemented", "missing USB composite markers")
 
     if contains_all(
         "m61/dualsense_hidp_probe/defconfig",
@@ -169,12 +171,13 @@ def collect_audit(args: argparse.Namespace) -> list[AuditItem]:
             "CONFIG_BT_BREDR =y",
             "CONFIG_CHERRYUSB_DEVICE =y",
             "CONFIG_CHERRYUSB_DEVICE_HID =y",
+            "CONFIG_CHERRYUSB_DEVICE_AUDIO =y",
             "CONFIG_M61_USB_GAMEPAD_ENABLE =y",
         ],
     ):
-        add(items, "PASS", "M61 firmware config enables BR/EDR and USB HID device", "m61/dualsense_hidp_probe/defconfig")
+        add(items, "PASS", "M61 firmware config enables BR/EDR and USB composite device", "m61/dualsense_hidp_probe/defconfig")
     else:
-        add(items, "FAIL", "M61 firmware config enables BR/EDR and USB HID device", "missing defconfig markers")
+        add(items, "FAIL", "M61 firmware config enables BR/EDR and USB composite device", "missing defconfig markers")
 
     if contains_all(
         "m61/dualsense_hidp_probe/main.c",
@@ -202,7 +205,7 @@ def collect_audit(args: argparse.Namespace) -> list[AuditItem]:
     add(
         items,
         "PASS" if usb_ok else "PENDING",
-        "PC enumerates M61 native USB HID gamepad and accepts reports",
+        "PC enumerates M61 native USB DualSense composite device and accepts reports",
         usb_evidence,
     )
 

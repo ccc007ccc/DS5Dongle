@@ -7,7 +7,7 @@
 M61-only 路线已经从“可行性探针”推进为当前主线：
 
 ```text
-DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC/主机
+DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC/主机
 ```
 
 本地 `bl_mcu_sdk` 不是 BLE-only。它包含 BR/EDR-capable controller libraries，例如：
@@ -48,7 +48,7 @@ m61/dualsense_hidp_probe
 它现在包含两部分：
 
 - Classic Bluetooth HIDP Host。
-- CherryUSB HID Gamepad Device。
+- CherryUSB DualSense composite device。
 
 构建：
 
@@ -126,24 +126,34 @@ m61 led test
 m61 led auto|off|red|green|blue|connecting|connected
 ```
 
-## USB HID 状态
+## USB DualSense 复合设备状态
 
-USB HID Gamepad 已加入固件：
+USB DualSense 复合设备代码已加入固件：
 
-- VID/PID：`1209:5D51`
-- 产品字符串：`M61 DualSense Gamepad`
-- 报文：16 buttons + hat + LX/LY/RX/RY/L2/R2
+- VID/PID：`054C:0CE6`
+- 产品字符串：`DualSense Wireless Controller`
+- USB interface：Audio Control、Audio OUT、Audio IN、DualSense HID
+- HID：321 字节 DualSense report descriptor，interface 3，IN `0x84`，OUT `0x03`
 
-当前最大未决点是硬件 USB 连接。M61 HID 手柄只能通过 BL618 原生 `USB_DP`/`USB_DM` 枚举；板载 CH340 串口不会变成 HID Gamepad。
+硬件 USB 正常启动枚举已经实测打通。M61 DualSense USB 设备只能通过 BL618 原生 `USB_DP`/`USB_DM` 枚举；板载 CH340 串口不会变成 USB 手柄或音频设备。
+
+当前 Windows 实测设备包括：
+
+- `USB Composite Device`：`USB\VID_054C&PID_0CE6\M61DS5COMPOSITE1`
+- `HID-compliant game controller`：`HID\VID_054C&PID_0CE6&MI_03...`
+- `DualSense Wireless Controller` 音频控制/媒体设备
+- `扬声器 (DualSense Wireless Controller)`
+- `耳机式麦克风 (DualSense Wireless Controller)`
 
 `ds5 status` 中的 USB 状态是主要证据：
 
 ```text
 usb_gamepad ready=<0|1> configured=<0|1> busy=<0|1> sent=<n> dropped=<n>
+usb_audio open=<n> close=<n> out_open=<0|1> in_open=<0|1> ...
 hidp_reports parsed=<n> full=<n> mic_audio=<n> log=<normal|quiet>
 ```
 
-- `configured=1` 证明 PC 完成 USB HID 枚举。
+- `configured=1` 证明 PC 完成 USB 配置。
 - `sent>0` 或持续增长证明输入报文正在写入 USB interrupt endpoint。
 - `configured=0` 且电脑只显示 CH340，说明需要接 BL618 原生 USB D+/D-。
 

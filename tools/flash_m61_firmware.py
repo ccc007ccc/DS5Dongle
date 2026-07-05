@@ -43,6 +43,16 @@ FIRMWARE_APPS = {
         bl616_bin="m61_dualsense_hidp_probe_bl616.bin",
         build_command="wsl bash /mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh",
     ),
+    "usb-ram-disk-probe": FirmwareApp(
+        directory=ROOT / "m61" / "usb_ram_disk_probe",
+        bl616_bin="m61_usb_ram_disk_probe_bl616.bin",
+        build_command="wsl bash /mnt/c/code/MCU/DS5Dongle/m61/usb_ram_disk_probe/build.sh",
+    ),
+    "usb-hid-gamepad-probe": FirmwareApp(
+        directory=ROOT / "m61" / "usb_hid_gamepad_probe",
+        bl616_bin="m61_usb_hid_gamepad_probe_bl616.bin",
+        build_command="wsl bash /mnt/c/code/MCU/DS5Dongle/m61/usb_hid_gamepad_probe/build.sh",
+    ),
 }
 
 
@@ -56,6 +66,11 @@ def read_pending(ser: serial.Serial, timeout_ms: int) -> bytes:
         else:
             time.sleep(0.02)
     return b"".join(chunks)
+
+
+def print_text_lossy(text: str) -> None:
+    encoding = sys.stdout.encoding or "utf-8"
+    print(text.encode(encoding, errors="replace").decode(encoding))
 
 
 def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
@@ -80,7 +95,7 @@ def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
             if output:
                 preview = output.decode("utf-8", errors="replace").strip()
                 if preview:
-                    print(preview)
+                    print_text_lossy(preview)
     except serial.SerialException as exc:
         print(f"warning: unable to request M61 reboot to ISP at {baud}: {exc}", file=sys.stderr)
         return False

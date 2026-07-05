@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the M61 native USB HID gamepad path on connected hardware."""
+"""Validate the M61 native USB DualSense composite path on connected hardware."""
 
 from __future__ import annotations
 
@@ -15,9 +15,21 @@ import check_m61_usb_windows
 SAMPLE_M61_PNP_JSON = r"""[
   {
     "Status": "OK",
+    "Class": "USB",
+    "FriendlyName": "USB Composite Device",
+    "InstanceId": "USB\\VID_054C&PID_0CE6\\M61DS5COMPOSITE1"
+  },
+  {
+    "Status": "OK",
     "Class": "HIDClass",
-    "FriendlyName": "M61 DualSense Gamepad",
-    "InstanceId": "HID\\VID_1209&PID_5D51\\0001"
+    "FriendlyName": "HID-compliant game controller",
+    "InstanceId": "HID\\VID_054C&PID_0CE6&MI_03\\0001"
+  },
+  {
+    "Status": "OK",
+    "Class": "MEDIA",
+    "FriendlyName": "USB Audio Device",
+    "InstanceId": "USB\\VID_054C&PID_0CE6&MI_00\\0001"
   }
 ]"""
 
@@ -26,6 +38,7 @@ SAMPLE_USB_STATUS_LOG = "\n".join([
     "bt_ready=1 pending=0 connected=1 hid_control=1 hid_interrupt=1 have_last=1",
     "auto=1 sequence=1 security=1 sdp=1 hidp=1 full_report=1 bringup=1/8",
     "usb_gamepad ready=1 configured=1 busy=0 sent=42 dropped=0",
+    "usb_audio open=2 close=0 out_open=1 in_open=1 last_open=2 last_close=0 out_pkts=12 out_bytes=4704 in_pkts=12 in_bytes=2352",
     "hidp_reports parsed=42 full=42 mic_audio=0 log=quiet",
 ])
 
@@ -39,8 +52,8 @@ def classify_windows(sample_json: Path | None) -> tuple[bool, str]:
 
     check_m61_usb_windows.print_report(classification)
     if classification.found_m61:
-        return True, "Windows sees VID_1209&PID_5D51 / M61 DualSense Gamepad"
-    return False, "Windows does not see the M61 native USB HID gamepad"
+        return True, "Windows sees VID_054C&PID_0CE6 / DualSense Wireless Controller"
+    return False, "Windows does not see the M61 native USB DualSense composite device"
 
 
 def capture_usb_status(port: str, baud: int, output: Path, duration: int) -> int:
@@ -114,11 +127,11 @@ def main(argv: list[str] | None = None) -> int:
         print("      The validator expects 'ds5 status' to print usb_gamepad ready/configured/sent.")
 
     if windows_ok and status_ok:
-        print("M61 native USB HID hardware gate passed.")
+        print("M61 native USB DualSense composite hardware gate passed.")
         print("Manual gamepad tester and 5 minute stability validation are still required.")
         return 0
 
-    print("M61 native USB HID hardware gate is still pending.")
+    print("M61 native USB DualSense composite hardware gate is still pending.")
     return 2
 
 

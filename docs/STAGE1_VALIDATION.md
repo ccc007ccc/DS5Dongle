@@ -3,17 +3,17 @@
 本文档只用于 ESP32 fallback 路线。当前默认主线是 M61-only：
 
 ```text
-DualSense --Classic Bluetooth HIDP--> M61 --USB HID Gamepad--> PC/主机
+DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC/主机
 ```
 
-除非 M61 Classic HIDP 或 BL618 原生 USB HID 被硬件证据否定，否则不要把新工作切回 ESP32 stage-1。
+除非 M61 Classic HIDP 或 BL618 原生 USB 被硬件证据否定，否则不要把新工作切回 ESP32 stage-1。
 
 ## fallback 目的
 
 验证 ESP32-WROOM-32 能使用 ESP-IDF Classic Bluetooth HID Host 连接真实 DualSense，并通过串口打印输入状态。这个路线的最终用途是：
 
 ```text
-DualSense --Classic BT HIDP--> ESP32 --UART2--> M61 --USB HID Gamepad--> PC/主机
+DualSense --Classic BT HIDP--> ESP32 --UART2--> M61 --USB DualSense composite--> PC/主机
 ```
 
 注意：
@@ -91,4 +91,4 @@ python tools\check_stage1_log.py stage1.log --min-reports 20 --min-duration-ms 3
 
 - ESP-IDF HID Host 是否能完整暴露 DualSense 私有报文和控制通道，需要实机验证。
 - 如果默认 HID Host 后端卡在 `report=0x01 mode=basic`，可切换 raw Classic L2CAP HIDP backend。
-- 该路线不会解决 M61 当前 USB 不枚举的问题；USB 手柄输出仍必须走 BL618 原生 `USB_DP`/`USB_DM`。
+- 该路线不会替代 M61 原生 USB；USB 输出仍必须走 BL618 原生 `USB_DP`/`USB_DM`。
