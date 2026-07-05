@@ -48,19 +48,21 @@
 - `完成` 2026-07-06 重测确认：补好掉线后，MSC probe 和 DS5 复合固件都能被 Windows 正常枚举；此前“未知 USB 设备/没反应”主要是线路/复位流程问题。
 - `部分` 当前主固件 USB 代码已改到 Sony `054C:0CE6`、`DualSense Wireless Controller` 和上游 4-interface 复合布局。
 - `完成` Windows 已实测枚举出 USB Composite、HID game controller、DualSense 扬声器和麦克风。
-- `部分` USB Audio Control/OUT/IN 已注册，Audio OUT 已取 ch2/ch3 生成 haptics block，Audio IN 仍先送静音包。
+- `部分` USB Audio Control/OUT/IN 已注册；Audio OUT 已拆分 ch0/ch1 扬声器 Opus encode 与 ch2/ch3 haptics，Audio IN 已接入手柄 mic Opus decode。
 - `部分` HID report descriptor 已是 321 字节 DualSense 描述符，HID interface/endpoint 已改为 interface 3、IN `0x84`、OUT `0x03`。
 - `部分` BT `0x31` full report 的 63 字节 payload 当前会 raw pass-through 到 USB report `0x01`。
 - `部分` USB HID output/feature 有转发雏形，`SetStateData` 已加入状态缓存和 flag 选择性合并；HD haptics-only `0x36` 已实现，待刷写实机验证。
 - `完成` 复合 USB 固件已构建、刷写成功；手动 RST/EN normal boot 后 Windows 枚举成功，`ds5 status` 显示 `configured=1`。
-- `部分` BT `0x36` 已有 haptics-only 路径；Opus、扬声器、3.5mm、麦克风音频功能链路还没有移植。
+- `部分` BT `0x36` 已有 haptics + speaker/headset Opus block 路径；麦克风 Opus decode -> USB IN 已实测通，扬声器 Opus encode 路径已完成 0.5s/2s tone 稳定性验证，仍需继续优化丢帧和音质。
 
 ## M61/CherryUSB 可用基础
 
 - 本地 SDK 已有 CherryUSB device audio 类：`components/usb/cherryusb/class/audio/usbd_audio.c`。
 - 本地 SDK 已有 UAC1 麦克风/扬声器多通道模板：`examples/cherryusb/cherryusb_cli/device_demo/uac_v1_mic_speaker_multichan_template.c`。
 - 当前 `m61/dualsense_hidp_probe/defconfig` 已启用 `CONFIG_CHERRYUSB_DEVICE_HID` 和 `CONFIG_CHERRYUSB_DEVICE_AUDIO`。
+- 当前 `m61/dualsense_hidp_probe/defconfig` 已启用 `CONFIG_MULTIMEDIA` 和 `CONFIG_OPUS`，构建链接 SDK `e907fp/libopus.a`，走 E907 FPU/优化 Opus 库。
 - 当前 `m61/dualsense_hidp_probe/usb_config.h` 配置了 `CONFIG_USB_MUSB_EP_NUM 8` 和 `CONFIG_USB_MUSB_PIPE_NUM 8`，端点数量理论上够先做 Audio OUT、Audio IN、HID IN、HID OUT。
+- 板载 AudioCodec 外设暂不用于 DualSense 桥接：当前音频链路是 USB Audio PCM 与手柄蓝牙 Opus 私有报文互转，不需要把声音送到板子的模拟 ADC/DAC。
 
 ## USB 枚举清单
 
@@ -70,8 +72,8 @@
 | 产品字符串 | `DualSense Wireless Controller` | 已改为同名 | 完成 | 每次描述符结构变化时修改 serial，避开 Windows 缓存 |
 | 设备类型 | USB Composite + Audio + HID | 代码已改为复合设备 | 完成 | Windows 看到 USB Composite Device |
 | Audio Control | interface 0 | 已注册 UAC1 interface 0 | 完成 | Windows 看到 `DualSense Wireless Controller` MEDIA 设备 |
-| Audio OUT | interface 1, EP `0x01`, iso adaptive, 392 bytes | 已注册；ch2/ch3 下采样为 haptics block | 部分 | 验证 `usb_audio out_pkts`、`usb_haptics queued/peak` 增长 |
-| Audio IN | interface 2, EP `0x82`, iso async, 196 bytes | 已注册并发送静音包 | 部分 | 验证 host 打开后 `usb_audio in_pkts` 增长 |
+| Audio OUT | interface 1, EP `0x01`, iso adaptive, 392 bytes | 已注册；ch0/ch1 进入 speaker Opus encode，ch2/ch3 下采样为 haptics block | 部分 | 0.5s/2s speaker tone 已确认不崩，继续优化丢帧并补上游 512->480 resample |
+| Audio IN | interface 2, EP `0x82`, iso async, 196 bytes | 已注册；BT mic Opus decode 后填充 stereo PCM | 部分 | 麦克风方向已见 `decoded/pcm_bytes` 增长，继续用 Windows 录音确认实际波形 |
 | HID interface | interface 3 | 已改为 interface 3 | 完成 | Windows 看到 `HID-compliant game controller` / `MI_03` |
 | HID IN endpoint | `0x84` | 已改为 `0x84` | 部分 | 验证输入 report |
 | HID OUT endpoint | `0x03` | 已改为 `0x03` | 完成 | `ds5 status` 看到 `usb_ds5 out=4 last_out=0x02/48` |
@@ -124,17 +126,18 @@
 | Feature GET | Host GET_REPORT -> BT feature get -> cache | 已有转发/cache | 部分 | 验证 calibration/firmware/hardware info |
 | Feature SET | Host SET_REPORT feature -> BT control with CRC | 已有雏形 | 部分 | 验证 `0x80`、Edge profile 相关不会误处理 |
 | 输出状态合并 | 上游 `state_mgr` 维护最新状态 | 已有 63-byte state cache 和 47-byte USB `0x02` flag 合并 | 部分 | 实机验证 LED/rumble/trigger 后再补配置持久化 |
+| DSX 高频 output | DSX/Steam 可能高频刷新 LED/rumble/trigger | 已新增 USB `0x02` 最新态合并、20ms 蓝牙转发限速、每轮 host/feature report 处理上限，并新增 `usb_ds5_last`/`bt_state`/`hidp_usb_output` 诊断 | 部分 | 刷写 SHA `C3586805...` 后用户确认 DSX 功能可用；串口 shell 在 DSX 高负载下仍可能无回包，继续优化调度/诊断 |
 
 ## 音频和触觉清单
 
 | 特性 | 上游路径 | 当前 M61 | 状态 | 下一步 |
 |---|---|---|---|---|
 | Windows 音频设备枚举 | USB Audio Control/Streaming | 手动 RST/EN normal boot 后已验证 | 完成 | 第一阶段只做枚举，不接 Opus |
-| 主机到手柄扬声器 | USB Audio OUT ch0/ch1 -> Opus -> BT `0x36` block `0x13` | 无 | 缺失 | 评估 BL616 CPU/RAM，再移植 Opus encode |
-| 主机到 3.5mm 耳机 | USB Audio OUT ch0/ch1 -> Opus -> BT `0x36` block `0x16` | 无 | 缺失 | 根据 headphones bit 切换 block id |
+| 主机到手柄扬声器 | USB Audio OUT ch0/ch1 -> Opus -> BT `0x36` block `0x13` | 已实现 Opus encode + 200B block；本版改为静态任务栈/静态 Opus 状态并加 `usb_codec` 诊断，0.5s/2s tone 已实测不崩 | 部分 | 2s tone 结果 `encoded=202/250`、`qdrop=32`、`hidp_audio sent=202`、`errors=0`；继续降低丢帧并补 512->480 resample |
+| 主机到 3.5mm 耳机 | USB Audio OUT ch0/ch1 -> Opus -> BT `0x36` block `0x16` | 已根据 full report headphones bit 切换 block id | 待验 | 插入耳机后重测路由和音量 |
 | HD haptics/高级震动 | USB Audio OUT ch2/ch3 -> 48 kHz to 3 kHz -> int8 -> BT `0x36` | 已实现 haptics-only 初版 | 部分 | 当前按上游 `SetMode(true,0,false)`、`SetRates(48000,3000)` 的整数 16:1 input-driven linear path 做 C 等价实现，保留跨包相位和一帧 lookahead |
-| 手柄 mic 到电脑 | BT mic payload -> Opus decode -> USB Audio IN | 当前识别后跳过 | 缺失 | 实现 mic queue、Opus decode、USB IN |
-| mic active 控制 | Host 打开 Audio IN alternate setting 后启用 | 已记录 `audio_in_open`，未接 BT mic | 部分 | 接入 report `0x32/0x36` mic enable |
+| 手柄 mic 到电脑 | BT mic payload -> Opus decode -> USB Audio IN | 已实现并实测 `mic_audio/decoded/pcm_bytes` 增长 | 部分 | 用 Windows/测试程序确认录音波形和增益 |
+| mic active 控制 | Host 打开 Audio IN alternate setting 后启用 | 已接 report `0x32` audio status，`0x36` mic active 位随 `audio_in_open` 更新 | 部分 | 验证应用关闭录音后手柄停止上报 mic audio |
 | 音量和 mute | UAC SET_CUR/GET_CUR -> `SetStateData` | 已记录 UAC 音量/静音，未接 `SetStateData` | 部分 | 参考上游 `usb.cpp` 更新 state cache |
 
 ## 蓝牙私有协议清单
@@ -147,8 +150,8 @@
 | Set protocol report | 已实现 | 部分 | 验证错误码和重试 |
 | Feature reports `0x09/0x20/0x22/0x05/0x70` | 已请求 | 部分 | 保存并回给 USB host |
 | BT output `0x31` | 已构造并带 CRC | 部分 | 接入完整 `state_mgr` |
-| BT output `0x32` | 已构造并带 CRC | 部分 | 用于 mic/audio 状态时需扩展 |
-| BT audio/haptics `0x36` | 已有 haptics-only framing、sequence、CRC、block `0x12`，HD haptics 转换已按上游 WDL 配置做等价实现 | 部分 | 扬声器/耳机 block `0x13/0x16` 仍缺失 |
+| BT output `0x32` | 已构造并带 CRC，当前用于 mic streaming enable/disable | 部分 | 继续核对上游 audio buffer length 行为 |
+| BT audio/haptics `0x36` | 已有 haptics block `0x12`、speaker block `0x13`、headset block `0x16`、CRC 和 sequence | 部分 | 扬声器/耳机音频需重测稳定性和音质，后续补上游 512->480 resample |
 | CRC32 seed `0xA2` | 已实现 | 完成 | 保持测试 |
 | Feature CRC seed `0x53` | 已实现 | 完成 | 保持测试 |
 
@@ -193,9 +196,10 @@ python tools\ds5_windows_test_app.py
 - `完成` 普通 HID rumble emulation：测试程序可触发；Steam HD 震动不走此路径。
 - `待验` 自适应扳机。
 - `待验` RGB lightbar、玩家灯、mute 灯。
-- `缺失` 手柄扬声器播放。
-- `缺失` 3.5mm 耳机输出。
-- `缺失` 手柄麦克风录音：当前只有 USB 麦克风枚举和 IN 静音包，未做 BT mic Opus decode。
+- `部分` 手柄扬声器播放：0.5s tone `encoded=40/50`、`qdrop=2`、`hidp_audio sent=40`，2s tone `encoded=202/250`、`qdrop=32`、`hidp_audio sent=202`，均 `errors=0`；需继续优化丢帧和主观音质。
+- `部分` DSX 兼容性：刷写 SHA `C3586805...` 后用户确认 DSX 功能可用，USB 枚举保持正常；串口 shell 在 DSX 高负载下仍可能无回包，后续继续查调度/锁/蓝牙发送阻塞。
+- `待验` 3.5mm 耳机输出：已按 headphones bit 切换 block `0x16`，需实测。
+- `部分` 手柄麦克风录音：BT mic Opus decode -> USB Audio IN 已实测有数据，需确认 Windows 录音端可听/可见波形。
 - `待验` 5 分钟连接稳定性、丢包、延迟。
 
 ## 推荐实现顺序
@@ -207,5 +211,5 @@ python tools\ds5_windows_test_app.py
 5. 验证 Windows 同时出现手柄、音频输出、麦克风输入。
 6. 验证 `SetStateData` 状态缓存：自适应扳机、LED、玩家灯、普通 rumble。
 7. `部分` 先实现 haptics-only：USB Audio OUT ch2/ch3 -> BT `0x36`，HD haptics 转换已改为上游 WDL 配置等价路径，待刷写验证。
-8. 再评估并实现扬声器/3.5mm 的 Opus encode。
-9. 最后实现 mic Opus decode -> USB Audio IN。
+8. `部分` 已实现扬声器/3.5mm 的 Opus encode；扬声器短时/2s 稳定性已过，下一步补上游 512->480 resample 并降低丢帧。
+9. `部分` 已实现 mic Opus decode -> USB Audio IN；继续验证 Windows 录音波形、增益和 mute 状态。

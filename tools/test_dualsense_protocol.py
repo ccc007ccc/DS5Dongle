@@ -29,6 +29,7 @@ DS5_OUTPUT_REPORT32_BT_LEN = 142
 DS5_OUTPUT_REPORT36_BT_LEN = 398
 DS5_OUTPUT_SET_STATE_LEN = 63
 DS5_OUTPUT_HAPTICS_BLOCK_LEN = 64
+DS5_OUTPUT_SPEAKER_OPUS_LEN = 200
 
 BUTTON_SQUARE = 1 << 0
 BUTTON_CROSS = 1 << 1
@@ -167,6 +168,19 @@ def make_output32(seq: int) -> bytes:
     return bytes(report)
 
 
+def make_output32_audio_status(seq: int, packet_counter: int, mic_active: bool) -> bytes:
+    report = bytearray(DS5_OUTPUT_REPORT32_BT_LEN)
+    report[0] = 0x32
+    report[1] = (seq & 0x0F) << 4
+    report[2] = 0x91
+    report[3] = 7
+    report[4] = 0xFF if mic_active else 0xFE
+    report[5:10] = bytes([64, 64, 64, 64, 64])
+    report[10] = packet_counter & 0xFF
+    fill_output_crc(report)
+    return bytes(report)
+
+
 def make_output36_haptics(seq: int, packet_counter: int, haptics: bytes, mic_active: bool = False) -> bytes:
     report = bytearray(DS5_OUTPUT_REPORT36_BT_LEN)
     report[0] = 0x36
@@ -182,6 +196,15 @@ def make_output36_haptics(seq: int, packet_counter: int, haptics: bytes, mic_act
     report[76] = 0x92
     report[77] = DS5_OUTPUT_HAPTICS_BLOCK_LEN
     report[78:78 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] = haptics
+    fill_output_crc(report)
+    return bytes(report)
+
+
+def make_output36_audio(seq: int, packet_counter: int, haptics: bytes, opus: bytes, headset: bool) -> bytes:
+    report = bytearray(make_output36_haptics(seq, packet_counter, haptics, mic_active=True))
+    report[142] = 0x96 if headset else 0x93
+    report[143] = DS5_OUTPUT_SPEAKER_OPUS_LEN
+    report[144:144 + DS5_OUTPUT_SPEAKER_OPUS_LEN] = opus
     fill_output_crc(report)
     return bytes(report)
 
@@ -409,14 +432,27 @@ def test_output_vectors() -> None:
     assert report32[4:4 + DS5_OUTPUT_SET_STATE_LEN] == DEFAULT_SET_STATE
     assert int.from_bytes(report32[-4:], "little") == dualsense_output_crc32(report32[:-4])
 
+    mic_status = make_output32_audio_status(2, 9, mic_active=True)
+    assert mic_status[0:11] == bytes([0x32, 0x20, 0x91, 7, 0xFF, 64, 64, 64, 64, 64, 9])
+    assert int.from_bytes(mic_status[-4:], "little") == dualsense_output_crc32(mic_status[:-4])
+
     haptics = bytes(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN))
-    report36 = make_output36_haptics(2, 3, haptics)
+    report36 = make_output36_haptics(3, 3, haptics)
     assert len(report36) == DS5_OUTPUT_REPORT36_BT_LEN
-    assert report36[0:13] == bytes([0x36, 0x20, 0x91, 7, 0xFE, 64, 64, 64, 64, 64, 3, 0x90, 63])
+    assert report36[0:13] == bytes([0x36, 0x30, 0x91, 7, 0xFE, 64, 64, 64, 64, 64, 3, 0x90, 63])
     assert report36[13:13 + DS5_OUTPUT_SET_STATE_LEN] == DEFAULT_SET_STATE
     assert report36[76:78] == bytes([0x92, DS5_OUTPUT_HAPTICS_BLOCK_LEN])
     assert report36[78:78 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] == haptics
     assert int.from_bytes(report36[-4:], "little") == dualsense_output_crc32(report36[:-4])
+
+    opus = bytes([0x55] * DS5_OUTPUT_SPEAKER_OPUS_LEN)
+    speaker_report = make_output36_audio(4, 10, haptics, opus, headset=False)
+    headset_report = make_output36_audio(5, 11, haptics, opus, headset=True)
+    assert speaker_report[142:144] == bytes([0x93, DS5_OUTPUT_SPEAKER_OPUS_LEN])
+    assert speaker_report[144:144 + DS5_OUTPUT_SPEAKER_OPUS_LEN] == opus
+    assert headset_report[142:144] == bytes([0x96, DS5_OUTPUT_SPEAKER_OPUS_LEN])
+    assert int.from_bytes(speaker_report[-4:], "little") == dualsense_output_crc32(speaker_report[:-4])
+    assert int.from_bytes(headset_report[-4:], "little") == dualsense_output_crc32(headset_report[:-4])
 
 
 def test_c_source_contract() -> None:
@@ -454,8 +490,11 @@ def test_c_source_contract() -> None:
         "DS5_OUTPUT_REPORT32_BT_LEN",
         "DS5_OUTPUT_REPORT36_BT_LEN",
         "dualsense_output_make_report36_haptics",
+        "dualsense_output_make_report36_audio",
+        "dualsense_output_make_report32_audio_status",
         "report[2] = DS5_OUTPUT_AUDIO_TAG;",
         "report[76] = DS5_OUTPUT_HAPTICS_TAG;",
+        "report[142] = (uint8_t)(speaker_block_id | 0x80);",
         "report[2] = DS5_OUTPUT_TAG;",
         "report[2] = 0x90;",
         "report[3] = DS5_OUTPUT_SET_STATE_LEN;",
@@ -478,6 +517,22 @@ def test_c_source_contract() -> None:
     ]
     for snippet in m61_haptics_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB haptics snippet: {snippet}"
+    m61_audio_snippets = [
+        "#include \"opus/opus.h\"",
+        "opus_encoder_get_size",
+        "opus_encoder_init",
+        "opus_encode(encoder",
+        "opus_decoder_get_size",
+        "opus_decoder_init",
+        "opus_decode(decoder",
+        "xTaskCreateStatic(audio_codec_task",
+        "process_audio_speaker(audio_out_buffer, nbytes)",
+        "m61_usb_gamepad_submit_mic_opus",
+        "m61_usb_gamepad_take_speaker_opus",
+        "AUDIO_IN_STREAM_PACKET_SIZE",
+    ]
+    for snippet in m61_audio_snippets:
+        assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
     assert "m61_haptics_resampler" not in m61_cmake_source
     assert "resample.cpp" not in m61_cmake_source
 

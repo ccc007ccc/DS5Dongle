@@ -60,6 +60,18 @@
 #define HIDP_TX_MAX_LEN 512
 #define DS5_LAST_ADDR_KEY "ds5_last_bda"
 #define DS5_AUDIO_BUFFER_LENGTH_DEFAULT 64
+#define DS5_STATE_FLAGS0 0
+#define DS5_STATE_FLAGS1 1
+#define DS5_STATE_RUMBLE_RIGHT 2
+#define DS5_STATE_RUMBLE_LEFT 3
+#define DS5_STATE_AUDIO_CONTROL 7
+#define DS5_STATE_MUTE_LIGHT 8
+#define DS5_STATE_AUDIO_MUTE 9
+#define DS5_STATE_FLAGS2 38
+#define DS5_STATE_LIGHT_FADE 41
+#define DS5_STATE_LIGHT_BRIGHTNESS 42
+#define DS5_STATE_PLAYER_LIGHTS 43
+#define DS5_STATE_LED_RED 44
 
 #ifndef CONFIG_M61_DS5_AUTO_START
 #define CONFIG_M61_DS5_AUTO_START 1
@@ -87,6 +99,18 @@
 
 #ifndef CONFIG_M61_DS5_AUTO_BRINGUP_RETRY_MS
 #define CONFIG_M61_DS5_AUTO_BRINGUP_RETRY_MS 750
+#endif
+
+#ifndef CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS
+#define CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS 20
+#endif
+
+#ifndef CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK
+#define CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK 2
+#endif
+
+#ifndef CONFIG_M61_DS5_HOST_REPORTS_PER_TICK
+#define CONFIG_M61_DS5_HOST_REPORTS_PER_TICK 4
 #endif
 
 #ifndef CONFIG_M61_USB_START_AFTER_BT_TIMEOUT_MS
@@ -174,6 +198,21 @@ static uint32_t hidp_haptics_reports_sent;
 static uint32_t hidp_haptics_send_errors;
 static uint32_t hidp_haptics_not_connected;
 static int hidp_haptics_last_error;
+static uint32_t hidp_audio_reports_sent;
+static uint32_t hidp_audio_status_reports_sent;
+static uint32_t hidp_audio_send_errors;
+static uint32_t hidp_audio_not_connected;
+static int hidp_audio_last_error;
+static uint32_t hidp_usb_output_reports_forwarded;
+static uint32_t hidp_usb_output_reports_coalesced;
+static uint32_t hidp_usb_output_reports_failed;
+static int hidp_usb_output_last_error;
+static m61_usb_gamepad_host_report_t hidp_usb_output_latest;
+static bool hidp_usb_output_pending;
+static TickType_t hidp_usb_output_next_tick;
+static bool hidp_mic_status_known;
+static bool hidp_last_mic_active;
+static bool dualsense_headphones_connected;
 static uint8_t auto_bringup_attempts;
 static uint8_t auto_saved_addr_attempts;
 static TickType_t br_connected_tick;
@@ -256,6 +295,20 @@ static void auto_reset_link_state(void)
     hidp_parsed_reports = 0;
     hidp_full_reports = 0;
     hidp_mic_audio_reports = 0;
+    hidp_audio_reports_sent = 0;
+    hidp_audio_status_reports_sent = 0;
+    hidp_audio_send_errors = 0;
+    hidp_audio_not_connected = 0;
+    hidp_audio_last_error = 0;
+    hidp_usb_output_reports_forwarded = 0;
+    hidp_usb_output_reports_coalesced = 0;
+    hidp_usb_output_reports_failed = 0;
+    hidp_usb_output_last_error = 0;
+    hidp_usb_output_pending = false;
+    hidp_usb_output_next_tick = 0;
+    hidp_mic_status_known = false;
+    hidp_last_mic_active = false;
+    dualsense_headphones_connected = false;
     auto_bringup_attempts = 0;
     auto_next_hidp_tick = 0;
     auto_next_bringup_tick = 0;
@@ -960,6 +1013,8 @@ static void hidp_l2cap_disconnected(struct bt_l2cap_chan *chan)
 
     printf("HIDP %s disconnected\r\n", channel->name);
     channel->connected = false;
+    hidp_mic_status_known = false;
+    hidp_last_mic_active = false;
     auto_hidp_requested = false;
     auto_next_hidp_tick =
         xTaskGetTickCount() + pdMS_TO_TICKS(DS5_DISCONNECT_CLEANUP_DELAY_MS);
@@ -1001,6 +1056,9 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
             dualsense_format_state(&state, line, sizeof(line));
             printf("parsed %s\r\n", line);
         }
+        if (state.is_full_report) {
+            dualsense_headphones_connected = state.headphones;
+        }
         if (state.is_full_report && parse.payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN) {
             m61_usb_gamepad_send_report01(buf->data + parse.payload_offset,
                                           M61_DS5_USB_INPUT_PAYLOAD_LEN);
@@ -1016,8 +1074,12 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
         }
     } else if (channel == &hid_interrupt && parse.kind == DS5_REPORT_MIC_AUDIO) {
         hidp_mic_audio_reports++;
+        if (parse.payload_len > 1U) {
+            m61_usb_gamepad_submit_mic_opus(buf->data + parse.payload_offset + 1U,
+                                            parse.payload_len - 1U);
+        }
         if (hidp_report_log_enabled) {
-            printf("parsed microphone/audio payload skipped len=%u\r\n", buf->len);
+            printf("parsed microphone/audio payload len=%u\r\n", buf->len);
         }
     }
     return 0;
@@ -1363,42 +1425,119 @@ static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool inc
     return hidp_send_data_output(report31, sizeof(report31));
 }
 
-static int hidp_send_haptics_report(const uint8_t *haptics)
+static int hidp_send_audio_status_report(bool mic_active)
 {
-    uint8_t report36[DS5_OUTPUT_REPORT36_BT_LEN];
+    uint8_t report32[DS5_OUTPUT_REPORT32_BT_LEN];
     int err;
 
-    if (!haptics) {
-        return -EINVAL;
-    }
-
     if (!hid_interrupt.connected) {
-        hidp_haptics_not_connected++;
-        hidp_haptics_last_error = -ENOTCONN;
+        hidp_audio_not_connected++;
+        hidp_audio_last_error = -ENOTCONN;
         return -ENOTCONN;
     }
 
-    if (!dualsense_output_make_report36_haptics(&output_ctx,
-                                                haptics,
-                                                M61_DS5_HAPTICS_BLOCK_LEN,
-                                                false,
-                                                DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
-                                                report36,
-                                                sizeof(report36))) {
-        hidp_haptics_send_errors++;
-        hidp_haptics_last_error = -EINVAL;
+    if (!dualsense_output_make_report32_audio_status(&output_ctx,
+                                                     mic_active,
+                                                     DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                                     report32,
+                                                     sizeof(report32))) {
+        hidp_audio_send_errors++;
+        hidp_audio_last_error = -EINVAL;
+        return -EINVAL;
+    }
+
+    err = hidp_send_data_output(report32, sizeof(report32));
+    if (err) {
+        hidp_audio_send_errors++;
+        hidp_audio_last_error = err;
+    } else {
+        hidp_audio_status_reports_sent++;
+        hidp_audio_last_error = 0;
+    }
+    return err;
+}
+
+static int hidp_send_audio_report(const uint8_t *haptics,
+                                  const uint8_t *speaker_opus,
+                                  bool headset,
+                                  bool mic_active)
+{
+    static const uint8_t zero_haptics[M61_DS5_HAPTICS_BLOCK_LEN];
+    uint8_t report36[DS5_OUTPUT_REPORT36_BT_LEN];
+    const uint8_t *haptics_payload = haptics;
+    uint8_t speaker_block = headset ? DS5_OUTPUT_HEADSET_BLOCK_ID : DS5_OUTPUT_SPEAKER_BLOCK_ID;
+    bool has_haptics = haptics != NULL;
+    bool has_speaker = speaker_opus != NULL;
+    int err;
+
+    if (!has_haptics && !has_speaker) {
+        return -EINVAL;
+    }
+    if (!hid_interrupt.connected) {
+        if (has_haptics) {
+            hidp_haptics_not_connected++;
+            hidp_haptics_last_error = -ENOTCONN;
+        }
+        if (has_speaker) {
+            hidp_audio_not_connected++;
+            hidp_audio_last_error = -ENOTCONN;
+        }
+        return -ENOTCONN;
+    }
+    if (!haptics_payload && has_speaker) {
+        haptics_payload = zero_haptics;
+    }
+
+    if (!dualsense_output_make_report36_audio(&output_ctx,
+                                              haptics_payload,
+                                              haptics_payload ? M61_DS5_HAPTICS_BLOCK_LEN : 0,
+                                              speaker_opus,
+                                              has_speaker ? M61_DS5_SPEAKER_OPUS_LEN : 0,
+                                              speaker_block,
+                                              mic_active,
+                                              DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                              report36,
+                                              sizeof(report36))) {
+        if (has_haptics) {
+            hidp_haptics_send_errors++;
+            hidp_haptics_last_error = -EINVAL;
+        }
+        if (has_speaker) {
+            hidp_audio_send_errors++;
+            hidp_audio_last_error = -EINVAL;
+        }
         return -EINVAL;
     }
 
     err = hidp_send_data_output(report36, sizeof(report36));
     if (err) {
-        hidp_haptics_send_errors++;
-        hidp_haptics_last_error = err;
+        if (has_haptics) {
+            hidp_haptics_send_errors++;
+            hidp_haptics_last_error = err;
+        }
+        if (has_speaker) {
+            hidp_audio_send_errors++;
+            hidp_audio_last_error = err;
+        }
     } else {
-        hidp_haptics_reports_sent++;
-        hidp_haptics_last_error = 0;
+        if (has_haptics) {
+            hidp_haptics_reports_sent++;
+            hidp_haptics_last_error = 0;
+        }
+        if (has_speaker) {
+            hidp_audio_reports_sent++;
+            hidp_audio_last_error = 0;
+        }
     }
     return err;
+}
+
+static int hidp_send_haptics_report(const uint8_t *haptics)
+{
+    return hidp_send_audio_report(haptics,
+                                  NULL,
+                                  dualsense_headphones_connected,
+                                  m61_usb_gamepad_audio_in_active());
 }
 
 static void handle_usb_host_report(const m61_usb_gamepad_host_report_t *report)
@@ -1421,10 +1560,15 @@ static void handle_usb_host_report(const m61_usb_gamepad_host_report_t *report)
 
         err = hidp_send_usb_output_report(payload, payload_len, includes_report_id);
         if (err) {
+            hidp_usb_output_reports_failed++;
+            hidp_usb_output_last_error = err;
             printf("usb output report forward failed id=0x%02x len=%u err=%d\r\n",
                    includes_report_id ? payload[0] : report_id,
                    (unsigned int)payload_len,
                    err);
+        } else {
+            hidp_usb_output_reports_forwarded++;
+            hidp_usb_output_last_error = 0;
         }
         return;
     }
@@ -1454,9 +1598,23 @@ static void usb_hid_bridge_task(void *pvParameters)
         uint32_t requested_len;
         m61_usb_gamepad_host_report_t host_report;
         uint8_t haptics[M61_DS5_HAPTICS_BLOCK_LEN];
+        uint8_t speaker_opus[M61_DS5_SPEAKER_OPUS_LEN];
         uint8_t haptics_sent_this_tick = 0;
+        uint8_t speaker_sent_this_tick = 0;
+        uint8_t feature_reports_this_tick = 0;
+        uint8_t host_reports_this_tick = 0;
+        bool mic_active = m61_usb_gamepad_audio_in_active();
 
-        while (m61_usb_gamepad_take_feature_request(&feature_report_id, &requested_len)) {
+        if (hid_interrupt.connected &&
+            (!hidp_mic_status_known || hidp_last_mic_active != mic_active)) {
+            if (hidp_send_audio_status_report(mic_active) == 0) {
+                hidp_mic_status_known = true;
+                hidp_last_mic_active = mic_active;
+            }
+        }
+
+        while (feature_reports_this_tick < CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK &&
+               m61_usb_gamepad_take_feature_request(&feature_report_id, &requested_len)) {
             int err = hidp_get_report(HIDP_REPORT_TYPE_FEATURE, feature_report_id);
             if (err && err != -ENOTCONN) {
                 printf("usb feature get forward failed id=0x%02x requested=%lu err=%d\r\n",
@@ -1464,10 +1622,43 @@ static void usb_hid_bridge_task(void *pvParameters)
                        (unsigned long)requested_len,
                        err);
             }
+            feature_reports_this_tick++;
         }
 
-        while (m61_usb_gamepad_take_host_report(&host_report)) {
-            handle_usb_host_report(&host_report);
+        while (host_reports_this_tick < CONFIG_M61_DS5_HOST_REPORTS_PER_TICK &&
+               m61_usb_gamepad_take_host_report(&host_report)) {
+            if (host_report.report_type == HIDP_REPORT_TYPE_OUTPUT) {
+                if (hidp_usb_output_pending) {
+                    hidp_usb_output_reports_coalesced++;
+                }
+                hidp_usb_output_latest = host_report;
+                hidp_usb_output_pending = true;
+            } else {
+                handle_usb_host_report(&host_report);
+            }
+            host_reports_this_tick++;
+        }
+
+        if (hidp_usb_output_pending &&
+            tick_due(xTaskGetTickCount(), hidp_usb_output_next_tick)) {
+            handle_usb_host_report(&hidp_usb_output_latest);
+            hidp_usb_output_pending = false;
+            hidp_usb_output_next_tick =
+                xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS);
+        }
+
+        while (speaker_sent_this_tick < 2 &&
+               m61_usb_gamepad_take_speaker_opus(speaker_opus, sizeof(speaker_opus))) {
+            bool have_haptics = m61_usb_gamepad_take_haptics_block(haptics, sizeof(haptics));
+
+            hidp_send_audio_report(have_haptics ? haptics : NULL,
+                                   speaker_opus,
+                                   dualsense_headphones_connected,
+                                   mic_active);
+            speaker_sent_this_tick++;
+            if (have_haptics) {
+                haptics_sent_this_tick++;
+            }
         }
 
         while (haptics_sent_this_tick < 4 &&
@@ -2060,6 +2251,36 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.feature_cache_misses,
                (unsigned long)usb_diag.feature_cache_stores,
                (unsigned long)usb_diag.host_report_dropped);
+        printf("usb_ds5_last flags=%02x/%02x/%02x rumble=%u/%u audio=0x%02x mute=%02x/%02x player=0x%02x light=%u/%u led=%02x%02x%02x\r\n",
+               (unsigned int)usb_diag.last_out_flags0,
+               (unsigned int)usb_diag.last_out_flags1,
+               (unsigned int)usb_diag.last_out_flags2,
+               (unsigned int)usb_diag.last_out_rumble_right,
+               (unsigned int)usb_diag.last_out_rumble_left,
+               (unsigned int)usb_diag.last_out_audio_control,
+               (unsigned int)usb_diag.last_out_mute_light,
+               (unsigned int)usb_diag.last_out_audio_mute,
+               (unsigned int)usb_diag.last_out_player_lights,
+               (unsigned int)usb_diag.last_out_light_fade,
+               (unsigned int)usb_diag.last_out_light_brightness,
+               (unsigned int)usb_diag.last_out_led_red,
+               (unsigned int)usb_diag.last_out_led_green,
+               (unsigned int)usb_diag.last_out_led_blue);
+        printf("bt_state flags=%02x/%02x/%02x rumble=%u/%u audio=0x%02x mute=%02x/%02x player=0x%02x light=%u/%u led=%02x%02x%02x\r\n",
+               (unsigned int)output_ctx.set_state[DS5_STATE_FLAGS0],
+               (unsigned int)output_ctx.set_state[DS5_STATE_FLAGS1],
+               (unsigned int)output_ctx.set_state[DS5_STATE_FLAGS2],
+               (unsigned int)output_ctx.set_state[DS5_STATE_RUMBLE_RIGHT],
+               (unsigned int)output_ctx.set_state[DS5_STATE_RUMBLE_LEFT],
+               (unsigned int)output_ctx.set_state[DS5_STATE_AUDIO_CONTROL],
+               (unsigned int)output_ctx.set_state[DS5_STATE_MUTE_LIGHT],
+               (unsigned int)output_ctx.set_state[DS5_STATE_AUDIO_MUTE],
+               (unsigned int)output_ctx.set_state[DS5_STATE_PLAYER_LIGHTS],
+               (unsigned int)output_ctx.set_state[DS5_STATE_LIGHT_FADE],
+               (unsigned int)output_ctx.set_state[DS5_STATE_LIGHT_BRIGHTNESS],
+               (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED],
+               (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 1],
+               (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 2]);
         printf("usb_audio open=%lu close=%lu out_open=%u in_open=%u last_open=%u last_close=%u out_pkts=%lu out_bytes=%lu in_pkts=%lu in_bytes=%lu\r\n",
                (unsigned long)usb_diag.audio_open,
                (unsigned long)usb_diag.audio_close,
@@ -2081,6 +2302,34 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)usb_diag.audio_haptic_downsample,
                (unsigned int)usb_diag.audio_haptic_resample_mode,
                (unsigned int)usb_diag.audio_haptic_gain_q8);
+        printf("usb_speaker frames=%lu encoded=%lu enc_err=%lu qdrop=%lu odrop=%lu qdepth=%u oqdepth=%u\r\n",
+               (unsigned long)usb_diag.audio_speaker_frames,
+               (unsigned long)usb_diag.audio_speaker_encoded,
+               (unsigned long)usb_diag.audio_speaker_encode_errors,
+               (unsigned long)usb_diag.audio_speaker_queue_dropped,
+               (unsigned long)usb_diag.audio_speaker_opus_dropped,
+               (unsigned int)usb_diag.audio_speaker_queue_depth,
+               (unsigned int)usb_diag.audio_speaker_opus_queue_depth);
+        printf("usb_mic opus=%lu odrop=%lu decoded=%lu dec_err=%lu pcm_bytes=%lu underflow=%lu oqdepth=%u\r\n",
+               (unsigned long)usb_diag.audio_mic_opus_packets,
+               (unsigned long)usb_diag.audio_mic_opus_dropped,
+               (unsigned long)usb_diag.audio_mic_decoded,
+               (unsigned long)usb_diag.audio_mic_decode_errors,
+               (unsigned long)usb_diag.audio_mic_pcm_bytes,
+               (unsigned long)usb_diag.audio_mic_underflow,
+               (unsigned int)usb_diag.audio_mic_opus_queue_depth);
+        printf("usb_codec started=%u stage=%u enc_ready=%u dec_ready=%u enc_size=%lu dec_size=%lu enc_err=%d dec_err=%d stack_hwm=%lu heap=%lu heap_min=%lu\r\n",
+               (unsigned int)usb_diag.audio_codec_started,
+               (unsigned int)usb_diag.audio_codec_stage,
+               (unsigned int)usb_diag.audio_codec_encoder_ready,
+               (unsigned int)usb_diag.audio_codec_decoder_ready,
+               (unsigned long)usb_diag.audio_codec_encoder_size,
+               (unsigned long)usb_diag.audio_codec_decoder_size,
+               usb_diag.audio_codec_encoder_error,
+               usb_diag.audio_codec_decoder_error,
+               (unsigned long)usb_diag.audio_codec_stack_hwm,
+               (unsigned long)usb_diag.audio_codec_heap_free,
+               (unsigned long)usb_diag.audio_codec_heap_min);
         printf("usb_audio_ctl volume=%lu mute=%lu freq=%lu spk_db=%d mic_db=%d spk_mute=%u mic_mute=%u\r\n",
                (unsigned long)usb_diag.audio_set_volume,
                (unsigned long)usb_diag.audio_set_mute,
@@ -2112,6 +2361,21 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)hidp_haptics_send_errors,
                (unsigned long)hidp_haptics_not_connected,
                hidp_haptics_last_error);
+        printf("hidp_audio sent=%lu status=%lu errors=%lu noconn=%lu last_err=%d mic_active=%u headset=%u\r\n",
+               (unsigned long)hidp_audio_reports_sent,
+               (unsigned long)hidp_audio_status_reports_sent,
+               (unsigned long)hidp_audio_send_errors,
+               (unsigned long)hidp_audio_not_connected,
+               hidp_audio_last_error,
+               m61_usb_gamepad_audio_in_active() ? 1U : 0U,
+               dualsense_headphones_connected ? 1U : 0U);
+        printf("hidp_usb_output forwarded=%lu coalesced=%lu failed=%lu last_err=%d pending=%u min_interval_ms=%u\r\n",
+               (unsigned long)hidp_usb_output_reports_forwarded,
+               (unsigned long)hidp_usb_output_reports_coalesced,
+               (unsigned long)hidp_usb_output_reports_failed,
+               hidp_usb_output_last_error,
+               hidp_usb_output_pending ? 1U : 0U,
+               (unsigned int)CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS);
         if (have_last_dualsense_addr) {
             print_addr("last DualSense ", &last_dualsense_addr);
         }
@@ -2412,13 +2676,13 @@ int main(void)
                 "usb_hid_bridge",
                 1536,
                 NULL,
-                configMAX_PRIORITIES - 4,
+                configMAX_PRIORITIES - 5,
                 NULL);
     xTaskCreate(status_led_task,
                 "m61_led",
                 512,
                 NULL,
-                configMAX_PRIORITIES - 5,
+                configMAX_PRIORITIES - 6,
                 &led_task_handle);
 
     vTaskStartScheduler();

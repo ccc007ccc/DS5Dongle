@@ -15,6 +15,8 @@ extern "C" {
 #define M61_DS5_USB_OUTPUT_MAX_LEN 64
 #define M61_DS5_USB_FEATURE_MAX_LEN 64
 #define M61_DS5_HAPTICS_BLOCK_LEN 64
+#define M61_DS5_SPEAKER_OPUS_LEN 200
+#define M61_DS5_MIC_OPUS_LEN 71
 
 typedef struct {
     uint8_t report_id;
@@ -32,6 +34,9 @@ void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len);
 bool m61_usb_gamepad_take_host_report(m61_usb_gamepad_host_report_t *report);
 bool m61_usb_gamepad_take_haptics_block(uint8_t *data, size_t len);
+bool m61_usb_gamepad_take_speaker_opus(uint8_t *data, size_t len);
+void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len);
+bool m61_usb_gamepad_audio_in_active(void);
 bool m61_usb_gamepad_ready(void);
 bool m61_usb_gamepad_configured(void);
 bool m61_usb_gamepad_busy(void);
@@ -68,6 +73,24 @@ typedef struct {
     uint32_t audio_haptic_sample_pairs;
     uint32_t audio_haptic_nonzero_blocks;
     uint32_t audio_haptic_queue_dropped;
+    uint32_t audio_speaker_frames;
+    uint32_t audio_speaker_encoded;
+    uint32_t audio_speaker_encode_errors;
+    uint32_t audio_speaker_queue_dropped;
+    uint32_t audio_speaker_opus_dropped;
+    uint32_t audio_mic_opus_packets;
+    uint32_t audio_mic_opus_dropped;
+    uint32_t audio_mic_decoded;
+    uint32_t audio_mic_decode_errors;
+    uint32_t audio_mic_pcm_bytes;
+    uint32_t audio_mic_underflow;
+    uint32_t audio_codec_stack_hwm;
+    uint32_t audio_codec_heap_free;
+    uint32_t audio_codec_heap_min;
+    uint32_t audio_codec_encoder_size;
+    uint32_t audio_codec_decoder_size;
+    int audio_codec_encoder_error;
+    int audio_codec_decoder_error;
     uint32_t audio_set_volume;
     uint32_t audio_set_mute;
     uint32_t audio_set_freq;
@@ -76,11 +99,32 @@ typedef struct {
     uint8_t last_report_id;
     uint8_t last_report_type;
     uint8_t last_out_report_id;
+    uint8_t last_out_flags0;
+    uint8_t last_out_flags1;
+    uint8_t last_out_flags2;
+    uint8_t last_out_rumble_right;
+    uint8_t last_out_rumble_left;
+    uint8_t last_out_audio_control;
+    uint8_t last_out_mute_light;
+    uint8_t last_out_audio_mute;
+    uint8_t last_out_player_lights;
+    uint8_t last_out_light_fade;
+    uint8_t last_out_light_brightness;
+    uint8_t last_out_led_red;
+    uint8_t last_out_led_green;
+    uint8_t last_out_led_blue;
     uint8_t audio_last_open_intf;
     uint8_t audio_last_close_intf;
     uint8_t audio_out_open;
     uint8_t audio_in_open;
     uint8_t audio_haptic_queue_depth;
+    uint8_t audio_speaker_queue_depth;
+    uint8_t audio_speaker_opus_queue_depth;
+    uint8_t audio_mic_opus_queue_depth;
+    uint8_t audio_codec_started;
+    uint8_t audio_codec_stage;
+    uint8_t audio_codec_encoder_ready;
+    uint8_t audio_codec_decoder_ready;
     uint8_t audio_haptic_last_peak;
     uint8_t audio_haptic_downsample;
     uint8_t audio_haptic_resample_mode;
