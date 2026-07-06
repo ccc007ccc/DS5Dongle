@@ -1368,20 +1368,13 @@ int m61_esp32_transport_set_feature(uint8_t report_id, const uint8_t *data, size
     return err;
 }
 
-int m61_esp32_transport_connect(const uint8_t *bda, size_t len)
+static int send_bt_connect_request(const uint8_t *payload, size_t len)
 {
     int err;
 
-    if (bda != NULL && len != 6U) {
-        s_transport.stats.last_error = -EINVAL;
-        return -EINVAL;
-    }
     err = require_peer_link_ready();
     if (err < 0) {
         return err;
-    }
-    if (bda == NULL) {
-        len = 0;
     }
 
     err = send_payload(DS5_DUAL_MSG_BT_CONNECT,
@@ -1389,12 +1382,39 @@ int m61_esp32_transport_connect(const uint8_t *bda, size_t len)
                        DS5_DUAL_CHANNEL_CTRL,
                        DS5_DUAL_PRIORITY_CONTROL,
                        0,
-                       bda,
+                       payload,
                        len);
     if (err == 0) {
         s_transport.stats.tx_bt_connect++;
     }
     return err;
+}
+
+int m61_esp32_transport_connect(const uint8_t *bda, size_t len)
+{
+    if (bda != NULL && len != 6U) {
+        s_transport.stats.last_error = -EINVAL;
+        return -EINVAL;
+    }
+    if (bda == NULL) {
+        len = 0;
+    }
+
+    return send_bt_connect_request(bda, len);
+}
+
+int m61_esp32_transport_connect_mode(uint8_t mode)
+{
+    if (mode == DS5_DUAL_BT_CONNECT_AUTO) {
+        return m61_esp32_transport_connect(NULL, 0);
+    }
+    if (mode != DS5_DUAL_BT_CONNECT_SCAN_ONLY &&
+        mode != DS5_DUAL_BT_CONNECT_SAVED_ONLY) {
+        s_transport.stats.last_error = -EINVAL;
+        return -EINVAL;
+    }
+
+    return send_bt_connect_request(&mode, sizeof(mode));
 }
 
 int m61_esp32_transport_disconnect(bool allow_reconnect)

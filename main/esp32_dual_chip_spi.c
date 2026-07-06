@@ -1135,14 +1135,19 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
     if (header.type == DS5_DUAL_MSG_BT_CONNECT) {
         int status;
 
-        if (header.length != 0 && header.length != 6U) {
-            status = -EINVAL;
+        if (header.length == 0) {
+            status = bt_dualsense_raw_hidp_connect(NULL, 0, DS5_DUAL_BT_CONNECT_AUTO);
+        } else if (header.length == 1U) {
+            status = bt_dualsense_raw_hidp_connect(NULL, 0, payload[0]);
+        } else if (header.length == 6U) {
+            status = bt_dualsense_raw_hidp_connect(payload, header.length,
+                                                   DS5_DUAL_BT_CONNECT_AUTO);
         } else {
-            status = bt_dualsense_raw_hidp_connect(header.length == 6U ? payload : NULL,
-                                                  header.length);
-            if (status == 0 || status == -EAGAIN) {
-                s_stats.bt_connect_rx++;
-            }
+            status = -EINVAL;
+        }
+        if ((status == 0 || status == -EAGAIN) &&
+            (header.length == 0 || header.length == 1U || header.length == 6U)) {
+            s_stats.bt_connect_rx++;
         }
         if (wants_ack) {
             set_pending_ack(&header, status);

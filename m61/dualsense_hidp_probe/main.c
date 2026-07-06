@@ -2906,8 +2906,8 @@ int cmd_ds5(int argc, char **argv)
 
     if (strcmp(argv[1], "scan") == 0) {
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
-        err = m61_esp32_transport_connect(NULL, 0);
-        printf("esp32 scan/autoconnect result=%d\r\n", err);
+        err = m61_esp32_transport_connect_mode(DS5_DUAL_BT_CONNECT_SCAN_ONLY);
+        printf("esp32 scan-only result=%d\r\n", err);
         return err;
 #else
         start_inquiry();
@@ -2917,7 +2917,7 @@ int cmd_ds5(int argc, char **argv)
 
     if (strcmp(argv[1], "autoconnect") == 0) {
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
-        err = m61_esp32_transport_connect(NULL, 0);
+        err = m61_esp32_transport_connect_mode(DS5_DUAL_BT_CONNECT_AUTO);
         printf("esp32 autoconnect result=%d\r\n", err);
         return err;
 #else
@@ -2946,7 +2946,7 @@ int cmd_ds5(int argc, char **argv)
 
         if (strcmp(argv[2], "last") == 0) {
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
-            err = m61_esp32_transport_connect(NULL, 0);
+            err = m61_esp32_transport_connect_mode(DS5_DUAL_BT_CONNECT_SAVED_ONLY);
             printf("esp32 connect last result=%d\r\n", err);
             return err;
 #else

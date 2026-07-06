@@ -91,6 +91,10 @@ typedef enum {
 #define DS5_DUAL_FORGET_SAVED_ADDR 0x01U
 #define DS5_DUAL_FORGET_BONDS      0x02U
 
+#define DS5_DUAL_BT_CONNECT_AUTO       0x00U
+#define DS5_DUAL_BT_CONNECT_SCAN_ONLY  0x01U
+#define DS5_DUAL_BT_CONNECT_SAVED_ONLY 0x02U
+
 typedef struct {
     uint8_t type;
     uint16_t flags;

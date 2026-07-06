@@ -130,6 +130,7 @@ int m61_esp32_transport_send_bt_report(const uint8_t *report,
 int m61_esp32_transport_request_feature(uint8_t report_id, uint32_t requested_len);
 int m61_esp32_transport_set_feature(uint8_t report_id, const uint8_t *data, size_t len);
 int m61_esp32_transport_connect(const uint8_t *bda, size_t len);
+int m61_esp32_transport_connect_mode(uint8_t mode);
 int m61_esp32_transport_disconnect(bool allow_reconnect);
 int m61_esp32_transport_forget(uint8_t flags);
 int m61_esp32_transport_wire_test(void);

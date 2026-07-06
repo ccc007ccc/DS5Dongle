@@ -104,6 +104,12 @@ typedef enum {
     RAW_TARGET_MANUAL,
 } raw_target_origin_t;
 
+typedef enum {
+    RAW_CONNECT_MODE_AUTO = DS5_DUAL_BT_CONNECT_AUTO,
+    RAW_CONNECT_MODE_SCAN_ONLY = DS5_DUAL_BT_CONNECT_SCAN_ONLY,
+    RAW_CONNECT_MODE_SAVED_ONLY = DS5_DUAL_BT_CONNECT_SAVED_ONLY,
+} raw_connect_mode_t;
+
 static const char *TAG = "ds5_raw_hidp";
 
 static esp_bd_addr_t s_target_bda;
@@ -116,6 +122,7 @@ static bool s_connecting;
 static bool s_sdp_searching;
 static bool s_current_target_from_saved;
 static raw_target_origin_t s_target_origin;
+static raw_connect_mode_t s_connect_mode = RAW_CONNECT_MODE_AUTO;
 static bool s_auto_reconnect_enabled = true;
 static bool s_have_last_state;
 static bool s_have_full_report;
@@ -368,6 +375,13 @@ static bool target_origin_allows_blacklist_bypass(void)
 {
     return s_target_origin == RAW_TARGET_DISCOVERY ||
            s_target_origin == RAW_TARGET_MANUAL;
+}
+
+static bool connect_mode_valid(uint8_t mode)
+{
+    return mode == RAW_CONNECT_MODE_AUTO ||
+           mode == RAW_CONNECT_MODE_SCAN_ONLY ||
+           mode == RAW_CONNECT_MODE_SAVED_ONLY;
 }
 
 static bool should_block_blacklisted_peer(const esp_bd_addr_t bda)
@@ -892,6 +906,39 @@ static void start_connect_flow(void)
         return;
     }
 
+    if (s_connect_mode == RAW_CONNECT_MODE_SCAN_ONLY) {
+        ESP_LOGI(TAG, "Raw HIDP explicit scan requested; ignoring saved address");
+        start_discovery();
+        return;
+    }
+
+    if (s_connect_mode == RAW_CONNECT_MODE_SAVED_ONLY) {
+        if (!s_have_saved_bda || bda_is_zero(s_saved_bda)) {
+            s_last_error = -ENOENT;
+            ESP_LOGW(TAG, "Raw HIDP saved-only connect requested without stored DualSense address");
+            notify_state();
+            return;
+        }
+        if (blacklist_contains(s_saved_bda)) {
+            char addr[18];
+            s_last_error = -EPERM;
+            ESP_LOGW(TAG, "Raw HIDP saved-only connect blocked because %s is blacklisted",
+                     bda_to_str(s_saved_bda, addr, sizeof(addr)));
+            notify_state();
+            return;
+        }
+
+        memcpy(s_target_bda, s_saved_bda, sizeof(esp_bd_addr_t));
+        s_target_found = true;
+        s_current_target_from_saved = true;
+        s_target_origin = RAW_TARGET_SAVED_AUTO;
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP trying saved DualSense address %s by explicit request",
+                 bda_to_str(s_target_bda, addr, sizeof(addr)));
+        start_sdp_or_connect();
+        return;
+    }
+
     if (s_have_saved_bda &&
         s_saved_reconnect_failures < DS5_RAW_MAX_SAVED_RECONNECT_FAILURES) {
         if (blacklist_contains(s_saved_bda)) {
@@ -1015,13 +1062,29 @@ static void connect_hidp_interrupt(void)
     }
 }
 
-int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len)
+int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode)
 {
     if (bda != NULL && len != sizeof(esp_bd_addr_t)) {
         return -EINVAL;
     }
+    if (!connect_mode_valid(mode) ||
+        (bda != NULL && mode != RAW_CONNECT_MODE_AUTO)) {
+        return -EINVAL;
+    }
     if (bt_dualsense_raw_hidp_ready() || s_connecting || s_sdp_searching) {
         return 0;
+    }
+    if (mode == RAW_CONNECT_MODE_SAVED_ONLY) {
+        if (!s_have_saved_bda || bda_is_zero(s_saved_bda)) {
+            s_last_error = -ENOENT;
+            notify_state();
+            return -ENOENT;
+        }
+        if (blacklist_contains(s_saved_bda)) {
+            s_last_error = -EPERM;
+            notify_state();
+            return -EPERM;
+        }
     }
 
     s_auto_reconnect_enabled = true;
@@ -1034,13 +1097,22 @@ int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len)
         s_target_found = true;
         s_current_target_from_saved = false;
         s_target_origin = RAW_TARGET_MANUAL;
+        s_connect_mode = RAW_CONNECT_MODE_AUTO;
         s_saved_reconnect_failures = 0;
         char addr[18];
         ESP_LOGI(TAG, "Raw HIDP control connect requested for %s",
                  bda_to_str(s_target_bda, addr, sizeof(addr)));
     } else {
+        s_connect_mode = (raw_connect_mode_t)mode;
         s_target_origin = RAW_TARGET_NONE;
-        ESP_LOGI(TAG, "Raw HIDP control connect requested using saved address or scan");
+        if (mode == RAW_CONNECT_MODE_SCAN_ONLY) {
+            ESP_LOGI(TAG, "Raw HIDP control connect requested using scan-only discovery");
+        } else if (mode == RAW_CONNECT_MODE_SAVED_ONLY) {
+            s_saved_reconnect_failures = 0;
+            ESP_LOGI(TAG, "Raw HIDP control connect requested using saved address only");
+        } else {
+            ESP_LOGI(TAG, "Raw HIDP control connect requested using saved address or scan");
+        }
     }
 
     if (!s_l2cap_ready || !s_sdp_ready) {
@@ -1072,6 +1144,7 @@ static void close_channel(raw_hidp_channel_t *channel)
 int bt_dualsense_raw_hidp_disconnect(bool allow_reconnect)
 {
     s_auto_reconnect_enabled = allow_reconnect;
+    s_connect_mode = RAW_CONNECT_MODE_AUTO;
     if (s_reconnect_timer != NULL) {
         esp_timer_stop(s_reconnect_timer);
     }
@@ -1205,6 +1278,7 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
     }
 
     s_auto_reconnect_enabled = false;
+    s_connect_mode = RAW_CONNECT_MODE_AUTO;
     if (s_reconnect_timer != NULL) {
         esp_timer_stop(s_reconnect_timer);
     }
@@ -1858,6 +1932,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
 esp_err_t bt_dualsense_raw_hidp_start(void)
 {
     reset_hidp_channels();
+    s_connect_mode = RAW_CONNECT_MODE_AUTO;
 
     esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {

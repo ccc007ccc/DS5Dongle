@@ -35,7 +35,7 @@ typedef void (*bt_dualsense_raw_hidp_state_cb_t)(
 esp_err_t bt_dualsense_raw_hidp_start(void);
 bool bt_dualsense_raw_hidp_ready(void);
 void bt_dualsense_raw_hidp_get_state(bt_dualsense_raw_hidp_state_t *state);
-int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len);
+int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode);
 int bt_dualsense_raw_hidp_disconnect(bool allow_reconnect);
 int bt_dualsense_raw_hidp_forget(uint8_t flags);
 int bt_dualsense_raw_hidp_send_report(const uint8_t *report,

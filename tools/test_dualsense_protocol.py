@@ -68,6 +68,9 @@ DS5_DUAL_MSG_WIRE_TEST = 16
 DS5_DUAL_MSG_BT_FORGET = 17
 DS5_DUAL_FORGET_SAVED_ADDR = 0x01
 DS5_DUAL_FORGET_BONDS = 0x02
+DS5_DUAL_BT_CONNECT_AUTO = 0x00
+DS5_DUAL_BT_CONNECT_SCAN_ONLY = 0x01
+DS5_DUAL_BT_CONNECT_SAVED_ONLY = 0x02
 DS5_DUAL_CHANNEL_AUDIO = 4
 DS5_DUAL_CHANNEL_STATUS = 5
 DS5_DUAL_CHANNEL_CTRL = 1
@@ -835,12 +838,47 @@ def test_dual_chip_spi_vectors() -> None:
     assert int.from_bytes(reset_frame[14:16], "little") == 0
     assert int.from_bytes(reset_frame[16:20], "little") == dual_spi_crc32(reset_frame[:16], b"")
 
-    connect_frame = make_dual_spi_frame(
+    auto_connect_frame = make_dual_spi_frame(
         DS5_DUAL_MSG_BT_CONNECT,
         DS5_DUAL_FLAG_RELIABLE,
         DS5_DUAL_CHANNEL_CTRL,
         DS5_DUAL_PRIORITY_CONTROL,
         0x3345,
+        0,
+        b"",
+    )
+    assert int.from_bytes(auto_connect_frame[14:16], "little") == 0
+
+    scan_connect_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_CONNECT,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3346,
+        0,
+        bytes([DS5_DUAL_BT_CONNECT_SCAN_ONLY]),
+    )
+    assert int.from_bytes(scan_connect_frame[14:16], "little") == 1
+    assert scan_connect_frame[20] == DS5_DUAL_BT_CONNECT_SCAN_ONLY
+
+    saved_connect_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_CONNECT,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3347,
+        0,
+        bytes([DS5_DUAL_BT_CONNECT_SAVED_ONLY]),
+    )
+    assert int.from_bytes(saved_connect_frame[14:16], "little") == 1
+    assert saved_connect_frame[20] == DS5_DUAL_BT_CONNECT_SAVED_ONLY
+
+    connect_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_CONNECT,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3348,
         0,
         bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
     )
@@ -852,7 +890,7 @@ def test_dual_chip_spi_vectors() -> None:
         DS5_DUAL_FLAG_RELIABLE,
         DS5_DUAL_CHANNEL_CTRL,
         DS5_DUAL_PRIORITY_CONTROL,
-        0x3346,
+        0x3349,
         0,
         b"\x00",
     )
@@ -864,7 +902,7 @@ def test_dual_chip_spi_vectors() -> None:
         DS5_DUAL_FLAG_RELIABLE,
         DS5_DUAL_CHANNEL_STATUS,
         DS5_DUAL_PRIORITY_CONTROL,
-        0x3347,
+        0x334A,
         0,
         b"\x02",
     )
@@ -876,7 +914,7 @@ def test_dual_chip_spi_vectors() -> None:
         DS5_DUAL_FLAG_RELIABLE,
         DS5_DUAL_CHANNEL_CTRL,
         DS5_DUAL_PRIORITY_CONTROL,
-        0x3348,
+        0x334B,
         0,
         bytes([DS5_DUAL_FORGET_SAVED_ADDR | DS5_DUAL_FORGET_BONDS]),
     )
@@ -1079,13 +1117,20 @@ def test_c_source_contract() -> None:
         "Raw HIDP removed %s from blacklist after successful pair; persist deferred",
         "Raw HIDP resuming explicit target %s after stack ready",
         "Raw HIDP preserving manual target %s across reconnect timer",
+        "Raw HIDP control connect requested using scan-only discovery",
+        "Raw HIDP control connect requested using saved address only",
+        "Raw HIDP explicit scan requested; ignoring saved address",
+        "Raw HIDP trying saved DualSense address %s by explicit request",
         "DS5_DUAL_MSG_BT_CONNECT",
+        "DS5_DUAL_BT_CONNECT_SCAN_ONLY",
+        "DS5_DUAL_BT_CONNECT_SAVED_ONLY",
         "DS5_DUAL_MSG_BT_DISCONNECT",
         "DS5_DUAL_MSG_BT_FORGET",
         "uint8_t packet[1 + DS5_OUTPUT_REPORT36_BT_LEN]",
         "DS5_DUAL_MSG_WIRE_TEST",
         "DS5_DUAL_WIRE_TEST_PASS",
         "m61_esp32_transport_connect",
+        "m61_esp32_transport_connect_mode",
         "m61_esp32_transport_disconnect",
         "m61_esp32_transport_forget",
         "m61_esp32_transport_wire_test",
