@@ -1102,6 +1102,8 @@ def test_c_source_contract() -> None:
         "CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH",
         "response_queue_push_front_locked(&item)",
         "response_queue_push_back_locked(&item, replace_existing)",
+        "stage_response_for_transaction(&response_item, &response_len)",
+        "finish_response_transaction(&response_item, true)",
         "poll_reliable_ack(seq, type)",
         "CONFIG_M61_ESP32_ACK_POLL_COUNT",
         "CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT",

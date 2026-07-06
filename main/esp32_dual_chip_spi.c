@@ -368,30 +368,43 @@ static bool response_queue_push_front_locked(const dual_chip_response_item_t *it
     return true;
 }
 
-static bool response_queue_pop_front_locked(uint8_t *frame,
-                                            size_t frame_capacity,
-                                            size_t *response_len)
+static bool response_queue_peek_front_locked(dual_chip_response_item_t *item)
 {
-    const dual_chip_response_item_t *item;
-
-    if (frame == NULL || s_response_count == 0) {
+    if (item == NULL || s_response_count == 0) {
         return false;
     }
 
-    item = &s_response_queue[s_response_head];
-    if (item->len > frame_capacity) {
-        s_response_head = response_queue_index(1);
-        s_response_count--;
-        s_stats.spi_queue_drops++;
-        return false;
+    *item = s_response_queue[s_response_head];
+    return true;
+}
+
+static void response_queue_pop_front_locked(void)
+{
+    if (s_response_count == 0) {
+        return;
     }
 
-    memcpy(frame, item->frame, item->len);
-    if (response_len != NULL) {
-        *response_len = item->len;
-    }
     s_response_head = response_queue_index(1);
     s_response_count--;
+}
+
+static bool response_queue_consume_matching_front_locked(const dual_chip_response_item_t *item)
+{
+    const dual_chip_response_item_t *head;
+
+    if (item == NULL || s_response_count == 0) {
+        return false;
+    }
+
+    head = &s_response_queue[s_response_head];
+    if (head->type != item->type ||
+        head->flags != item->flags ||
+        head->len != item->len ||
+        memcmp(head->frame, item->frame, item->len) != 0) {
+        return false;
+    }
+
+    response_queue_pop_front_locked();
     return true;
 }
 
@@ -675,19 +688,31 @@ static void set_pending_bt_state(const bt_dualsense_raw_hidp_state_t *raw_state,
     }
 }
 
-static bool load_response_for_transaction(size_t *response_len)
+static bool stage_response_for_transaction(dual_chip_response_item_t *item,
+                                          size_t *response_len)
 {
     bool valid = false;
+    bool dropped = false;
     uint8_t queued_after = 0;
 
+    /* Keep the queued item in place until the slave transaction succeeds. */
     memset(s_spi_tx_buf, 0, sizeof(s_spi_tx_buf));
     if (s_response_lock != NULL) {
         xSemaphoreTake(s_response_lock, portMAX_DELAY);
     }
-    valid = response_queue_pop_front_locked(s_spi_tx_buf,
-                                            sizeof(s_spi_tx_buf),
-                                            response_len);
-    queued_after = s_response_count;
+    valid = response_queue_peek_front_locked(item);
+    if (valid && item->len <= sizeof(s_spi_tx_buf)) {
+        memcpy(s_spi_tx_buf, item->frame, item->len);
+        if (response_len != NULL) {
+            *response_len = item->len;
+        }
+    } else if (valid) {
+        response_queue_pop_front_locked();
+        s_stats.spi_queue_drops++;
+        queued_after = s_response_count;
+        dropped = true;
+        valid = false;
+    }
     if (s_response_lock != NULL) {
         xSemaphoreGive(s_response_lock);
     }
@@ -695,9 +720,30 @@ static bool load_response_for_transaction(size_t *response_len)
     if (!valid && response_len != NULL) {
         *response_len = 0;
     }
+    if (dropped) {
+        set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO,
+                                queued_after > 0 ? 1 : 0);
+    }
+    return valid;
+}
+
+static void finish_response_transaction(const dual_chip_response_item_t *item, bool success)
+{
+    uint8_t queued_after;
+
+    if (s_response_lock != NULL) {
+        xSemaphoreTake(s_response_lock, portMAX_DELAY);
+    }
+    if (success) {
+        (void)response_queue_consume_matching_front_locked(item);
+    }
+    queued_after = s_response_count;
+    if (s_response_lock != NULL) {
+        xSemaphoreGive(s_response_lock);
+    }
+
     set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO,
                             queued_after > 0 ? 1 : 0);
-    return valid;
 }
 
 static void rx_forward_cb(const uint8_t *data, size_t len, int64_t timestamp_us, void *ctx)
@@ -866,8 +912,9 @@ static void spi_task(void *arg)
 
     while (true) {
         spi_slave_transaction_t trans = {0};
+        dual_chip_response_item_t response_item = {0};
         size_t response_len = 0;
-        bool had_response = load_response_for_transaction(&response_len);
+        bool had_response = stage_response_for_transaction(&response_item, &response_len);
 
         memset(s_spi_rx_buf, 0, sizeof(s_spi_rx_buf));
         trans.length = sizeof(s_spi_rx_buf) * 8U;
@@ -887,6 +934,7 @@ static void spi_task(void *arg)
 
         if (had_response) {
             s_stats.spi_tx_frames++;
+            finish_response_transaction(&response_item, true);
             (void)response_len;
         }
 
