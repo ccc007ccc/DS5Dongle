@@ -105,7 +105,9 @@ reenables it and starts immediately.
 
 After one successful scan or connection, `ds5 autoconnect` uses the saved
 DualSense address. `ds5 forget` clears the saved address. In dual-chip mode it
-also tells the ESP32 HIDP side to drop its saved address and Classic BT bonds.
+also tells the ESP32 HIDP side to drop its saved address and Classic BT bonds,
+while blacklisting those MACs so controller-initiated PS-only reconnects stay
+blocked until the user explicitly re-pairs.
 
 For DualSense Edge, USB profile reads `0x70..0x7B` are intentionally NAKed
 until the bridge finishes the native-style unlock and paced prefetch cycle.

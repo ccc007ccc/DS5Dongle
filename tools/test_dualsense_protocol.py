@@ -1125,6 +1125,20 @@ def test_c_source_contract() -> None:
     )
     for snippet in dual_chip_snippets:
         assert snippet in combined_dual_chip_source, f"missing dual-chip snippet: {snippet}"
+    esp32_blacklist_snippets = [
+        "DS5_NVS_BLACKLIST_KEY",
+        "DS5_BLACKLIST_MAX",
+        "blacklist_contains",
+        "blacklist_bonded_devices",
+        "persist_blacklist",
+        "load_blacklist",
+        "should_block_blacklisted_peer",
+        "Raw HIDP rejected SSP confirmation from blacklisted",
+        "Raw HIDP rejected blacklisted incoming L2CAP open",
+        "from blacklist after successful pair",
+    ]
+    for snippet in esp32_blacklist_snippets:
+        assert snippet in esp32_raw_hidp_source, f"missing ESP32 blacklist snippet: {snippet}"
 
     wiring_snippets = [
         "CONFIG_M61_ESP32_SPI_SCLK_PIN =13",

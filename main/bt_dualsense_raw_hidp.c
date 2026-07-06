@@ -58,6 +58,7 @@
 #define DS5_RAW_LOCAL_NAME "DS5Bridge-ESP32-Raw"
 #define DS5_NVS_NAMESPACE "ds5bt"
 #define DS5_NVS_LAST_BDA_KEY "last_bda"
+#define DS5_NVS_BLACKLIST_KEY "blacklist"
 #define DS5_HIDP_PSM_CONTROL 0x0011
 #define DS5_HIDP_PSM_INTERRUPT 0x0013
 #define DS5_HIDP_SERVICE_UUID 0x1124
@@ -71,6 +72,7 @@
 #define DS5_RAW_RX_BUFFER_LEN 768
 #define DS5_RAW_RECONNECT_DELAY_US (2 * 1000 * 1000)
 #define DS5_RAW_MAX_SAVED_RECONNECT_FAILURES 3
+#define DS5_BLACKLIST_MAX 8
 
 typedef enum {
     RAW_CH_CONTROL = 0,
@@ -117,6 +119,8 @@ static int64_t s_last_state_log_us;
 static dualsense_state_t s_last_state;
 static dualsense_output_context_t s_output_ctx;
 static raw_connect_step_t s_pending_step;
+static esp_bd_addr_t s_blacklist[DS5_BLACKLIST_MAX];
+static uint8_t s_blacklist_count;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_bringup_timer;
 static bt_dualsense_raw_hidp_rx_cb_t s_rx_cb;
@@ -151,6 +155,174 @@ static const char *bda_to_str(const esp_bd_addr_t bda, char *out, size_t out_len
     snprintf(out, out_len, "%02X:%02X:%02X:%02X:%02X:%02X",
              bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
     return out;
+}
+
+static bool bda_is_zero(const esp_bd_addr_t bda)
+{
+    static const esp_bd_addr_t zero = { 0 };
+
+    return bda == NULL || memcmp(bda, zero, sizeof(zero)) == 0;
+}
+
+static bool bda_equal(const esp_bd_addr_t a, const esp_bd_addr_t b)
+{
+    return a != NULL && b != NULL && memcmp(a, b, sizeof(esp_bd_addr_t)) == 0;
+}
+
+static bool blacklist_contains(const esp_bd_addr_t bda)
+{
+    if (bda_is_zero(bda)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < s_blacklist_count; ++i) {
+        if (bda_equal(s_blacklist[i], bda)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool blacklist_add_unique(const esp_bd_addr_t bda)
+{
+    if (bda_is_zero(bda) || blacklist_contains(bda)) {
+        return false;
+    }
+    if (s_blacklist_count >= DS5_BLACKLIST_MAX) {
+        char addr[18];
+        ESP_LOGW(TAG, "Raw HIDP blacklist full; dropping %s",
+                 bda_to_str(bda, addr, sizeof(addr)));
+        return false;
+    }
+
+    memcpy(s_blacklist[s_blacklist_count], bda, sizeof(esp_bd_addr_t));
+    s_blacklist_count++;
+    return true;
+}
+
+static bool blacklist_remove(const esp_bd_addr_t bda)
+{
+    if (bda_is_zero(bda)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < s_blacklist_count; ++i) {
+        if (bda_equal(s_blacklist[i], bda)) {
+            for (uint8_t j = i; j + 1U < s_blacklist_count; ++j) {
+                memcpy(s_blacklist[j], s_blacklist[j + 1U], sizeof(esp_bd_addr_t));
+            }
+            memset(s_blacklist[s_blacklist_count - 1U], 0, sizeof(esp_bd_addr_t));
+            s_blacklist_count--;
+            return true;
+        }
+    }
+    return false;
+}
+
+static int persist_blacklist(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(DS5_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Opening NVS namespace for blacklist failed: %s",
+                 esp_err_to_name(err));
+        return -EIO;
+    }
+
+    if (s_blacklist_count == 0) {
+        err = nvs_erase_key(nvs, DS5_NVS_BLACKLIST_KEY);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    } else {
+        err = nvs_set_blob(nvs,
+                           DS5_NVS_BLACKLIST_KEY,
+                           s_blacklist,
+                           (size_t)s_blacklist_count * sizeof(esp_bd_addr_t));
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Persisting blacklist failed: %s", esp_err_to_name(err));
+        return -EIO;
+    }
+
+    ESP_LOGI(TAG, "Raw HIDP persisted blacklist entries=%u", (unsigned)s_blacklist_count);
+    return 0;
+}
+
+static void load_blacklist(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(DS5_NVS_NAMESPACE, NVS_READONLY, &nvs);
+
+    s_blacklist_count = 0;
+    memset(s_blacklist, 0, sizeof(s_blacklist));
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Opening NVS namespace for blacklist load failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    size_t size = 0;
+    err = nvs_get_blob(nvs, DS5_NVS_BLACKLIST_KEY, NULL, &size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(nvs);
+        return;
+    }
+    if (err != ESP_OK || size == 0 || (size % sizeof(esp_bd_addr_t)) != 0 ||
+        size > sizeof(s_blacklist)) {
+        ESP_LOGW(TAG, "Raw HIDP blacklist blob invalid size=%u err=%s",
+                 (unsigned)size,
+                 esp_err_to_name(err));
+        nvs_close(nvs);
+        return;
+    }
+
+    err = nvs_get_blob(nvs, DS5_NVS_BLACKLIST_KEY, s_blacklist, &size);
+    nvs_close(nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Reading blacklist failed: %s", esp_err_to_name(err));
+        memset(s_blacklist, 0, sizeof(s_blacklist));
+        return;
+    }
+
+    s_blacklist_count = (uint8_t)(size / sizeof(esp_bd_addr_t));
+    ESP_LOGI(TAG, "Raw HIDP loaded blacklist entries=%u", (unsigned)s_blacklist_count);
+    for (uint8_t i = 0; i < s_blacklist_count; ++i) {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP blacklist[%u]=%s",
+                 (unsigned)i,
+                 bda_to_str(s_blacklist[i], addr, sizeof(addr)));
+    }
+}
+
+static bool is_expected_target_bda(const esp_bd_addr_t bda)
+{
+    return s_target_found && bda_equal(s_target_bda, bda);
+}
+
+static bool should_block_blacklisted_peer(const esp_bd_addr_t bda)
+{
+    return blacklist_contains(bda) && !is_expected_target_bda(bda);
+}
+
+static void maybe_add_blacklist_candidate(const esp_bd_addr_t bda, const char *reason)
+{
+    if (blacklist_add_unique(bda)) {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP blacklisted %s (%s)",
+                 bda_to_str(bda, addr, sizeof(addr)),
+                 reason != NULL ? reason : "unspecified");
+    }
 }
 
 void bt_dualsense_raw_hidp_get_state(bt_dualsense_raw_hidp_state_t *state)
@@ -413,6 +585,42 @@ static bool saved_bda_has_bond(void)
 
     free(devices);
     return found;
+}
+
+static int blacklist_bonded_devices(void)
+{
+    int device_count;
+    esp_bd_addr_t *devices;
+    esp_err_t err;
+
+    device_count = esp_bt_gap_get_bond_device_num();
+    if (device_count < 0) {
+        ESP_LOGW(TAG, "Querying bonded device count for blacklist failed");
+        return -EIO;
+    }
+    if (device_count == 0) {
+        return 0;
+    }
+
+    devices = calloc((size_t)device_count, sizeof(*devices));
+    if (devices == NULL) {
+        return -ENOMEM;
+    }
+
+    err = esp_bt_gap_get_bond_device_list(&device_count, devices);
+    if (err != ESP_OK) {
+        free(devices);
+        ESP_LOGW(TAG, "Reading bonded device list for blacklist failed: %s",
+                 esp_err_to_name(err));
+        return -EIO;
+    }
+
+    for (int i = 0; i < device_count; i++) {
+        maybe_add_blacklist_candidate(devices[i], "forget-bond");
+    }
+
+    free(devices);
+    return 0;
 }
 
 static int clear_bonded_devices(void)
@@ -871,6 +1079,16 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
     reset_hidp_channels();
 
     if ((flags & DS5_DUAL_FORGET_BONDS) != 0) {
+        err = blacklist_bonded_devices();
+        if (err != 0 && first_error == 0) {
+            first_error = err;
+        }
+        maybe_add_blacklist_candidate(s_saved_bda, "forget-saved");
+        maybe_add_blacklist_candidate(s_target_bda, "forget-target");
+        err = persist_blacklist();
+        if (err != 0 && first_error == 0) {
+            first_error = err;
+        }
         err = clear_bonded_devices();
         if (err != 0 && first_error == 0) {
             first_error = err;
@@ -1141,12 +1359,25 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
 
     case ESP_BT_L2CAP_OPEN_EVT: {
         raw_hidp_channel_t *channel = pending_channel();
+        bool blocked_blacklisted = should_block_blacklisted_peer(param->open.rem_bda);
         ESP_LOGI(TAG,
                  "Raw HIDP L2CAP open status=%d handle=0x%" PRIX32 " fd=%d mtu=%" PRId32,
                  param->open.status,
                  param->open.handle,
                  param->open.fd,
                  param->open.tx_mtu);
+
+        if (blocked_blacklisted) {
+            char addr[18];
+            if (param->open.fd >= 0) {
+                close(param->open.fd);
+            }
+            s_last_error = -EPERM;
+            ESP_LOGW(TAG, "Raw HIDP rejected blacklisted incoming L2CAP open from %s",
+                     bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
+            notify_state();
+            break;
+        }
 
         if (param->open.status != ESP_BT_L2CAP_SUCCESS || channel == NULL) {
             s_last_error = param->open.status;
@@ -1173,6 +1404,14 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         if (channel->id == RAW_CH_CONTROL) {
             connect_hidp_interrupt();
         } else if (s_control.connected && s_interrupt.connected) {
+            if (blacklist_remove(param->open.rem_bda)) {
+                char addr[18];
+                ESP_LOGI(TAG, "Raw HIDP removed %s from blacklist after successful pair",
+                         bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
+                if (persist_blacklist() != 0) {
+                    s_last_error = -EIO;
+                }
+            }
             s_current_target_from_saved = false;
             s_saved_reconnect_failures = 0;
             led_status_set(DS5_LED_STATE_BT_CONNECTED);
@@ -1348,11 +1587,17 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
 
     case ESP_BT_GAP_AUTH_CMPL_EVT: {
         char addr[18];
+        bool blocked_blacklisted = should_block_blacklisted_peer(param->auth_cmpl.bda);
         ESP_LOGI(TAG, "Raw HIDP auth %s for %s link_key_type=%d name=\"%s\"",
                  param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS ? "ok" : "failed",
                  bda_to_str(param->auth_cmpl.bda, addr, sizeof(addr)),
                  param->auth_cmpl.lk_type,
                  (char *)param->auth_cmpl.device_name);
+        if (blocked_blacklisted && param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
+            ESP_LOGW(TAG, "Raw HIDP blacklisted peer %s authenticated unexpectedly; dropping bond",
+                     addr);
+            (void)esp_bt_gap_remove_bond_device(param->auth_cmpl.bda);
+        }
         if (param->auth_cmpl.stat != ESP_BT_STATUS_SUCCESS) {
             s_last_error = param->auth_cmpl.stat;
         }
@@ -1362,6 +1607,16 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
 
     case ESP_BT_GAP_PIN_REQ_EVT: {
         esp_bt_pin_code_t pin_code;
+        char addr[18];
+
+        if (should_block_blacklisted_peer(param->pin_req.bda)) {
+            memset(pin_code, 0, sizeof(pin_code));
+            esp_bt_gap_pin_reply(param->pin_req.bda, false, 0, pin_code);
+            ESP_LOGW(TAG, "Raw HIDP rejected PIN request from blacklisted %s",
+                     bda_to_str(param->pin_req.bda, addr, sizeof(addr)));
+            break;
+        }
+
         memset(pin_code, 0, sizeof(pin_code));
         memcpy(pin_code, "0000", 4);
         esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin_code);
@@ -1369,11 +1624,22 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
         break;
     }
 
-    case ESP_BT_GAP_CFM_REQ_EVT:
+    case ESP_BT_GAP_CFM_REQ_EVT: {
+        char addr[18];
+
+        if (should_block_blacklisted_peer(param->cfm_req.bda)) {
+            esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, false);
+            ESP_LOGW(TAG, "Raw HIDP rejected SSP confirmation from blacklisted %s value=%" PRIu32,
+                     bda_to_str(param->cfm_req.bda, addr, sizeof(addr)),
+                     param->cfm_req.num_val);
+            break;
+        }
+
         esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
         ESP_LOGI(TAG, "Raw HIDP accepted SSP confirmation value=%" PRIu32,
                  param->cfm_req.num_val);
         break;
+    }
 
     case ESP_BT_GAP_KEY_NOTIF_EVT:
         ESP_LOGI(TAG, "Raw HIDP SSP passkey notification: %" PRIu32,
@@ -1391,6 +1657,13 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                  param->acl_conn_cmpl_stat.stat,
                  param->acl_conn_cmpl_stat.handle,
                  bda_to_str(param->acl_conn_cmpl_stat.bda, addr, sizeof(addr)));
+        if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS &&
+            should_block_blacklisted_peer(param->acl_conn_cmpl_stat.bda)) {
+            s_last_error = -EPERM;
+            ESP_LOGW(TAG, "Raw HIDP blacklisted incoming ACL from %s will be denied",
+                     addr);
+            notify_state();
+        }
         break;
     }
 
@@ -1468,6 +1741,7 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
                                              ESP_BT_NON_DISCOVERABLE));
 
     load_saved_bda();
+    load_blacklist();
     if (s_have_saved_bda && !saved_bda_has_bond()) {
         ESP_LOGW(TAG, "Raw HIDP saved address has no matching bond; clearing stale entry");
         (void)forget_saved_bda();
