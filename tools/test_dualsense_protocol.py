@@ -1075,6 +1075,8 @@ def test_c_source_contract() -> None:
         "Raw HIDP auto-connect enabled at startup",
         "clear_target_selection();",
         "Raw HIDP ignoring SDP completion without active target",
+        "Raw HIDP staged DualSense address %s for deferred persist",
+        "Raw HIDP removed %s from blacklist after successful pair; persist deferred",
         "DS5_DUAL_MSG_BT_CONNECT",
         "DS5_DUAL_MSG_BT_DISCONNECT",
         "DS5_DUAL_MSG_BT_FORGET",

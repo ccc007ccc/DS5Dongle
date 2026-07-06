@@ -71,6 +71,7 @@
 #define DS5_RAW_RX_TASK_STACK 4096
 #define DS5_RAW_RX_BUFFER_LEN 768
 #define DS5_RAW_RECONNECT_DELAY_US (2 * 1000 * 1000)
+#define DS5_RAW_PERSIST_SETTLE_US (5 * 1000 * 1000)
 #define DS5_RAW_MAX_SAVED_RECONNECT_FAILURES 3
 #define DS5_BLACKLIST_MAX 8
 
@@ -131,6 +132,9 @@ static esp_bd_addr_t s_blacklist[DS5_BLACKLIST_MAX];
 static uint8_t s_blacklist_count;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_bringup_timer;
+static esp_timer_handle_t s_persist_timer;
+static bool s_saved_bda_dirty;
+static bool s_blacklist_dirty;
 static bt_dualsense_raw_hidp_rx_cb_t s_rx_cb;
 static void *s_rx_cb_ctx;
 static bt_dualsense_raw_hidp_state_cb_t s_state_cb;
@@ -157,6 +161,7 @@ static void connect_hidp_interrupt(void);
 static void send_bringup(const char *reason);
 static void notify_state(void);
 static void stop_bringup_timer(void);
+static void schedule_persist_flush(void);
 
 static const char *bda_to_str(const esp_bd_addr_t bda, char *out, size_t out_len)
 {
@@ -221,10 +226,51 @@ static bool blacklist_remove(const esp_bd_addr_t bda)
             }
             memset(s_blacklist[s_blacklist_count - 1U], 0, sizeof(esp_bd_addr_t));
             s_blacklist_count--;
+            s_blacklist_dirty = true;
+            schedule_persist_flush();
             return true;
         }
     }
     return false;
+}
+
+static int persist_saved_bda_now(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(DS5_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Open NVS namespace failed while persisting controller: %s",
+                 esp_err_to_name(err));
+        return -EIO;
+    }
+
+    if (!s_have_saved_bda || bda_is_zero(s_saved_bda)) {
+        err = nvs_erase_key(nvs, DS5_NVS_LAST_BDA_KEY);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;
+        }
+    } else {
+        err = nvs_set_blob(nvs, DS5_NVS_LAST_BDA_KEY, s_saved_bda, sizeof(esp_bd_addr_t));
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Persisting DualSense address failed: %s", esp_err_to_name(err));
+        return -EIO;
+    }
+
+    if (s_have_saved_bda && !bda_is_zero(s_saved_bda)) {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP persisted DualSense address %s",
+                 bda_to_str(s_saved_bda, addr, sizeof(addr)));
+    } else {
+        ESP_LOGI(TAG, "Raw HIDP persisted cleared DualSense address");
+    }
+    return 0;
 }
 
 static int persist_blacklist(void)
@@ -535,6 +581,7 @@ static void clear_saved_bda_state(void)
 {
     memset(s_saved_bda, 0, sizeof(s_saved_bda));
     s_have_saved_bda = false;
+    s_saved_bda_dirty = false;
     s_saved_reconnect_failures = 0;
     s_current_target_from_saved = false;
     if (s_target_origin == RAW_TARGET_SAVED_AUTO) {
@@ -701,33 +748,18 @@ static int clear_bonded_devices(void)
 
 static void save_bda_if_needed(const esp_bd_addr_t bda)
 {
-    if (s_have_saved_bda && memcmp(s_saved_bda, bda, sizeof(esp_bd_addr_t)) == 0) {
+    if (bda_is_zero(bda) ||
+        (s_have_saved_bda && memcmp(s_saved_bda, bda, sizeof(esp_bd_addr_t)) == 0)) {
         return;
     }
 
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(DS5_NVS_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Open NVS namespace failed while saving controller: %s",
-                 esp_err_to_name(err));
-        return;
-    }
-
-    err = nvs_set_blob(nvs, DS5_NVS_LAST_BDA_KEY, bda, sizeof(esp_bd_addr_t));
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs);
-    }
-    nvs_close(nvs);
-
-    if (err == ESP_OK) {
-        memcpy(s_saved_bda, bda, sizeof(esp_bd_addr_t));
-        s_have_saved_bda = true;
-        char addr[18];
-        ESP_LOGI(TAG, "Raw HIDP saved DualSense address %s",
-                 bda_to_str(s_saved_bda, addr, sizeof(addr)));
-    } else {
-        ESP_LOGW(TAG, "Saving DualSense address failed: %s", esp_err_to_name(err));
-    }
+    memcpy(s_saved_bda, bda, sizeof(esp_bd_addr_t));
+    s_have_saved_bda = true;
+    s_saved_bda_dirty = true;
+    schedule_persist_flush();
+    char addr[18];
+    ESP_LOGI(TAG, "Raw HIDP staged DualSense address %s for deferred persist",
+             bda_to_str(s_saved_bda, addr, sizeof(addr)));
 }
 
 static void reset_hidp_channels(void)
@@ -880,6 +912,31 @@ static void reconnect_timer_cb(void *arg)
     reset_hidp_channels();
     if (s_auto_reconnect_enabled) {
         start_connect_flow();
+    }
+}
+
+static void persist_timer_cb(void *arg)
+{
+    int err = 0;
+
+    (void)arg;
+
+    if (s_saved_bda_dirty) {
+        err = persist_saved_bda_now();
+        if (err == 0) {
+            s_saved_bda_dirty = false;
+        }
+    }
+    if (err == 0 && s_blacklist_dirty) {
+        err = persist_blacklist();
+        if (err == 0) {
+            s_blacklist_dirty = false;
+        }
+    }
+    if (err != 0) {
+        s_last_error = err;
+        notify_state();
+        schedule_persist_flush();
     }
 }
 
@@ -1120,6 +1177,11 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
         esp_timer_stop(s_reconnect_timer);
     }
     stop_bringup_timer();
+    if (s_persist_timer != NULL) {
+        esp_timer_stop(s_persist_timer);
+    }
+    s_saved_bda_dirty = false;
+    s_blacklist_dirty = false;
     memcpy(target_bda_snapshot, s_target_bda, sizeof(target_bda_snapshot));
     clear_target_selection();
     esp_bt_gap_cancel_discovery();
@@ -1235,6 +1297,22 @@ static void stop_bringup_timer(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "Raw HIDP stopping bring-up timer failed: %s", esp_err_to_name(err));
     }
+}
+
+static void schedule_persist_flush(void)
+{
+    esp_err_t err;
+
+    if (s_persist_timer == NULL || (!s_saved_bda_dirty && !s_blacklist_dirty)) {
+        return;
+    }
+
+    err = esp_timer_stop(s_persist_timer);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Raw HIDP stopping persist timer failed: %s", esp_err_to_name(err));
+    }
+
+    ESP_ERROR_CHECK(esp_timer_start_once(s_persist_timer, DS5_RAW_PERSIST_SETTLE_US));
 }
 
 static void schedule_bringup_retry(void)
@@ -1456,11 +1534,11 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             if (target_origin_allows_blacklist_bypass() &&
                 blacklist_remove(param->open.rem_bda)) {
                 char addr[18];
-                ESP_LOGI(TAG, "Raw HIDP removed %s from blacklist after successful pair",
+                ESP_LOGI(TAG, "Raw HIDP removed %s from blacklist after successful pair; persist deferred",
                          bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
-                if (persist_blacklist() != 0) {
-                    s_last_error = -EIO;
-                }
+            }
+            if (s_saved_bda_dirty || s_blacklist_dirty) {
+                schedule_persist_flush();
             }
             s_current_target_from_saved = false;
             s_saved_reconnect_failures = 0;
@@ -1813,6 +1891,12 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
         .name = "raw_hidp_bringup",
     };
     ESP_ERROR_CHECK(esp_timer_create(&bringup_timer_args, &s_bringup_timer));
+
+    const esp_timer_create_args_t persist_timer_args = {
+        .callback = persist_timer_cb,
+        .name = "raw_hidp_persist",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&persist_timer_args, &s_persist_timer));
 
     err = esp_bt_l2cap_init();
     if (err != ESP_OK) {
