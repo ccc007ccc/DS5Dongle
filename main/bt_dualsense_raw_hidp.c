@@ -1103,15 +1103,31 @@ int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode)
         ESP_LOGI(TAG, "Raw HIDP control connect requested for %s",
                  bda_to_str(s_target_bda, addr, sizeof(addr)));
     } else {
-        s_connect_mode = (raw_connect_mode_t)mode;
-        s_target_origin = RAW_TARGET_NONE;
+        bool preserve_explicit_target = mode == RAW_CONNECT_MODE_AUTO &&
+                                        s_target_found &&
+                                        !bda_is_zero(s_target_bda) &&
+                                        (s_target_origin == RAW_TARGET_MANUAL ||
+                                         s_target_origin == RAW_TARGET_DISCOVERY);
+
+        if (preserve_explicit_target) {
+            char addr[18];
+            s_connect_mode = RAW_CONNECT_MODE_AUTO;
+            s_current_target_from_saved = false;
+            ESP_LOGI(TAG, "Raw HIDP preserving explicit target %s over generic auto request",
+                     bda_to_str(s_target_bda, addr, sizeof(addr)));
+        } else {
+            s_connect_mode = (raw_connect_mode_t)mode;
+            s_target_origin = RAW_TARGET_NONE;
+        }
         if (mode == RAW_CONNECT_MODE_SCAN_ONLY) {
             ESP_LOGI(TAG, "Raw HIDP control connect requested using scan-only discovery");
         } else if (mode == RAW_CONNECT_MODE_SAVED_ONLY) {
             s_saved_reconnect_failures = 0;
             ESP_LOGI(TAG, "Raw HIDP control connect requested using saved address only");
-        } else {
+        } else if (!preserve_explicit_target) {
             ESP_LOGI(TAG, "Raw HIDP control connect requested using saved address or scan");
+        } else {
+            ESP_LOGI(TAG, "Raw HIDP generic auto request deferred to existing explicit target");
         }
     }
 
