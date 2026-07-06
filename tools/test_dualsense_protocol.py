@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PARSER = ROOT / "main" / "dualsense_parser.c"
 OUTPUT = ROOT / "main" / "dualsense_output.c"
 M61_USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
+M61_MAIN = ROOT / "m61" / "dualsense_hidp_probe" / "main.c"
 M61_CMAKE = ROOT / "m61" / "dualsense_hidp_probe" / "CMakeLists.txt"
 
 DS5_BT_HIDP_INPUT = 0xA1
@@ -459,6 +460,7 @@ def test_c_source_contract() -> None:
     source = PARSER.read_text(encoding="utf-8")
     output_source = OUTPUT.read_text(encoding="utf-8")
     m61_usb_source = M61_USB.read_text(encoding="utf-8")
+    m61_main_source = M61_MAIN.read_text(encoding="utf-8")
     m61_cmake_source = M61_CMAKE.read_text(encoding="utf-8")
     required_snippets = [
         "payload_offset = 3;",
@@ -510,6 +512,8 @@ def test_c_source_contract() -> None:
         "haptics_prev_valid",
         "haptics_phase",
         "haptic_pcm16_to_i8",
+        "audio_packet_has_nonzero_speaker",
+        "force_zero_haptics",
         "read_i16_le(frame + 4)",
         "read_i16_le(frame + 6)",
         "if (haptics_phase == 0)",
@@ -522,17 +526,36 @@ def test_c_source_contract() -> None:
         "opus_encoder_get_size",
         "opus_encoder_init",
         "opus_encode(encoder",
+        "OPUS_SET_FORCE_CHANNELS",
+        "OPUS_SET_MAX_BANDWIDTH",
+        "OPUS_BANDWIDTH_MEDIUMBAND",
         "opus_decoder_get_size",
         "opus_decoder_init",
         "opus_decode(decoder",
         "xTaskCreateStatic(audio_codec_task",
         "process_audio_speaker(audio_out_buffer, nbytes)",
+        "AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM",
+        "resample_speaker_upstream_frame",
         "m61_usb_gamepad_submit_mic_opus",
+        "m61_usb_gamepad_audio_mic_enabled",
+        "CONFIG_M61_DS5_MIC_DEFAULT_ENABLED",
         "m61_usb_gamepad_take_speaker_opus",
         "AUDIO_IN_STREAM_PACKET_SIZE",
+        "audio_mic_usb_nonzero_packets",
+        "audio_speaker_encode_us_max",
     ]
     for snippet in m61_audio_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
+    m61_bridge_snippets = [
+        "bt_mic_active",
+        "host_mic_active && !speaker_active",
+        "hidp_last_mic_active != bt_mic_active",
+        "mic_enabled=%u",
+        "USB DualSense registration waits for controller full report",
+        "usb_after_ds=%d",
+    ]
+    for snippet in m61_bridge_snippets:
+        assert snippet in m61_main_source, f"missing M61 bridge snippet: {snippet}"
     assert "m61_haptics_resampler" not in m61_cmake_source
     assert "resample.cpp" not in m61_cmake_source
 
