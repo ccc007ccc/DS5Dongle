@@ -1123,6 +1123,7 @@ def test_c_source_contract() -> None:
         "Raw HIDP control connect requested using saved address only",
         "Raw HIDP explicit scan requested; ignoring saved address",
         "Raw HIDP trying saved DualSense address %s by explicit request",
+        "Raw HIDP normalizing reconnect policy to saved address after successful open for %s",
         "DS5_DUAL_MSG_BT_CONNECT",
         "DS5_DUAL_BT_CONNECT_SCAN_ONLY",
         "DS5_DUAL_BT_CONNECT_SAVED_ONLY",

@@ -1646,6 +1646,17 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             if (s_saved_bda_dirty || s_blacklist_dirty) {
                 schedule_persist_flush();
             }
+            if (s_connect_mode != RAW_CONNECT_MODE_AUTO ||
+                s_target_origin == RAW_TARGET_MANUAL ||
+                s_target_origin == RAW_TARGET_DISCOVERY) {
+                char addr[18];
+                ESP_LOGI(TAG, "Raw HIDP normalizing reconnect policy to saved address after successful open for %s",
+                         bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
+            }
+            memcpy(s_target_bda, param->open.rem_bda, sizeof(s_target_bda));
+            s_target_found = true;
+            s_target_origin = RAW_TARGET_SAVED_AUTO;
+            s_connect_mode = RAW_CONNECT_MODE_AUTO;
             s_current_target_from_saved = false;
             s_saved_reconnect_failures = 0;
             led_status_set(DS5_LED_STATE_BT_CONNECTED);
