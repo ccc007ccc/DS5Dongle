@@ -2908,6 +2908,9 @@ int cmd_ds5(int argc, char **argv)
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
         err = m61_esp32_transport_connect_mode(DS5_DUAL_BT_CONNECT_SCAN_ONLY);
         printf("esp32 scan-only result=%d\r\n", err);
+        if (err == -ENOTSUP) {
+            printf("esp32 firmware lacks BT_CONNECT mode-select support; flash matching dual-chip firmware on both boards\r\n");
+        }
         return err;
 #else
         start_inquiry();
@@ -2948,6 +2951,9 @@ int cmd_ds5(int argc, char **argv)
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
             err = m61_esp32_transport_connect_mode(DS5_DUAL_BT_CONNECT_SAVED_ONLY);
             printf("esp32 connect last result=%d\r\n", err);
+            if (err == -ENOTSUP) {
+                printf("esp32 firmware lacks BT_CONNECT mode-select support; flash matching dual-chip firmware on both boards\r\n");
+            }
             return err;
 #else
             if (!have_last_dualsense_addr) {

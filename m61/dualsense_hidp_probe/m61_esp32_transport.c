@@ -495,6 +495,11 @@ static bool peer_link_ready(void)
            s_transport.stats.peer_protocol_version == DS5_DUAL_SPI_VERSION;
 }
 
+static bool peer_supports_bt_connect_modes(void)
+{
+    return (s_transport.stats.peer_capabilities & DS5_DUAL_CAP_BT_CONNECT_MODES) != 0U;
+}
+
 static int require_peer_link_ready(void)
 {
     if (peer_link_ready()) {
@@ -1127,7 +1132,8 @@ static int send_hello(void)
                         DS5_DUAL_CAP_AUDIO_RT |
                         DS5_DUAL_CAP_FEATURE_REPORTS |
                         DS5_DUAL_CAP_FLOW_CREDIT |
-                        DS5_DUAL_CAP_RELIABLE_ACK,
+                        DS5_DUAL_CAP_RELIABLE_ACK |
+                        DS5_DUAL_CAP_BT_CONNECT_MODES,
     };
     uint8_t payload[DS5_DUAL_HELLO_PAYLOAD_LEN];
     int err;
@@ -1412,6 +1418,15 @@ int m61_esp32_transport_connect_mode(uint8_t mode)
         mode != DS5_DUAL_BT_CONNECT_SAVED_ONLY) {
         s_transport.stats.last_error = -EINVAL;
         return -EINVAL;
+    }
+    if (!peer_link_ready()) {
+        s_transport.stats.not_ready++;
+        s_transport.stats.last_error = -ENOTCONN;
+        return -ENOTCONN;
+    }
+    if (!peer_supports_bt_connect_modes()) {
+        s_transport.stats.last_error = -ENOTSUP;
+        return -ENOTSUP;
     }
 
     return send_bt_connect_request(&mode, sizeof(mode));

@@ -601,7 +601,8 @@ static void set_pending_hello(void)
                         DS5_DUAL_CAP_AUDIO_RT |
                         DS5_DUAL_CAP_FEATURE_REPORTS |
                         DS5_DUAL_CAP_FLOW_CREDIT |
-                        DS5_DUAL_CAP_RELIABLE_ACK,
+                        DS5_DUAL_CAP_RELIABLE_ACK |
+                        DS5_DUAL_CAP_BT_CONNECT_MODES,
     };
     uint8_t payload[DS5_DUAL_HELLO_PAYLOAD_LEN];
 

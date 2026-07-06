@@ -87,6 +87,7 @@ DS5_DUAL_CAP_AUDIO_RT = 0x00000004
 DS5_DUAL_CAP_FEATURE_REPORTS = 0x00000008
 DS5_DUAL_CAP_FLOW_CREDIT = 0x00000010
 DS5_DUAL_CAP_RELIABLE_ACK = 0x00000020
+DS5_DUAL_CAP_BT_CONNECT_MODES = 0x00000040
 DS5_DUAL_BT_STATE_READY = 0x00000001
 DS5_DUAL_BT_STATE_L2CAP_READY = 0x00000002
 DS5_DUAL_BT_STATE_SDP_READY = 0x00000004
@@ -682,6 +683,7 @@ def test_dual_chip_spi_vectors() -> None:
         | DS5_DUAL_CAP_FEATURE_REPORTS
         | DS5_DUAL_CAP_FLOW_CREDIT
         | DS5_DUAL_CAP_RELIABLE_ACK
+        | DS5_DUAL_CAP_BT_CONNECT_MODES
     )
     hello_payload = make_dual_hello(DS5_DUAL_ROLE_M61_USB, 1, hello_caps)
     hello_frame = make_dual_spi_frame(
@@ -1124,6 +1126,7 @@ def test_c_source_contract() -> None:
         "DS5_DUAL_MSG_BT_CONNECT",
         "DS5_DUAL_BT_CONNECT_SCAN_ONLY",
         "DS5_DUAL_BT_CONNECT_SAVED_ONLY",
+        "DS5_DUAL_CAP_BT_CONNECT_MODES",
         "DS5_DUAL_MSG_BT_DISCONNECT",
         "DS5_DUAL_MSG_BT_FORGET",
         "uint8_t packet[1 + DS5_OUTPUT_REPORT36_BT_LEN]",
@@ -1131,6 +1134,7 @@ def test_c_source_contract() -> None:
         "DS5_DUAL_WIRE_TEST_PASS",
         "m61_esp32_transport_connect",
         "m61_esp32_transport_connect_mode",
+        "peer_supports_bt_connect_modes",
         "m61_esp32_transport_disconnect",
         "m61_esp32_transport_forget",
         "m61_esp32_transport_wire_test",
