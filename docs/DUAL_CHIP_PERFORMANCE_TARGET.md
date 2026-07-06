@@ -34,8 +34,9 @@
 - M61 SPI exchange 已能验证 ESP32 返回 frame，并把 `BT_RX_INPUT` 回灌到 USB HID input、把 `BT_RX_MIC_OPUS` 回灌到 USB microphone Opus 队列。
 - M61 侧已有默认关闭的 RX poll shell：`CONFIG_M61_ESP32_RX_POLL_ENABLE=n`；接好 `ESP_IRQ` 并显式打开后会在 IRQ 高电平时 clock 空事务读取 ESP32 pending response；如果 `ESP_IRQ` 暂未接线但需要先 bring-up，也可以只打开该选项，让 M61 按固定间隔 fallback polling。
 - 双芯片 feature report 控制面已分离为 `BT_TX_FEATURE_GET`、`BT_TX_FEATURE_SET`、`BT_RX_FEATURE_REPORT`，ESP32 走 HIDP control channel，M61 回填 USB feature cache。
-- `BT_CONNECT/BT_DISCONNECT` 可靠控制面已接入：M61 transport 和 `ds5 connect`/`ds5 disconnect [reconnect]` shell 命令会转发到 ESP32；ESP32 raw HIDP 可按保存地址/扫描自动连接，也可按 6 字节 BDA 指定目标，断开时可选择抑制自动重连。
-- `BT_FORGET` 可靠控制面已接入：M61 `ds5 forget` 会转发到 ESP32，清掉 ESP32 侧保存的 DualSense 地址并删除 Classic BT bond database，避免双芯片模式只清掉 M61 本地缓存、但 ESP32 仍继续按旧地址/旧 link key 自动连接。
+- `BT_CONNECT/BT_DISCONNECT` 可靠控制面已接入：M61 transport 和 `ds5 connect`/`ds5 disconnect [reconnect]` shell 命令会转发到 ESP32；ESP32 raw HIDP 可按保存地址/扫描自动连接，也可按 6 字节 BDA 指定目标；如果显式 BDA connect 发生在 ESP32 `L2CAP/SDP` 尚未 ready 之前，该 target 会保留到 stack ready 后继续执行，不会被保存地址/扫描 fallback 覆盖。`BT_DISCONNECT` 会清掉 pending target/discovery/SDP 状态，避免迟到的 completion 把连接又偷偷拉起。
+- `BT_FORGET` 可靠控制面已接入：M61 `ds5 forget` 会转发到 ESP32，清掉 ESP32 侧保存的 DualSense 地址并删除 Classic BT bond database，避免双芯片模式只清掉 M61 本地缓存、但 ESP32 仍继续按旧地址/旧 link key 自动连接；同时也会清掉 pending target/discovery/SDP 状态，避免 forget 之后被旧事件继续推进连接。
+- ESP32 raw HIDP 现在会把“保存 DualSense 地址”和“成功显式重配后移除黑名单”的 NVS 持久化延后到连接稳定窗口之后处理，而不是在 `L2CAP open` 热路径里同步刷 flash，减少刚连上时的阻塞风险。
 - 可靠控制面的 ACK 与超时重传已接入：M61 对 `HELLO`、feature/reset 这类 reliable frame 带 `DS5_DUAL_FLAG_RELIABLE`，ESP32 收到后用同 type + `DS5_DUAL_FLAG_ACK` 回传原 seq/type/status；M61 发送 reliable frame 后会 clock 空事务取 ACK，ACK miss 或可恢复错误会按 `CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT` 重发，并在 transport stats 记录 ACK/miss/retry/fail/status。
 - `HELLO` 握手已接入：ESP32 SPI slave ready 后预置本机 role/capability/MTU/queue-depth，M61 初始化 SPI transport 时发可靠 `HELLO`，并在 stats 中记录对端 role、protocol version、MTU、max payload、queue depth 和 capabilities。
 - `TIME_SYNC` 已接入一跳同步和周期刷新：M61 初始化时发送本地微秒时间，ESP32 返回 `esp_timer` 微秒时间，M61 估算 offset 后才把实时 `0x36` 的 FreeRTOS tick deadline 转成 ESP32 微秒 deadline；`CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS` 默认 1000 ms，transport ready 后低优先级刷新 offset，同步状态、失败次数、RTT、age 和 offset 会显示在 M61 transport stats 中。
@@ -198,9 +199,9 @@ payload    N bytes
 
 - `HELLO`：版本、能力、最大 payload、SPI MTU、队列深度。
 - `TIME_SYNC`：M61 tick 与 ESP32 tick 对齐，用于 deadline 判断。
-- `BT_CONNECT`：连接指定 DualSense 地址。
-- `BT_DISCONNECT`：主动断开。
-- `BT_FORGET`：清空保存地址和 bond database。
+- `BT_CONNECT`：连接指定 DualSense 地址；若 payload 为空则按保存地址/扫描自动连接。
+- `BT_DISCONNECT`：主动断开，并清空 pending target/discovery/SDP 状态；可选择是否允许自动重连。
+- `BT_FORGET`：清空保存地址和 bond database，并清空 pending target/discovery/SDP 状态。
 - `BT_STATE`：连接、鉴权、SDP、HIDP channel、错误码、RSSI。
 - `BT_RX_INPUT`：ESP32 -> M61，手柄 input report。
 - `BT_RX_MIC_OPUS`：ESP32 -> M61，手柄 mic Opus payload。
