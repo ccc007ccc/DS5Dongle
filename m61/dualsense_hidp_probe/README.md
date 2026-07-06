@@ -16,6 +16,8 @@ The probe validates these pieces:
 - SDP query for HID service `0x1124`
 - L2CAP HID Control PSM `0x11`
 - L2CAP HID Interrupt PSM `0x13`
+- DualSense Edge profile unlock flow (`SET 0x65`, `SET 0x80`, paced
+  `0x70..0x7B` prefetch) plus post-save `0x80` / `0x81` refresh
 - raw HIDP packet logging, shared DualSense input parsing, and optional raw packet send commands
 - HIDP bring-up attempts for Set Protocol, feature report reads, and DualSense output init reports
 - USB DualSense composite device with Audio Control, Audio OUT, Audio IN, and
@@ -102,8 +104,14 @@ retry DualSense bring-up until report=0x31 appears or attempts are exhausted
 reenables it and starts immediately.
 
 After one successful scan or connection, `ds5 autoconnect` uses the saved
-DualSense address. `ds5 forget` clears the probe's saved address; Bluetooth
-bond data is still owned by the SDK settings layer.
+DualSense address. `ds5 forget` clears the saved address. In dual-chip mode it
+also tells the ESP32 HIDP side to drop its saved address and Classic BT bonds.
+
+For DualSense Edge, USB profile reads `0x70..0x7B` are intentionally NAKed
+until the bridge finishes the native-style unlock and paced prefetch cycle.
+That keeps the PS Accessories app retrying instead of caching an empty
+snapshot, and profile saves `0x60..0x62` trigger the same `0x80` / `0x81`
+refresh pattern used by upstream `awalol/DS5Dongle`.
 
 The first runtime goal is seeing parsed HID Interrupt input frames. `report=0x01
 mode=basic` proves the raw HIDP input path is alive; `report=0x31 mode=full`

@@ -9,6 +9,7 @@
 #include "dualsense_output.h"
 #include "dualsense_parser.h"
 #include "dual_chip_spi_proto.h"
+#include "m61_ds5_dse.h"
 #include "m61_esp32_transport.h"
 #include "m61_usb_gamepad.h"
 
@@ -292,6 +293,20 @@ static struct bt_sdp_discover_params sdp_params;
 
 static int hidp_control_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan);
 static int hidp_interrupt_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan);
+static int hidp_request_feature_report(uint8_t report_id, uint32_t requested_len);
+static int hidp_set_feature_exact(uint8_t report_id, const uint8_t *data, size_t len);
+static void m61_dse_note_feature_report(uint8_t report_id,
+                                        const uint8_t *data,
+                                        size_t len,
+                                        void *ctx);
+static int m61_dse_request_feature(void *ctx, uint8_t report_id, uint32_t requested_len);
+static int m61_dse_set_feature_exact(void *ctx, uint8_t report_id, const uint8_t *data, size_t len);
+
+static const m61_ds5_dse_ops_t s_dse_ops = {
+    .ctx = NULL,
+    .request_feature = m61_dse_request_feature,
+    .set_feature_exact = m61_dse_set_feature_exact,
+};
 
 static struct hidp_channel hid_control = {
     .name = "control",
@@ -376,6 +391,8 @@ static void auto_reset_link_state(void)
     auto_next_hidp_tick = 0;
     auto_next_bringup_tick = 0;
     br_connected_tick = xTaskGetTickCount();
+    m61_usb_gamepad_reset_feature_cache();
+    m61_ds5_dse_reset();
 }
 
 static void auto_reset_saved_addr_attempts(void)
@@ -1105,6 +1122,7 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
 
     if (channel == &hid_control && buf->len >= 3 && buf->data[0] == 0xA3) {
         m61_usb_gamepad_store_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
+        m61_ds5_dse_note_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
     }
 
     if (channel == &hid_interrupt &&
@@ -1419,6 +1437,16 @@ static int hidp_get_report(uint8_t report_type, uint8_t report_id)
 #endif
 }
 
+static int hidp_request_feature_report(uint8_t report_id, uint32_t requested_len)
+{
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+    return m61_esp32_transport_request_feature(report_id, requested_len);
+#else
+    (void)requested_len;
+    return hidp_get_report(HIDP_REPORT_TYPE_FEATURE, report_id);
+#endif
+}
+
 static int hidp_set_report(uint8_t report_type, const uint8_t *report, size_t report_len)
 {
     uint8_t packet[HIDP_TX_MAX_LEN];
@@ -1565,6 +1593,48 @@ static int hidp_set_feature_from_usb(uint8_t report_id, const uint8_t *data, siz
     dualsense_feature_fill_crc(packet + 1, len + 1);
     return hidp_send_raw(&hid_control, packet, len + 2);
 #endif
+}
+
+static int hidp_set_feature_exact(uint8_t report_id, const uint8_t *data, size_t len)
+{
+    uint8_t packet[HIDP_TX_MAX_LEN];
+
+    if (!data || len + 2 > sizeof(packet)) {
+        return -EMSGSIZE;
+    }
+
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+    if (len > M61_DS5_USB_FEATURE_MAX_LEN) {
+        return -EMSGSIZE;
+    }
+    return m61_esp32_transport_set_feature(report_id, data, len);
+#else
+    packet[0] = (uint8_t)(HIDP_TRANSACTION_SET_REPORT | HIDP_REPORT_TYPE_FEATURE);
+    packet[1] = report_id;
+    memcpy(packet + 2, data, len);
+    return hidp_send_raw(&hid_control, packet, len + 2);
+#endif
+}
+
+static void m61_dse_note_feature_report(uint8_t report_id,
+                                        const uint8_t *data,
+                                        size_t len,
+                                        void *ctx)
+{
+    (void)ctx;
+    m61_ds5_dse_note_feature_report(report_id, data, len);
+}
+
+static int m61_dse_request_feature(void *ctx, uint8_t report_id, uint32_t requested_len)
+{
+    (void)ctx;
+    return hidp_request_feature_report(report_id, requested_len);
+}
+
+static int m61_dse_set_feature_exact(void *ctx, uint8_t report_id, const uint8_t *data, size_t len)
+{
+    (void)ctx;
+    return hidp_set_feature_exact(report_id, data, len);
 }
 
 static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool includes_report_id)
@@ -1835,6 +1905,8 @@ static void handle_usb_host_report(const m61_usb_gamepad_host_report_t *report)
                    report_id,
                    (unsigned int)payload_len,
                    err);
+        } else {
+            m61_ds5_dse_note_feature_set(report_id);
         }
     }
 }
@@ -1881,9 +1953,11 @@ static void usb_hid_bridge_task(void *pvParameters)
             }
         }
 
+        m61_ds5_dse_task(now);
+
         while (feature_reports_this_tick < CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK &&
                m61_usb_gamepad_take_feature_request(&feature_report_id, &requested_len)) {
-            int err = hidp_get_report(HIDP_REPORT_TYPE_FEATURE, feature_report_id);
+            int err = hidp_request_feature_report(feature_report_id, requested_len);
             if (err && err != -ENOTCONN) {
                 printf("usb feature get forward failed id=0x%02x requested=%lu err=%d\r\n",
                        feature_report_id,
@@ -3111,8 +3185,10 @@ int main(void)
 #endif
 
     dualsense_output_init(&output_ctx);
+    m61_ds5_dse_init(&s_dse_ops);
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
     m61_esp32_transport_set_input_callback(dual_chip_input_callback, NULL);
+    m61_esp32_transport_set_feature_callback(m61_dse_note_feature_report, NULL);
     m61_esp32_transport_init();
     xTaskCreate(dual_chip_boot_task,
                 "esp32_boot",

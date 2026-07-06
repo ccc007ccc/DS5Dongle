@@ -112,11 +112,17 @@ typedef void (*m61_esp32_transport_input_cb_t)(
     const dualsense_state_t *state,
     const dualsense_parse_result_t *parse,
     void *ctx);
+typedef void (*m61_esp32_transport_feature_cb_t)(uint8_t report_id,
+                                                 const uint8_t *data,
+                                                 size_t len,
+                                                 void *ctx);
 
 void m61_esp32_transport_init(void);
 bool m61_esp32_transport_ready(void);
 void m61_esp32_transport_set_input_callback(m61_esp32_transport_input_cb_t cb,
                                             void *ctx);
+void m61_esp32_transport_set_feature_callback(m61_esp32_transport_feature_cb_t cb,
+                                              void *ctx);
 int m61_esp32_transport_send_bt_report(const uint8_t *report,
                                        size_t report_len,
                                        TickType_t deadline_tick,

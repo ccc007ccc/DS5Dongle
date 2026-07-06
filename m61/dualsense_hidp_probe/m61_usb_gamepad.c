@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "m61_ds5_dse.h"
 #include "bflb_clock.h"
 #include "bflb_core.h"
 #include "bflb_irq.h"
@@ -1610,6 +1611,18 @@ void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data
     usb_unlock(flags);
 }
 
+void m61_usb_gamepad_reset_feature_cache(void)
+{
+    uintptr_t flags = usb_lock();
+
+    memset(feature_cache, 0, sizeof(feature_cache));
+    feature_cache_replace_index = 0;
+    pending_feature_request_valid = false;
+    pending_feature_report_id = 0;
+    pending_feature_report_len = 0;
+    usb_unlock(flags);
+}
+
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len)
 {
     bool valid;
@@ -1921,6 +1934,12 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
     }
 
     if (report_type != HID_REPORT_FEATURE) {
+        return;
+    }
+
+    if (m61_ds5_dse_should_nak_profile(report_id)) {
+        usb_diag.feature_cache_misses++;
+        queue_feature_request(report_id, requested_len);
         return;
     }
 

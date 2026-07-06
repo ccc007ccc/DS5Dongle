@@ -118,6 +118,8 @@ typedef struct {
     int32_t esp_time_offset_us;
     m61_esp32_transport_input_cb_t input_cb;
     void *input_cb_ctx;
+    m61_esp32_transport_feature_cb_t feature_cb;
+    void *feature_cb_ctx;
     m61_esp32_transport_stats_t stats;
 } m61_esp32_transport_state_t;
 
@@ -703,6 +705,12 @@ static void process_rx_frame(const uint8_t *frame, size_t frame_len)
             m61_usb_gamepad_store_feature_report(payload[0],
                                                  payload + 1,
                                                  header.length - 1U);
+            if (s_transport.feature_cb != NULL) {
+                s_transport.feature_cb(payload[0],
+                                       payload + 1,
+                                       header.length - 1U,
+                                       s_transport.feature_cb_ctx);
+            }
         }
         break;
     case DS5_DUAL_MSG_FLOW_CREDIT: {
@@ -1252,6 +1260,13 @@ void m61_esp32_transport_set_input_callback(m61_esp32_transport_input_cb_t cb,
 {
     s_transport.input_cb = cb;
     s_transport.input_cb_ctx = ctx;
+}
+
+void m61_esp32_transport_set_feature_callback(m61_esp32_transport_feature_cb_t cb,
+                                              void *ctx)
+{
+    s_transport.feature_cb = cb;
+    s_transport.feature_cb_ctx = ctx;
 }
 
 int m61_esp32_transport_send_bt_report(const uint8_t *report,

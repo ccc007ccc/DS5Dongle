@@ -18,6 +18,7 @@ PARSER = ROOT / "main" / "dualsense_parser.c"
 OUTPUT = ROOT / "main" / "dualsense_output.c"
 M61_USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
 M61_MAIN = ROOT / "m61" / "dualsense_hidp_probe" / "main.c"
+M61_DSE = ROOT / "m61" / "dualsense_hidp_probe" / "m61_ds5_dse.c"
 M61_CMAKE = ROOT / "m61" / "dualsense_hidp_probe" / "CMakeLists.txt"
 M61_BUILD_SH = ROOT / "m61" / "dualsense_hidp_probe" / "build.sh"
 M61_TRANSPORT = ROOT / "m61" / "dualsense_hidp_probe" / "m61_esp32_transport.c"
@@ -888,6 +889,7 @@ def test_c_source_contract() -> None:
     output_source = OUTPUT.read_text(encoding="utf-8")
     m61_usb_source = M61_USB.read_text(encoding="utf-8")
     m61_main_source = M61_MAIN.read_text(encoding="utf-8")
+    m61_dse_source = M61_DSE.read_text(encoding="utf-8")
     m61_cmake_source = M61_CMAKE.read_text(encoding="utf-8")
     m61_build_source = M61_BUILD_SH.read_text(encoding="utf-8")
     m61_transport_source = M61_TRANSPORT.read_text(encoding="utf-8")
@@ -999,6 +1001,33 @@ def test_c_source_contract() -> None:
     ]
     for snippet in m61_bridge_snippets:
         assert snippet in m61_main_source, f"missing M61 bridge snippet: {snippet}"
+    m61_dse_snippets = [
+        "DSE_FEATURE_20_HANDSHAKE_LEN",
+        "DSE_PROFILE_REPORT_FIRST",
+        "dualsense_feature_fill_crc",
+        "m61_ds5_dse_note_feature_report",
+        "m61_ds5_dse_note_feature_set",
+        "Sent 0x65/0x80 unlock",
+        "Unlock wait done; prefetching 0x70-0x7B",
+        "Profile snapshot ready",
+        "Post-save: re-sent 0x80",
+        "Post-save: profile snapshot refetch started",
+        "DSE_POST_SAVE_STATUS_POLLS",
+    ]
+    for snippet in m61_dse_snippets:
+        assert snippet in m61_dse_source, f"missing M61 DSE snippet: {snippet}"
+    m61_bridge_dse_snippets = [
+        "m61_ds5_dse_task(now);",
+        "m61_ds5_dse_init(&s_dse_ops);",
+        "m61_ds5_dse_note_feature_report(buf->data[1], buf->data + 2, buf->len - 2);",
+        "m61_ds5_dse_note_feature_set(report_id);",
+        "m61_esp32_transport_set_feature_callback(m61_dse_note_feature_report, NULL);",
+        "m61_usb_gamepad_reset_feature_cache();",
+    ]
+    combined_m61_dse_source = "\n".join([m61_main_source, m61_usb_source, m61_transport_source])
+    for snippet in m61_bridge_dse_snippets:
+        assert snippet in combined_m61_dse_source, f"missing M61 DSE bridge snippet: {snippet}"
+    assert "m61_ds5_dse.c" in m61_cmake_source
     assert "m61_haptics_resampler" not in m61_cmake_source
     assert "resample.cpp" not in m61_cmake_source
 
