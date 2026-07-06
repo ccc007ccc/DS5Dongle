@@ -1138,6 +1138,7 @@ def test_c_source_contract() -> None:
         "RAW_TARGET_MANUAL",
         "saved DualSense %s is blacklisted; scanning for explicit re-pair",
         "should_block_blacklisted_peer",
+        "save_bda_if_needed(param->open.rem_bda);",
         "Raw HIDP rejected SSP confirmation from blacklisted",
         "Raw HIDP rejected blacklisted incoming L2CAP open",
         "from blacklist after successful pair",

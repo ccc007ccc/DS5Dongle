@@ -1431,7 +1431,6 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         channel->handle = param->open.handle;
         channel->tx_mtu = param->open.tx_mtu;
         channel->connected = true;
-        save_bda_if_needed(param->open.rem_bda);
         start_rx_task(channel);
         ESP_LOGI(TAG, "Raw HIDP %s connected: fd=%d tx_mtu=%" PRId32,
                  channel->name, channel->fd, channel->tx_mtu);
@@ -1442,6 +1441,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         if (channel->id == RAW_CH_CONTROL) {
             connect_hidp_interrupt();
         } else if (s_control.connected && s_interrupt.connected) {
+            save_bda_if_needed(param->open.rem_bda);
             if (target_origin_allows_blacklist_bypass() &&
                 blacklist_remove(param->open.rem_bda)) {
                 char addr[18];
