@@ -879,6 +879,19 @@ static void start_connect_flow(void)
         return;
     }
 
+    if (s_target_found &&
+        !bda_is_zero(s_target_bda) &&
+        (s_target_origin == RAW_TARGET_MANUAL ||
+         s_target_origin == RAW_TARGET_DISCOVERY)) {
+        char addr[18];
+
+        s_current_target_from_saved = false;
+        ESP_LOGI(TAG, "Raw HIDP resuming explicit target %s after stack ready",
+                 bda_to_str(s_target_bda, addr, sizeof(addr)));
+        start_sdp_or_connect();
+        return;
+    }
+
     if (s_have_saved_bda &&
         s_saved_reconnect_failures < DS5_RAW_MAX_SAVED_RECONNECT_FAILURES) {
         if (blacklist_contains(s_saved_bda)) {
