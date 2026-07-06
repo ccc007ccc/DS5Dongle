@@ -522,6 +522,15 @@ static bool load_saved_bda(void)
     return true;
 }
 
+static void clear_target_selection(void)
+{
+    memset(s_target_bda, 0, sizeof(s_target_bda));
+    s_target_found = false;
+    s_sdp_searching = false;
+    s_current_target_from_saved = false;
+    s_target_origin = RAW_TARGET_NONE;
+}
+
 static void clear_saved_bda_state(void)
 {
     memset(s_saved_bda, 0, sizeof(s_saved_bda));
@@ -529,7 +538,7 @@ static void clear_saved_bda_state(void)
     s_saved_reconnect_failures = 0;
     s_current_target_from_saved = false;
     if (s_target_origin == RAW_TARGET_SAVED_AUTO) {
-        s_target_origin = RAW_TARGET_NONE;
+        clear_target_selection();
     }
 }
 
@@ -563,8 +572,7 @@ static int forget_saved_bda(void)
     }
 
     clear_saved_bda_state();
-    memset(s_target_bda, 0, sizeof(s_target_bda));
-    s_target_found = false;
+    clear_target_selection();
     ESP_LOGI(TAG, "Raw HIDP cleared saved DualSense address");
     return 0;
 }
@@ -738,7 +746,7 @@ static void reset_hidp_channels(void)
 
     s_connecting = false;
     s_pending_step = RAW_CONNECT_IDLE;
-    s_target_origin = RAW_TARGET_NONE;
+    clear_target_selection();
     s_have_last_state = false;
     s_have_full_report = false;
     s_bringup_attempts = 0;
@@ -979,6 +987,7 @@ int bt_dualsense_raw_hidp_disconnect(bool allow_reconnect)
         esp_timer_stop(s_reconnect_timer);
     }
     stop_bringup_timer();
+    clear_target_selection();
     esp_bt_gap_cancel_discovery();
 
     close_channel(&s_interrupt);
@@ -1099,6 +1108,7 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
 {
     int first_error = 0;
     int err;
+    esp_bd_addr_t target_bda_snapshot = {0};
 
     if ((flags & ~(DS5_DUAL_FORGET_SAVED_ADDR | DS5_DUAL_FORGET_BONDS)) != 0 ||
         flags == 0) {
@@ -1110,6 +1120,8 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
         esp_timer_stop(s_reconnect_timer);
     }
     stop_bringup_timer();
+    memcpy(target_bda_snapshot, s_target_bda, sizeof(target_bda_snapshot));
+    clear_target_selection();
     esp_bt_gap_cancel_discovery();
 
     close_channel(&s_interrupt);
@@ -1122,7 +1134,7 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
             first_error = err;
         }
         maybe_add_blacklist_candidate(s_saved_bda, "forget-saved");
-        maybe_add_blacklist_candidate(s_target_bda, "forget-target");
+        maybe_add_blacklist_candidate(target_bda_snapshot, "forget-target");
         err = persist_blacklist();
         if (err != 0 && first_error == 0) {
             first_error = err;
@@ -1139,8 +1151,7 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
         }
     }
 
-    s_target_found = false;
-    memset(s_target_bda, 0, sizeof(s_target_bda));
+    clear_target_selection();
     s_last_error = first_error;
     led_status_set(DS5_LED_STATE_BOOT_OK);
     notify_state();
@@ -1537,6 +1548,10 @@ static void sdp_callback(esp_sdp_cb_event_t event, esp_sdp_cb_param_t *param)
             }
         }
         notify_state();
+        if (!s_target_found || bda_is_zero(s_target_bda)) {
+            ESP_LOGI(TAG, "Raw HIDP ignoring SDP completion without active target");
+            break;
+        }
         connect_hidp_control();
         break;
 

@@ -1073,6 +1073,8 @@ def test_c_source_contract() -> None:
         "bt_dualsense_raw_hidp_disconnect",
         "DS5_RAW_HIDP_AUTO_CONNECT",
         "Raw HIDP auto-connect enabled at startup",
+        "clear_target_selection();",
+        "Raw HIDP ignoring SDP completion without active target",
         "DS5_DUAL_MSG_BT_CONNECT",
         "DS5_DUAL_MSG_BT_DISCONNECT",
         "DS5_DUAL_MSG_BT_FORGET",
