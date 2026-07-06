@@ -104,6 +104,11 @@ When the M61 LED turns red, the M61 console also prints
 `esp32_wire_test HINT ...` lines that point to the most likely wire or firmware
 profile to check first.
 
+If `ESP_IRQ` is not wired yet, `CONFIG_M61_ESP32_RX_POLL_ENABLE=y` still lets
+the M61 poll for pending ESP32 responses at a fixed interval. That is useful
+for early bring-up, but wiring `ESP_IRQ` is still preferred so the M61 only
+clocks empty SPI transactions when the coprocessor actually has queued data.
+
 If the controller is not connected yet and you only want to prove the SPI link:
 
 ```powershell

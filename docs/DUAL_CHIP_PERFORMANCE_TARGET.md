@@ -32,7 +32,7 @@
 - M61 侧新增 `m61/dualsense_hidp_probe/m61_esp32_transport.*`，现有 USB/Opus/DS5 output report 生成点可以在 `CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT=y` 时走 ESP32 transport，而不是 M61 本机 HIDP 发送。
 - M61 侧已有可配置 SPI master shell：`CONFIG_M61_ESP32_SPI_ENABLE` 和 `CONFIG_M61_ESP32_SPI_READY` 默认关闭，`SCLK/MOSI/MISO/CS/READY/IRQ/RESET` 默认 `255` 作为无效 pin，不碰硬件；填入实际接线并显式打开后会用固定 532B MTU 与 ESP32 slave 做同步 exchange。
 - M61 SPI exchange 已能验证 ESP32 返回 frame，并把 `BT_RX_INPUT` 回灌到 USB HID input、把 `BT_RX_MIC_OPUS` 回灌到 USB microphone Opus 队列。
-- M61 侧已有默认关闭的 IRQ RX poll shell：`CONFIG_M61_ESP32_RX_POLL_ENABLE=n`，接好 `ESP_IRQ` 并显式打开后会在 IRQ 高电平时 clock 空事务读取 ESP32 pending response。
+- M61 侧已有默认关闭的 RX poll shell：`CONFIG_M61_ESP32_RX_POLL_ENABLE=n`；接好 `ESP_IRQ` 并显式打开后会在 IRQ 高电平时 clock 空事务读取 ESP32 pending response；如果 `ESP_IRQ` 暂未接线但需要先 bring-up，也可以只打开该选项，让 M61 按固定间隔 fallback polling。
 - 双芯片 feature report 控制面已分离为 `BT_TX_FEATURE_GET`、`BT_TX_FEATURE_SET`、`BT_RX_FEATURE_REPORT`，ESP32 走 HIDP control channel，M61 回填 USB feature cache。
 - `BT_CONNECT/BT_DISCONNECT` 可靠控制面已接入：M61 transport 和 `ds5 connect`/`ds5 disconnect [reconnect]` shell 命令会转发到 ESP32；ESP32 raw HIDP 可按保存地址/扫描自动连接，也可按 6 字节 BDA 指定目标，断开时可选择抑制自动重连。
 - `BT_FORGET` 可靠控制面已接入：M61 `ds5 forget` 会转发到 ESP32，清掉 ESP32 侧保存的 DualSense 地址并删除 Classic BT bond database，避免双芯片模式只清掉 M61 本地缓存、但 ESP32 仍继续按旧地址/旧 link key 自动连接。

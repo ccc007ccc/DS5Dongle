@@ -1109,6 +1109,8 @@ def test_c_source_contract() -> None:
         "s_transport.stats.ack_retries++",
         "s_transport.stats.ack_failures++",
         "s_transport.stats.ack_miss++",
+        "(!irq_configured || optional_irq_pin_active())",
+        "if (!CONFIG_M61_ESP32_RX_POLL_ENABLE || s_transport.rx_poll_task != NULL)",
         "m61_esp32_transport_request_stats",
         "esp32_peer_stats",
     ]

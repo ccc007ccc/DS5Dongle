@@ -852,11 +852,13 @@ static void rx_poll_task(void *arg)
     const TickType_t delay_ticks =
         pdMS_TO_TICKS(CONFIG_M61_ESP32_RX_POLL_INTERVAL_MS > 0 ?
                       CONFIG_M61_ESP32_RX_POLL_INTERVAL_MS : 1);
+    bool irq_configured = pin_configured(CONFIG_M61_ESP32_IRQ_PIN);
 
     (void)arg;
 
     while (1) {
-        if (s_transport.ready && optional_irq_pin_active()) {
+        if (s_transport.ready &&
+            (!irq_configured || optional_irq_pin_active())) {
             int err;
 
             if (s_transport.lock != NULL &&
@@ -880,8 +882,7 @@ static void rx_poll_task(void *arg)
 
 static void start_rx_poll_task(void)
 {
-    if (!CONFIG_M61_ESP32_RX_POLL_ENABLE || !pin_configured(CONFIG_M61_ESP32_IRQ_PIN) ||
-        s_transport.rx_poll_task != NULL) {
+    if (!CONFIG_M61_ESP32_RX_POLL_ENABLE || s_transport.rx_poll_task != NULL) {
         return;
     }
 
