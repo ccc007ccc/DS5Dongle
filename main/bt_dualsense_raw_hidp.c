@@ -96,6 +96,13 @@ typedef enum {
     RAW_CONNECT_INTERRUPT,
 } raw_connect_step_t;
 
+typedef enum {
+    RAW_TARGET_NONE = 0,
+    RAW_TARGET_SAVED_AUTO,
+    RAW_TARGET_DISCOVERY,
+    RAW_TARGET_MANUAL,
+} raw_target_origin_t;
+
 static const char *TAG = "ds5_raw_hidp";
 
 static esp_bd_addr_t s_target_bda;
@@ -107,6 +114,7 @@ static bool s_sdp_ready;
 static bool s_connecting;
 static bool s_sdp_searching;
 static bool s_current_target_from_saved;
+static raw_target_origin_t s_target_origin;
 static bool s_auto_reconnect_enabled = true;
 static bool s_have_last_state;
 static bool s_have_full_report;
@@ -310,9 +318,21 @@ static bool is_expected_target_bda(const esp_bd_addr_t bda)
     return s_target_found && bda_equal(s_target_bda, bda);
 }
 
+static bool target_origin_allows_blacklist_bypass(void)
+{
+    return s_target_origin == RAW_TARGET_DISCOVERY ||
+           s_target_origin == RAW_TARGET_MANUAL;
+}
+
 static bool should_block_blacklisted_peer(const esp_bd_addr_t bda)
 {
-    return blacklist_contains(bda) && !is_expected_target_bda(bda);
+    if (!blacklist_contains(bda)) {
+        return false;
+    }
+    if (!is_expected_target_bda(bda)) {
+        return true;
+    }
+    return !target_origin_allows_blacklist_bypass();
 }
 
 static void maybe_add_blacklist_candidate(const esp_bd_addr_t bda, const char *reason)
@@ -508,6 +528,9 @@ static void clear_saved_bda_state(void)
     s_have_saved_bda = false;
     s_saved_reconnect_failures = 0;
     s_current_target_from_saved = false;
+    if (s_target_origin == RAW_TARGET_SAVED_AUTO) {
+        s_target_origin = RAW_TARGET_NONE;
+    }
 }
 
 static int forget_saved_bda(void)
@@ -715,6 +738,7 @@ static void reset_hidp_channels(void)
 
     s_connecting = false;
     s_pending_step = RAW_CONNECT_IDLE;
+    s_target_origin = RAW_TARGET_NONE;
     s_have_last_state = false;
     s_have_full_report = false;
     s_bringup_attempts = 0;
@@ -768,6 +792,10 @@ static void start_discovery(void)
     }
 
     s_target_found = false;
+    s_current_target_from_saved = false;
+    if (s_target_origin != RAW_TARGET_MANUAL) {
+        s_target_origin = RAW_TARGET_NONE;
+    }
     led_status_set(DS5_LED_STATE_BT_CONNECTING);
     ESP_LOGI(TAG, "Raw HIDP scanning for DualSense over Classic Bluetooth BR/EDR");
     esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY,
@@ -813,9 +841,17 @@ static void start_connect_flow(void)
 
     if (s_have_saved_bda &&
         s_saved_reconnect_failures < DS5_RAW_MAX_SAVED_RECONNECT_FAILURES) {
+        if (blacklist_contains(s_saved_bda)) {
+            char addr[18];
+            ESP_LOGI(TAG, "Raw HIDP saved DualSense %s is blacklisted; scanning for explicit re-pair",
+                     bda_to_str(s_saved_bda, addr, sizeof(addr)));
+            start_discovery();
+            return;
+        }
         memcpy(s_target_bda, s_saved_bda, sizeof(esp_bd_addr_t));
         s_target_found = true;
         s_current_target_from_saved = true;
+        s_target_origin = RAW_TARGET_SAVED_AUTO;
         char addr[18];
         ESP_LOGI(TAG, "Raw HIDP trying saved DualSense address %s",
                  bda_to_str(s_target_bda, addr, sizeof(addr)));
@@ -900,11 +936,13 @@ int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len)
         memcpy(s_target_bda, bda, sizeof(esp_bd_addr_t));
         s_target_found = true;
         s_current_target_from_saved = false;
+        s_target_origin = RAW_TARGET_MANUAL;
         s_saved_reconnect_failures = 0;
         char addr[18];
         ESP_LOGI(TAG, "Raw HIDP control connect requested for %s",
                  bda_to_str(s_target_bda, addr, sizeof(addr)));
     } else {
+        s_target_origin = RAW_TARGET_NONE;
         ESP_LOGI(TAG, "Raw HIDP control connect requested using saved address or scan");
     }
 
@@ -1404,7 +1442,8 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         if (channel->id == RAW_CH_CONTROL) {
             connect_hidp_interrupt();
         } else if (s_control.connected && s_interrupt.connected) {
-            if (blacklist_remove(param->open.rem_bda)) {
+            if (target_origin_allows_blacklist_bypass() &&
+                blacklist_remove(param->open.rem_bda)) {
                 char addr[18];
                 ESP_LOGI(TAG, "Raw HIDP removed %s from blacklist after successful pair",
                          bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
@@ -1563,6 +1602,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             memcpy(s_target_bda, param->disc_res.bda, sizeof(esp_bd_addr_t));
             s_target_found = true;
             s_current_target_from_saved = false;
+            s_target_origin = RAW_TARGET_DISCOVERY;
             ESP_LOGI(TAG, "Raw HIDP selected candidate %s; stopping inquiry", addr);
             notify_state();
             esp_bt_gap_cancel_discovery();
