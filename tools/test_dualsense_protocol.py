@@ -1078,6 +1078,7 @@ def test_c_source_contract() -> None:
         "Raw HIDP staged DualSense address %s for deferred persist",
         "Raw HIDP removed %s from blacklist after successful pair; persist deferred",
         "Raw HIDP resuming explicit target %s after stack ready",
+        "Raw HIDP preserving manual target %s across reconnect timer",
         "DS5_DUAL_MSG_BT_CONNECT",
         "DS5_DUAL_MSG_BT_DISCONNECT",
         "DS5_DUAL_MSG_BT_FORGET",

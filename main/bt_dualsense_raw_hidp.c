@@ -921,8 +921,27 @@ static void start_connect_flow(void)
 
 static void reconnect_timer_cb(void *arg)
 {
+    esp_bd_addr_t retry_bda = {0};
+    bool preserve_manual_target = s_target_origin == RAW_TARGET_MANUAL &&
+                                  s_target_found &&
+                                  !bda_is_zero(s_target_bda);
+
     (void)arg;
+
+    if (preserve_manual_target) {
+        memcpy(retry_bda, s_target_bda, sizeof(retry_bda));
+    }
+
     reset_hidp_channels();
+    if (preserve_manual_target) {
+        memcpy(s_target_bda, retry_bda, sizeof(s_target_bda));
+        s_target_found = true;
+        s_target_origin = RAW_TARGET_MANUAL;
+        s_current_target_from_saved = false;
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP preserving manual target %s across reconnect timer",
+                 bda_to_str(s_target_bda, addr, sizeof(addr)));
+    }
     if (s_auto_reconnect_enabled) {
         start_connect_flow();
     }
