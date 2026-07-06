@@ -97,6 +97,21 @@ static void apply_led_state(ds5_led_state_t state, bool blink_on)
         write_led(CONFIG_DS5_LED_GREEN_GPIO, false);
         write_led(CONFIG_DS5_LED_BLUE_GPIO, true);
         break;
+    case DS5_LED_STATE_WIRE_TESTING:
+        write_led(CONFIG_DS5_LED_RED_GPIO, false);
+        write_led(CONFIG_DS5_LED_GREEN_GPIO, false);
+        write_led(CONFIG_DS5_LED_BLUE_GPIO, blink_on);
+        break;
+    case DS5_LED_STATE_WIRE_TEST_PASS:
+        write_led(CONFIG_DS5_LED_RED_GPIO, false);
+        write_led(CONFIG_DS5_LED_GREEN_GPIO, true);
+        write_led(CONFIG_DS5_LED_BLUE_GPIO, true);
+        break;
+    case DS5_LED_STATE_WIRE_TEST_FAIL:
+        write_led(CONFIG_DS5_LED_RED_GPIO, true);
+        write_led(CONFIG_DS5_LED_GREEN_GPIO, false);
+        write_led(CONFIG_DS5_LED_BLUE_GPIO, blink_on);
+        break;
     default:
         write_led(CONFIG_DS5_LED_RED_GPIO, false);
         write_led(CONFIG_DS5_LED_GREEN_GPIO, false);
@@ -113,7 +128,9 @@ static void led_status_task(void *arg)
     while (true) {
         ds5_led_state_t state = s_led_state;
         apply_led_state(state, blink_on);
-        if (state == DS5_LED_STATE_BT_CONNECTING) {
+        if (state == DS5_LED_STATE_BT_CONNECTING ||
+            state == DS5_LED_STATE_WIRE_TESTING ||
+            state == DS5_LED_STATE_WIRE_TEST_FAIL) {
             blink_on = !blink_on;
         } else {
             blink_on = true;

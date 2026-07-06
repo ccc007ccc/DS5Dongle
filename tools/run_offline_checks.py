@@ -32,12 +32,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--include-esp32-build",
         action="store_true",
-        help="also build default and raw HIDP ESP32 firmware with tools/build_esp32_stage1.py",
+        help="also build ESP32 default, raw HIDP, dual-chip, and dual-chip left-side pin firmware",
     )
     parser.add_argument(
         "--include-m61-build",
         action="store_true",
-        help="also build both M61 firmware probes through WSL",
+        help="also build M61 bridge, default HIDP probe, and dual-chip left-side profile through WSL",
     )
     parser.add_argument(
         "--check-artifacts",
@@ -58,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         ("DualSense parser vectors", [sys.executable, "tools/test_dualsense_protocol.py"]),
         ("stage-1 log checker self-test", [sys.executable, "tools/test_stage1_log_checker.py"]),
         ("M61 HIDP log checker self-test", [sys.executable, "tools/test_m61_hidp_log_checker.py"]),
+        ("dual-chip log checker self-test", [sys.executable, "tools/check_dual_chip_log.py", "--self-test"]),
+        ("dual-chip hardware validator self-test", [sys.executable, "tools/validate_dual_chip_hardware.py", "--self-test"]),
         ("M61 USB Windows checker self-test", [sys.executable, "tools/check_m61_usb_windows.py", "--self-test"]),
         ("M61 USB hardware validator self-test", [sys.executable, "tools/validate_m61_usb_hardware.py", "--self-test"]),
         ("DS5 Windows desktop tester smoke", [sys.executable, "tools/ds5_windows_test_app.py", "--smoke-test"]),
@@ -73,6 +75,21 @@ def main(argv: list[str] | None = None) -> int:
                 "ESP32 raw HIDP build",
                 [sys.executable, "tools/build_esp32_stage1.py", "--backend", "raw-hidp"],
             ),
+            (
+                "ESP32 dual-chip build",
+                [sys.executable, "tools/build_esp32_stage1.py", "--backend", "dual-chip"],
+            ),
+            (
+                "ESP32 dual-chip left-side pin build",
+                [
+                    sys.executable,
+                    "tools/build_esp32_stage1.py",
+                    "--backend",
+                    "dual-chip",
+                    "--pin-profile",
+                    "devkit-left",
+                ],
+            ),
         ])
 
     if args.include_m61_build:
@@ -84,6 +101,16 @@ def main(argv: list[str] | None = None) -> int:
             (
                 "M61 DualSense HIDP probe build",
                 ["wsl", "bash", "/mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh"],
+            ),
+            (
+                "M61 DualSense dual-chip left-side build",
+                [
+                    "wsl",
+                    "bash",
+                    "/mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh",
+                    "--profile",
+                    "dual-chip-left-spi",
+                ],
             ),
         ])
 

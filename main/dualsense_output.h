@@ -29,6 +29,13 @@ typedef struct {
 } dualsense_output_context_t;
 
 void dualsense_output_init(dualsense_output_context_t *ctx);
+void dualsense_output_apply_audio_controls(dualsense_output_context_t *ctx,
+                                           uint8_t speaker_volume,
+                                           uint8_t headphone_volume,
+                                           uint8_t mic_volume,
+                                           bool speaker_mute,
+                                           bool headphone_mute,
+                                           bool mic_mute);
 uint32_t dualsense_output_crc32(const uint8_t *data, size_t len_without_crc);
 uint32_t dualsense_feature_crc32(const uint8_t *data, size_t len_without_crc);
 void dualsense_feature_fill_crc(uint8_t *data, size_t len);

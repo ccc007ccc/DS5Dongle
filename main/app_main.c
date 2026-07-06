@@ -1,5 +1,6 @@
 #include "bt_dualsense_host.h"
 #include "bt_dualsense_raw_hidp.h"
+#include "esp32_dual_chip_spi.h"
 #include "led_status.h"
 
 #include "esp_err.h"
@@ -29,13 +30,14 @@ void app_main(void)
     led_status_set(DS5_LED_STATE_BOOT_OK);
 
     init_nvs();
-#if CONFIG_DS5_BT_BACKEND_RAW_HIDP
+#if CONFIG_DS5_BT_BACKEND_RAW_HIDP || CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR
     ESP_LOGI(TAG, "Bluetooth backend: raw Classic L2CAP HIDP");
     ESP_ERROR_CHECK(bt_dualsense_raw_hidp_start());
 #else
     ESP_LOGI(TAG, "Bluetooth backend: ESP-IDF HID Host API");
     ESP_ERROR_CHECK(bt_dualsense_host_start());
 #endif
+    ESP_ERROR_CHECK(esp32_dual_chip_spi_start());
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(10000));

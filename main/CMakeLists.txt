@@ -3,14 +3,17 @@ idf_component_register(
         "app_main.c"
         "bt_dualsense_host.c"
         "bt_dualsense_raw_hidp.c"
+        "dual_chip_spi_proto.c"
         "dualsense_output.c"
         "dualsense_parser.c"
+        "esp32_dual_chip_spi.c"
         "led_status.c"
     INCLUDE_DIRS
         "."
     REQUIRES
         bt
         esp_driver_gpio
+        esp_driver_spi
         esp_timer
         nvs_flash
 )

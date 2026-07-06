@@ -201,6 +201,39 @@ void dualsense_output_init(dualsense_output_context_t *ctx)
     }
 }
 
+void dualsense_output_apply_audio_controls(dualsense_output_context_t *ctx,
+                                           uint8_t speaker_volume,
+                                           uint8_t headphone_volume,
+                                           uint8_t mic_volume,
+                                           bool speaker_mute,
+                                           bool headphone_mute,
+                                           bool mic_mute)
+{
+    uint8_t mute;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    ensure_set_state(ctx);
+    ctx->set_state[DS5_STATE_VOLUME_SPEAKER] = speaker_volume;
+    ctx->set_state[DS5_STATE_VOLUME_HEADPHONES] = headphone_volume;
+    ctx->set_state[DS5_STATE_VOLUME_MIC] = mic_volume;
+
+    mute = ctx->set_state[DS5_STATE_AUDIO_MUTE];
+    mute = (uint8_t)(mute & ~(0x10U | 0x20U | 0x40U));
+    if (mic_mute) {
+        mute |= 0x10U;
+    }
+    if (speaker_mute) {
+        mute |= 0x20U;
+    }
+    if (headphone_mute) {
+        mute |= 0x40U;
+    }
+    ctx->set_state[DS5_STATE_AUDIO_MUTE] = mute;
+}
+
 uint32_t dualsense_output_crc32(const uint8_t *data, size_t len_without_crc)
 {
     uint8_t seed = DS5_OUTPUT_CRC32_SEED;

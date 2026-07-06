@@ -57,9 +57,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", default="esp32")
     parser.add_argument(
         "--backend",
-        choices=("hidh", "raw-hidp"),
+        choices=("hidh", "raw-hidp", "dual-chip"),
         default="hidh",
         help="stage-1 Bluetooth backend to build",
+    )
+    parser.add_argument(
+        "--pin-profile",
+        choices=("none", "devkit-left", "devkit-vspi"),
+        default="none",
+        help="optional dual-chip wiring profile; default keeps SPI GPIOs disabled",
     )
     parser.add_argument("--clean", action="store_true", help="run idf.py clean before build")
     args = parser.parse_args(argv)
@@ -89,15 +95,42 @@ def main(argv: list[str] | None = None) -> int:
     env["PATH"] = os.pathsep.join(tool_path_entries(args.tools_path, args.python_env) + [env.get("PATH", "")])
 
     idf_global_args: list[str] = []
-    if args.backend == "raw-hidp":
-        raw_defaults = ROOT / "sdkconfig.raw_hidp.defaults"
-        if not raw_defaults.is_file():
-            print(f"missing raw HIDP defaults: {raw_defaults}", file=sys.stderr)
+    if args.pin_profile != "none" and args.backend != "dual-chip":
+        print("--pin-profile requires --backend dual-chip", file=sys.stderr)
+        return 1
+
+    if args.backend in ("raw-hidp", "dual-chip"):
+        backend_defaults = (
+            ROOT / "sdkconfig.raw_hidp.defaults"
+            if args.backend == "raw-hidp"
+            else ROOT / "sdkconfig.dual_chip.defaults"
+        )
+        if not backend_defaults.is_file():
+            print(f"missing {args.backend} defaults: {backend_defaults}", file=sys.stderr)
             return 1
+        defaults = ["sdkconfig.defaults", backend_defaults.name]
+        build_dir = "build_raw_hidp" if args.backend == "raw-hidp" else "build_dual_chip"
+        sdkconfig = "sdkconfig.raw_hidp" if args.backend == "raw-hidp" else "sdkconfig.dual_chip"
+        if args.pin_profile == "devkit-left":
+            profile_defaults = ROOT / "sdkconfig.dual_chip.devkit_left.defaults"
+            if not profile_defaults.is_file():
+                print(f"missing pin profile defaults: {profile_defaults}", file=sys.stderr)
+                return 1
+            defaults.append(profile_defaults.name)
+            build_dir = "build_dual_chip_devkit_left"
+            sdkconfig = "sdkconfig.dual_chip.devkit_left"
+        elif args.pin_profile == "devkit-vspi":
+            profile_defaults = ROOT / "sdkconfig.dual_chip.devkit_vspi.defaults"
+            if not profile_defaults.is_file():
+                print(f"missing pin profile defaults: {profile_defaults}", file=sys.stderr)
+                return 1
+            defaults.append(profile_defaults.name)
+            build_dir = "build_dual_chip_devkit_vspi"
+            sdkconfig = "sdkconfig.dual_chip.devkit_vspi"
         idf_global_args.extend([
-            "-B", "build_raw_hidp",
-            "-DSDKCONFIG=sdkconfig.raw_hidp",
-            f"-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.raw_hidp.defaults",
+            "-B", build_dir,
+            f"-DSDKCONFIG={sdkconfig}",
+            f"-DSDKCONFIG_DEFAULTS={';'.join(defaults)}",
         ])
 
     if args.clean:

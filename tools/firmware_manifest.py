@@ -72,6 +72,42 @@ ARTIFACTS = [
         path=ROOT / "build_raw_hidp" / "ds5_dualsense_bridge_esp32.bin",
     ),
     ArtifactSpec(
+        name="esp32-dual-chip-bootloader",
+        target="esp32-dual-chip",
+        offset="0x1000",
+        path=ROOT / "build_dual_chip" / "bootloader" / "bootloader.bin",
+    ),
+    ArtifactSpec(
+        name="esp32-dual-chip-partition-table",
+        target="esp32-dual-chip",
+        offset="0x8000",
+        path=ROOT / "build_dual_chip" / "partition_table" / "partition-table.bin",
+    ),
+    ArtifactSpec(
+        name="esp32-dual-chip-app",
+        target="esp32-dual-chip",
+        offset="0x10000",
+        path=ROOT / "build_dual_chip" / "ds5_dualsense_bridge_esp32.bin",
+    ),
+    ArtifactSpec(
+        name="esp32-dual-chip-left-bootloader",
+        target="esp32-dual-chip-left",
+        offset="0x1000",
+        path=ROOT / "build_dual_chip_devkit_left" / "bootloader" / "bootloader.bin",
+    ),
+    ArtifactSpec(
+        name="esp32-dual-chip-left-partition-table",
+        target="esp32-dual-chip-left",
+        offset="0x8000",
+        path=ROOT / "build_dual_chip_devkit_left" / "partition_table" / "partition-table.bin",
+    ),
+    ArtifactSpec(
+        name="esp32-dual-chip-left-app",
+        target="esp32-dual-chip-left",
+        offset="0x10000",
+        path=ROOT / "build_dual_chip_devkit_left" / "ds5_dualsense_bridge_esp32.bin",
+    ),
+    ArtifactSpec(
         name="m61-esp32-bridge",
         target="m61-bridge",
         path=ROOT / "m61" / "esp32_prog_bridge" / "build" / "build_out" /
@@ -82,6 +118,12 @@ ARTIFACTS = [
         target="m61-hidp-probe",
         path=ROOT / "m61" / "dualsense_hidp_probe" / "build" / "build_out" /
         "m61_dualsense_hidp_probe_bl616.bin",
+    ),
+    ArtifactSpec(
+        name="m61-dualsense-dual-chip-left",
+        target="m61-dual-chip-left",
+        path=ROOT / "m61" / "dualsense_hidp_probe" / "build_dual_chip_left_spi" /
+        "build_out" / "m61_dualsense_hidp_probe_bl616.bin",
     ),
 ]
 

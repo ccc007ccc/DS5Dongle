@@ -65,6 +65,17 @@ menu "DS5 DualSense Bridge"
             Delay between repeated DualSense feature/output initialization
             attempts while the controller is still sending only short reports.
 
+    config DS5_RAW_HIDP_AUTO_CONNECT
+        bool "Auto-connect raw HIDP backend at startup"
+        default y if DS5_DUAL_CHIP_SPI_COPROCESSOR
+        default n
+        depends on DS5_BT_BACKEND_RAW_HIDP || DS5_DUAL_CHIP_SPI_COPROCESSOR
+        help
+            Start the raw HIDP saved-address reconnect or discovery flow after
+            the ESP32 Bluetooth stack is initialized. The dual-chip coprocessor
+            enables this by default so M61 does not need to issue a connect
+            command after every ESP32 reboot.
+
     config DS5_LED_GREEN_GPIO
         int "Green status LED GPIO (-1 disables)"
         range -1 33
@@ -104,5 +115,84 @@ menu "DS5 DualSense Bridge"
         default 250
         help
             Blue LED blink interval while scanning or connecting to DualSense.
+
+    config DS5_DUAL_CHIP_SPI_COPROCESSOR
+        bool "Run ESP32 as M61 SPI Bluetooth coprocessor"
+        default n
+        select BT_L2CAP_ENABLED
+        help
+            Enables the dual-chip queue boundary: ESP32 receives complete
+            DualSense BT output reports from M61 over the SPI protocol and only
+            schedules HIDP transport. Hardware SPI pin binding is intentionally
+            left to board-specific config until the M61/ESP32 wiring is known.
+
+    config DS5_DUAL_CHIP_TX_QUEUE_DEPTH
+        int "Dual-chip ESP32 TX queue depth"
+        range 2 16
+        default 4
+        help
+            Number of pending M61-to-ESP32 BT reports kept before latest-wins
+            dropping is applied.
+
+    config DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH
+        int "Dual-chip ESP32 response queue depth"
+        range 2 8
+        default 4
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+        help
+            Number of ESP32-to-M61 response frames queued while waiting for
+            the M61 SPI master to clock them out. ACK frames are queued ahead
+            of latest status/input frames so reliable control traffic is not
+            blocked by stale status responses.
+
+    config DS5_DUAL_CHIP_SPI_HOST
+        int "Dual-chip ESP32 SPI host peripheral"
+        range 2 3
+        default 2
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+        help
+            ESP32 SPI peripheral used as slave. 2 is HSPI/SPI2 on classic
+            ESP32-WROOM-32 boards; 3 is VSPI/SPI3.
+
+    config DS5_DUAL_CHIP_SPI_SCLK_GPIO
+        int "Dual-chip SPI SCLK GPIO (-1 disables hardware SPI)"
+        range -1 39
+        default -1
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+
+    config DS5_DUAL_CHIP_SPI_MOSI_GPIO
+        int "Dual-chip SPI MOSI GPIO (-1 disables hardware SPI)"
+        range -1 39
+        default -1
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+
+    config DS5_DUAL_CHIP_SPI_MISO_GPIO
+        int "Dual-chip SPI MISO GPIO (-1 disables hardware SPI)"
+        range -1 39
+        default -1
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+
+    config DS5_DUAL_CHIP_SPI_CS_GPIO
+        int "Dual-chip SPI CS GPIO (-1 disables hardware SPI)"
+        range -1 39
+        default -1
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+
+    config DS5_DUAL_CHIP_ESP_READY_GPIO
+        int "ESP_READY GPIO (-1 disables)"
+        range -1 39
+        default -1
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+        help
+            Optional ESP32 output driven high after SPI slave initialization.
+
+    config DS5_DUAL_CHIP_ESP_IRQ_GPIO
+        int "ESP_IRQ GPIO (-1 disables)"
+        range -1 39
+        default -1
+        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
+        help
+            Optional ESP32 output asserted when an input/mic response frame is
+            pending for the M61 master to clock out.
 
 endmenu

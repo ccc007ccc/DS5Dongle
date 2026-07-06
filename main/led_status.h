@@ -10,6 +10,9 @@ typedef enum {
     DS5_LED_STATE_BOOT_OK = 0,
     DS5_LED_STATE_BT_CONNECTING,
     DS5_LED_STATE_BT_CONNECTED,
+    DS5_LED_STATE_WIRE_TESTING,
+    DS5_LED_STATE_WIRE_TEST_PASS,
+    DS5_LED_STATE_WIRE_TEST_FAIL,
 } ds5_led_state_t;
 
 esp_err_t led_status_init(void);

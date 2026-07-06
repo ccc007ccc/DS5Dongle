@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tempfile
 
 import serial
 
@@ -111,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-b", "--baud", type=int, default=460800, help="download baudrate")
     parser.add_argument("--chip", default="bl616", help="Bouffalo chip name")
     parser.add_argument(
+        "--build-dir",
+        type=Path,
+        help="override app build directory, for example m61/dualsense_hidp_probe/build_dual_chip_left_spi",
+    )
+    parser.add_argument(
         "--reboot-isp",
         action="store_true",
         help="ask a running M61 helper/default shell to reboot into UART download mode before flashing",
@@ -139,7 +145,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     app = FIRMWARE_APPS[args.app]
+    build_dir = args.build_dir if args.build_dir is not None else app.directory / "build"
+    if not build_dir.is_absolute():
+        build_dir = ROOT / build_dir
     flash_config = app.directory / "flash_prog_cfg.ini"
+    generated_flash_config: Path | None = None
 
     if not FLASH_TOOL.is_file():
         print(f"missing BLFlashCommand.exe: {FLASH_TOOL}", file=sys.stderr)
@@ -149,11 +159,28 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.chip == "bl616":
-        firmware = app.directory / "build" / "build_out" / app.bl616_bin
+        firmware = build_dir / "build_out" / app.bl616_bin
         if not firmware.is_file():
             print(f"missing firmware: {firmware}", file=sys.stderr)
             print(f"run: {app.build_command}", file=sys.stderr)
             return 1
+
+    if build_dir != app.directory / "build":
+        rel_build_dir = build_dir.relative_to(app.directory).as_posix()
+        config_text = flash_config.read_text(encoding="utf-8")
+        config_text = config_text.replace("./build/build_out/", f"./{rel_build_dir}/build_out/")
+        tmp = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            suffix=".ini",
+            prefix="flash_prog_cfg.",
+            dir=app.directory,
+            delete=False,
+        )
+        with tmp:
+            tmp.write(config_text)
+        generated_flash_config = Path(tmp.name)
+        flash_config = generated_flash_config
 
     if args.manual_hint:
         print("Put M61 into UART download mode now:")
@@ -172,13 +199,20 @@ def main(argv: list[str] | None = None) -> int:
         f"--baudrate={args.baud}",
         f"--port={args.port}",
         f"--chipname={args.chip}",
-        "--config=flash_prog_cfg.ini",
+        f"--config={flash_config.name}",
     ]
     if not args.no_reset:
         cmd.append("--reset")
 
     print("running:", " ".join(cmd))
-    return subprocess.call(cmd, cwd=app.directory)
+    try:
+        return subprocess.call(cmd, cwd=app.directory)
+    finally:
+        if generated_flash_config is not None:
+            try:
+                generated_flash_config.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
