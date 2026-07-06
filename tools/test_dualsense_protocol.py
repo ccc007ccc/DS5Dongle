@@ -19,6 +19,19 @@ OUTPUT = ROOT / "main" / "dualsense_output.c"
 M61_USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
 M61_MAIN = ROOT / "m61" / "dualsense_hidp_probe" / "main.c"
 M61_CMAKE = ROOT / "m61" / "dualsense_hidp_probe" / "CMakeLists.txt"
+M61_BUILD_SH = ROOT / "m61" / "dualsense_hidp_probe" / "build.sh"
+M61_TRANSPORT = ROOT / "m61" / "dualsense_hidp_probe" / "m61_esp32_transport.c"
+M61_LEFT_SPI_EXAMPLE = ROOT / "m61" / "dualsense_hidp_probe" / "defconfig.dual_chip_left_spi.example"
+FIRMWARE_MANIFEST = ROOT / "tools" / "firmware_manifest.py"
+CHECK_DUAL_CHIP_LOG = ROOT / "tools" / "check_dual_chip_log.py"
+DUAL_PROTO = ROOT / "main" / "dual_chip_spi_proto.c"
+ESP32_DUAL_SPI = ROOT / "main" / "esp32_dual_chip_spi.c"
+ESP32_RAW_HIDP = ROOT / "main" / "bt_dualsense_raw_hidp.c"
+ESP32_LED_STATUS = ROOT / "main" / "led_status.h"
+ESP32_DUAL_DEFAULTS = ROOT / "sdkconfig.dual_chip.defaults"
+ESP32_DUAL_LEFT_DEFAULTS = ROOT / "sdkconfig.dual_chip.devkit_left.defaults"
+ESP32_DUAL_VSPI_DEFAULTS = ROOT / "sdkconfig.dual_chip.devkit_vspi.defaults"
+DUAL_WIRING_DOC = ROOT / "docs" / "DUAL_CHIP_WIRING.md"
 
 DS5_BT_HIDP_INPUT = 0xA1
 DS5_BT_INPUT_REPORT_ID = 0x31
@@ -31,6 +44,51 @@ DS5_OUTPUT_REPORT36_BT_LEN = 398
 DS5_OUTPUT_SET_STATE_LEN = 63
 DS5_OUTPUT_HAPTICS_BLOCK_LEN = 64
 DS5_OUTPUT_SPEAKER_OPUS_LEN = 200
+DS5_DUAL_SPI_MAGIC = 0x3544
+DS5_DUAL_SPI_VERSION = 1
+DS5_DUAL_SPI_HEADER_LEN = 20
+DS5_DUAL_SPI_MAX_PAYLOAD = 512
+DS5_DUAL_HELLO_PAYLOAD_LEN = 16
+DS5_DUAL_TIME_SYNC_PAYLOAD_LEN = 16
+DS5_DUAL_BT_STATE_PAYLOAD_LEN = 24
+DS5_DUAL_FLOW_CREDIT_PAYLOAD_LEN = 16
+DS5_DUAL_ACK_PAYLOAD_LEN = 8
+DS5_DUAL_STATS_PAYLOAD_LEN = 84
+DS5_DUAL_MSG_HELLO = 1
+DS5_DUAL_MSG_TIME_SYNC = 2
+DS5_DUAL_MSG_BT_CONNECT = 3
+DS5_DUAL_MSG_BT_DISCONNECT = 4
+DS5_DUAL_MSG_BT_STATE = 5
+DS5_DUAL_MSG_BT_TX_AUDIO_RT = 9
+DS5_DUAL_MSG_FLOW_CREDIT = 10
+DS5_DUAL_MSG_STATS = 11
+DS5_DUAL_MSG_RESET_STATS = 12
+DS5_DUAL_MSG_WIRE_TEST = 16
+DS5_DUAL_MSG_BT_FORGET = 17
+DS5_DUAL_FORGET_SAVED_ADDR = 0x01
+DS5_DUAL_FORGET_BONDS = 0x02
+DS5_DUAL_CHANNEL_AUDIO = 4
+DS5_DUAL_CHANNEL_STATUS = 5
+DS5_DUAL_CHANNEL_CTRL = 1
+DS5_DUAL_PRIORITY_RT = 1
+DS5_DUAL_PRIORITY_CONTROL = 4
+DS5_DUAL_PRIORITY_LOW = 5
+DS5_DUAL_FLAG_RELIABLE = 0x0001
+DS5_DUAL_FLAG_LATEST = 0x0002
+DS5_DUAL_FLAG_DROP_OK = 0x0004
+DS5_DUAL_FLAG_ACK = 0x0008
+DS5_DUAL_ROLE_M61_USB = 1
+DS5_DUAL_CAP_USB_DS5_GADGET = 0x00000001
+DS5_DUAL_CAP_AUDIO_RT = 0x00000004
+DS5_DUAL_CAP_FEATURE_REPORTS = 0x00000008
+DS5_DUAL_CAP_FLOW_CREDIT = 0x00000010
+DS5_DUAL_CAP_RELIABLE_ACK = 0x00000020
+DS5_DUAL_BT_STATE_READY = 0x00000001
+DS5_DUAL_BT_STATE_L2CAP_READY = 0x00000002
+DS5_DUAL_BT_STATE_SDP_READY = 0x00000004
+DS5_DUAL_BT_STATE_CONTROL_OPEN = 0x00000008
+DS5_DUAL_BT_STATE_INTERRUPT_OPEN = 0x00000010
+DS5_DUAL_BT_STATE_FULL_REPORT = 0x00000020
 
 BUTTON_SQUARE = 1 << 0
 BUTTON_CROSS = 1 << 1
@@ -138,6 +196,163 @@ def dualsense_output_crc32(data: bytes) -> int:
     crc = crc32_le_update(0xFFFFFFFF, bytes([0xA2]))
     crc = crc32_le_update(crc, data)
     return (~crc) & 0xFFFFFFFF
+
+
+def dual_spi_crc32(header_without_crc: bytes, payload: bytes) -> int:
+    crc = crc32_le_update(0xFFFFFFFF, header_without_crc)
+    crc = crc32_le_update(crc, payload)
+    return (~crc) & 0xFFFFFFFF
+
+
+def make_dual_spi_frame(
+    msg_type: int,
+    flags: int,
+    channel: int,
+    priority: int,
+    seq: int,
+    deadline: int,
+    payload: bytes,
+) -> bytes:
+    assert len(payload) <= DS5_DUAL_SPI_MAX_PAYLOAD
+    header = bytearray(DS5_DUAL_SPI_HEADER_LEN)
+    header[0:2] = DS5_DUAL_SPI_MAGIC.to_bytes(2, "little")
+    header[2] = DS5_DUAL_SPI_VERSION
+    header[3] = msg_type
+    header[4:6] = flags.to_bytes(2, "little")
+    header[6] = channel
+    header[7] = priority
+    header[8:10] = seq.to_bytes(2, "little")
+    header[10:14] = deadline.to_bytes(4, "little")
+    header[14:16] = len(payload).to_bytes(2, "little")
+    header[16:20] = dual_spi_crc32(bytes(header[:16]), payload).to_bytes(4, "little")
+    return bytes(header) + payload
+
+
+def decode_dual_flow_credit(payload: bytes) -> tuple[int, int, bool, int, int, int]:
+    assert len(payload) >= DS5_DUAL_FLOW_CREDIT_PAYLOAD_LEN
+    last_err_raw = int.from_bytes(payload[12:16], "little")
+    last_err = last_err_raw - 0x100000000 if last_err_raw & 0x80000000 else last_err_raw
+    return (
+        payload[0],
+        payload[1],
+        payload[2] != 0,
+        int.from_bytes(payload[4:8], "little"),
+        int.from_bytes(payload[8:12], "little"),
+        last_err,
+    )
+
+
+def make_dual_ack(seq: int, msg_type: int, status: int) -> bytes:
+    payload = bytearray(DS5_DUAL_ACK_PAYLOAD_LEN)
+    payload[0:2] = seq.to_bytes(2, "little")
+    payload[2] = msg_type
+    payload[4:8] = (status & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(payload)
+
+
+def decode_dual_ack(payload: bytes) -> tuple[int, int, int]:
+    assert len(payload) >= DS5_DUAL_ACK_PAYLOAD_LEN
+    status_raw = int.from_bytes(payload[4:8], "little")
+    status = status_raw - 0x100000000 if status_raw & 0x80000000 else status_raw
+    return int.from_bytes(payload[0:2], "little"), payload[2], status
+
+
+def make_dual_hello(role: int, queue_depth: int, capabilities: int) -> bytes:
+    payload = bytearray(DS5_DUAL_HELLO_PAYLOAD_LEN)
+    payload[0] = DS5_DUAL_SPI_VERSION
+    payload[1] = role
+    payload[2:4] = DS5_DUAL_SPI_HEADER_LEN.to_bytes(2, "little")
+    payload[4:6] = DS5_DUAL_SPI_MAX_PAYLOAD.to_bytes(2, "little")
+    payload[6:8] = (DS5_DUAL_SPI_HEADER_LEN + DS5_DUAL_SPI_MAX_PAYLOAD).to_bytes(2, "little")
+    payload[8] = queue_depth
+    payload[10:14] = capabilities.to_bytes(4, "little")
+    return bytes(payload)
+
+
+def decode_dual_hello(payload: bytes) -> tuple[int, int, int, int, int, int, int]:
+    assert len(payload) >= DS5_DUAL_HELLO_PAYLOAD_LEN
+    return (
+        payload[0],
+        payload[1],
+        int.from_bytes(payload[2:4], "little"),
+        int.from_bytes(payload[4:6], "little"),
+        int.from_bytes(payload[6:8], "little"),
+        payload[8],
+        int.from_bytes(payload[10:14], "little"),
+    )
+
+
+def make_dual_time_sync(m61_time_us: int, esp_time_us: int, rtt_us: int, offset_us: int) -> bytes:
+    payload = bytearray(DS5_DUAL_TIME_SYNC_PAYLOAD_LEN)
+    payload[0:4] = (m61_time_us & 0xFFFFFFFF).to_bytes(4, "little")
+    payload[4:8] = (esp_time_us & 0xFFFFFFFF).to_bytes(4, "little")
+    payload[8:12] = (rtt_us & 0xFFFFFFFF).to_bytes(4, "little")
+    payload[12:16] = (offset_us & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(payload)
+
+
+def decode_dual_time_sync(payload: bytes) -> tuple[int, int, int, int]:
+    assert len(payload) >= DS5_DUAL_TIME_SYNC_PAYLOAD_LEN
+    offset_raw = int.from_bytes(payload[12:16], "little")
+    offset_us = offset_raw - 0x100000000 if offset_raw & 0x80000000 else offset_raw
+    return (
+        int.from_bytes(payload[0:4], "little"),
+        int.from_bytes(payload[4:8], "little"),
+        int.from_bytes(payload[8:12], "little"),
+        offset_us,
+    )
+
+
+def make_dual_bt_state(flags: int, last_error: int, rssi: int, state_seq: int) -> bytes:
+    payload = bytearray(DS5_DUAL_BT_STATE_PAYLOAD_LEN)
+    payload[0:4] = flags.to_bytes(4, "little")
+    payload[4:8] = (last_error & 0xFFFFFFFF).to_bytes(4, "little")
+    payload[8] = rssi & 0xFF
+    payload[9] = 7
+    payload[10] = 2
+    payload[12:14] = (672).to_bytes(2, "little")
+    payload[14:16] = (672).to_bytes(2, "little")
+    payload[16:22] = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+    payload[22:24] = state_seq.to_bytes(2, "little")
+    return bytes(payload)
+
+
+def decode_dual_bt_state(payload: bytes) -> tuple[int, int, int, int, int, int, int, bytes, int]:
+    assert len(payload) >= DS5_DUAL_BT_STATE_PAYLOAD_LEN
+    err_raw = int.from_bytes(payload[4:8], "little")
+    last_error = err_raw - 0x100000000 if err_raw & 0x80000000 else err_raw
+    rssi = payload[8] - 0x100 if payload[8] & 0x80 else payload[8]
+    return (
+        int.from_bytes(payload[0:4], "little"),
+        last_error,
+        rssi,
+        payload[9],
+        payload[10],
+        int.from_bytes(payload[12:14], "little"),
+        int.from_bytes(payload[14:16], "little"),
+        payload[16:22],
+        int.from_bytes(payload[22:24], "little"),
+    )
+
+
+def make_dual_stats(role: int, values: list[int]) -> bytes:
+    assert len(values) == 20
+    payload = bytearray(DS5_DUAL_STATS_PAYLOAD_LEN)
+    payload[0] = DS5_DUAL_SPI_VERSION
+    payload[1] = role
+    for index, value in enumerate(values):
+        offset = 4 + index * 4
+        payload[offset:offset + 4] = (value & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(payload)
+
+
+def decode_dual_stats(payload: bytes) -> tuple[int, int, tuple[int, ...]]:
+    assert len(payload) >= DS5_DUAL_STATS_PAYLOAD_LEN
+    values = tuple(
+        int.from_bytes(payload[4 + index * 4:8 + index * 4], "little")
+        for index in range(20)
+    )
+    return payload[0], payload[1], values
 
 
 def fill_output_crc(report: bytearray) -> None:
@@ -456,12 +671,237 @@ def test_output_vectors() -> None:
     assert int.from_bytes(headset_report[-4:], "little") == dualsense_output_crc32(headset_report[:-4])
 
 
+def test_dual_chip_spi_vectors() -> None:
+    hello_caps = (
+        DS5_DUAL_CAP_USB_DS5_GADGET
+        | DS5_DUAL_CAP_AUDIO_RT
+        | DS5_DUAL_CAP_FEATURE_REPORTS
+        | DS5_DUAL_CAP_FLOW_CREDIT
+        | DS5_DUAL_CAP_RELIABLE_ACK
+    )
+    hello_payload = make_dual_hello(DS5_DUAL_ROLE_M61_USB, 1, hello_caps)
+    hello_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_HELLO,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        1,
+        0,
+        hello_payload,
+    )
+    assert int.from_bytes(hello_frame[14:16], "little") == DS5_DUAL_HELLO_PAYLOAD_LEN
+    assert decode_dual_hello(hello_frame[20:]) == (
+        DS5_DUAL_SPI_VERSION,
+        DS5_DUAL_ROLE_M61_USB,
+        DS5_DUAL_SPI_HEADER_LEN,
+        DS5_DUAL_SPI_MAX_PAYLOAD,
+        DS5_DUAL_SPI_HEADER_LEN + DS5_DUAL_SPI_MAX_PAYLOAD,
+        1,
+        hello_caps,
+    )
+
+    time_sync_payload = make_dual_time_sync(0x01020304, 0x11223344, 2500, -37)
+    time_sync_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_TIME_SYNC,
+        0,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        2,
+        0,
+        time_sync_payload,
+    )
+    assert int.from_bytes(time_sync_frame[14:16], "little") == DS5_DUAL_TIME_SYNC_PAYLOAD_LEN
+    assert decode_dual_time_sync(time_sync_frame[20:]) == (0x01020304, 0x11223344, 2500, -37)
+
+    bt_state_flags = (
+        DS5_DUAL_BT_STATE_READY
+        | DS5_DUAL_BT_STATE_L2CAP_READY
+        | DS5_DUAL_BT_STATE_SDP_READY
+        | DS5_DUAL_BT_STATE_CONTROL_OPEN
+        | DS5_DUAL_BT_STATE_INTERRUPT_OPEN
+        | DS5_DUAL_BT_STATE_FULL_REPORT
+    )
+    bt_state_payload = make_dual_bt_state(bt_state_flags, -110, -42, 0x1234)
+    bt_state_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_STATE,
+        DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK,
+        DS5_DUAL_CHANNEL_STATUS,
+        DS5_DUAL_PRIORITY_CONTROL,
+        3,
+        0x1020,
+        bt_state_payload,
+    )
+    assert int.from_bytes(bt_state_frame[14:16], "little") == DS5_DUAL_BT_STATE_PAYLOAD_LEN
+    assert decode_dual_bt_state(bt_state_frame[20:]) == (
+        bt_state_flags,
+        -110,
+        -42,
+        7,
+        2,
+        672,
+        672,
+        bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
+        0x1234,
+    )
+
+    payload = make_output36_audio(6, 12, bytes(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN)), bytes([0x33] * 200), False)
+    frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_TX_AUDIO_RT,
+        DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK,
+        DS5_DUAL_CHANNEL_AUDIO,
+        DS5_DUAL_PRIORITY_RT,
+        0x1234,
+        0,
+        payload,
+    )
+
+    assert len(frame) == DS5_DUAL_SPI_HEADER_LEN + DS5_OUTPUT_REPORT36_BT_LEN
+    assert frame[0:4] == bytes([0x44, 0x35, DS5_DUAL_SPI_VERSION, DS5_DUAL_MSG_BT_TX_AUDIO_RT])
+    assert int.from_bytes(frame[4:6], "little") == DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK
+    assert frame[6] == DS5_DUAL_CHANNEL_AUDIO
+    assert frame[7] == DS5_DUAL_PRIORITY_RT
+    assert int.from_bytes(frame[8:10], "little") == 0x1234
+    assert int.from_bytes(frame[10:14], "little") == 0
+    assert int.from_bytes(frame[14:16], "little") == len(payload)
+    assert int.from_bytes(frame[16:20], "little") == dual_spi_crc32(frame[:16], payload)
+
+    corrupted = bytearray(frame)
+    corrupted[-1] ^= 0x80
+    assert int.from_bytes(corrupted[16:20], "little") != dual_spi_crc32(corrupted[:16], corrupted[20:])
+
+    credit_payload = bytearray(DS5_DUAL_FLOW_CREDIT_PAYLOAD_LEN)
+    credit_payload[0] = 3
+    credit_payload[1] = 4
+    credit_payload[2] = 1
+    credit_payload[4:8] = (7).to_bytes(4, "little")
+    credit_payload[8:12] = (11).to_bytes(4, "little")
+    credit_payload[12:16] = ((-22) & 0xFFFFFFFF).to_bytes(4, "little")
+    credit_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_FLOW_CREDIT,
+        DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK,
+        DS5_DUAL_CHANNEL_STATUS,
+        DS5_DUAL_PRIORITY_CONTROL,
+        9,
+        123456,
+        bytes(credit_payload),
+    )
+    assert int.from_bytes(credit_frame[14:16], "little") == DS5_DUAL_FLOW_CREDIT_PAYLOAD_LEN
+    assert decode_dual_flow_credit(credit_frame[20:]) == (3, 4, True, 7, 11, -22)
+
+    stats_values = [0x1000 + index for index in range(20)]
+    stats_payload = make_dual_stats(2, stats_values)
+    stats_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_STATS,
+        DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK,
+        DS5_DUAL_CHANNEL_STATUS,
+        DS5_DUAL_PRIORITY_LOW,
+        10,
+        654321,
+        stats_payload,
+    )
+    assert int.from_bytes(stats_frame[14:16], "little") == DS5_DUAL_STATS_PAYLOAD_LEN
+    assert int.from_bytes(stats_frame[16:20], "little") == dual_spi_crc32(stats_frame[:16], stats_payload)
+    assert decode_dual_stats(stats_frame[20:]) == (
+        DS5_DUAL_SPI_VERSION,
+        2,
+        tuple(stats_values),
+    )
+
+    ack_payload = make_dual_ack(0x3344, DS5_DUAL_MSG_RESET_STATS, 0)
+    ack_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_RESET_STATS,
+        DS5_DUAL_FLAG_ACK,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        10,
+        0,
+        ack_payload,
+    )
+    assert int.from_bytes(ack_frame[4:6], "little") == DS5_DUAL_FLAG_ACK
+    assert int.from_bytes(ack_frame[14:16], "little") == DS5_DUAL_ACK_PAYLOAD_LEN
+    assert decode_dual_ack(ack_frame[20:]) == (0x3344, DS5_DUAL_MSG_RESET_STATS, 0)
+
+    reset_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_RESET_STATS,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3344,
+        0,
+        b"",
+    )
+    assert len(reset_frame) == DS5_DUAL_SPI_HEADER_LEN
+    assert int.from_bytes(reset_frame[14:16], "little") == 0
+    assert int.from_bytes(reset_frame[16:20], "little") == dual_spi_crc32(reset_frame[:16], b"")
+
+    connect_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_CONNECT,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3345,
+        0,
+        bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
+    )
+    assert int.from_bytes(connect_frame[14:16], "little") == 6
+    assert connect_frame[20:26] == bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+
+    disconnect_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_DISCONNECT,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3346,
+        0,
+        b"\x00",
+    )
+    assert int.from_bytes(disconnect_frame[14:16], "little") == 1
+    assert disconnect_frame[20] == 0
+
+    wire_test_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_WIRE_TEST,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_STATUS,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3347,
+        0,
+        b"\x02",
+    )
+    assert int.from_bytes(wire_test_frame[14:16], "little") == 1
+    assert wire_test_frame[20] == 2
+
+    forget_frame = make_dual_spi_frame(
+        DS5_DUAL_MSG_BT_FORGET,
+        DS5_DUAL_FLAG_RELIABLE,
+        DS5_DUAL_CHANNEL_CTRL,
+        DS5_DUAL_PRIORITY_CONTROL,
+        0x3348,
+        0,
+        bytes([DS5_DUAL_FORGET_SAVED_ADDR | DS5_DUAL_FORGET_BONDS]),
+    )
+    assert int.from_bytes(forget_frame[14:16], "little") == 1
+    assert forget_frame[20] == (DS5_DUAL_FORGET_SAVED_ADDR | DS5_DUAL_FORGET_BONDS)
+
+
 def test_c_source_contract() -> None:
     source = PARSER.read_text(encoding="utf-8")
     output_source = OUTPUT.read_text(encoding="utf-8")
     m61_usb_source = M61_USB.read_text(encoding="utf-8")
     m61_main_source = M61_MAIN.read_text(encoding="utf-8")
     m61_cmake_source = M61_CMAKE.read_text(encoding="utf-8")
+    m61_build_source = M61_BUILD_SH.read_text(encoding="utf-8")
+    m61_transport_source = M61_TRANSPORT.read_text(encoding="utf-8")
+    m61_left_spi_example = M61_LEFT_SPI_EXAMPLE.read_text(encoding="utf-8")
+    firmware_manifest_source = FIRMWARE_MANIFEST.read_text(encoding="utf-8")
+    check_dual_chip_log_source = CHECK_DUAL_CHIP_LOG.read_text(encoding="utf-8")
+    dual_proto_source = DUAL_PROTO.read_text(encoding="utf-8")
+    esp32_dual_spi_source = ESP32_DUAL_SPI.read_text(encoding="utf-8")
+    esp32_raw_hidp_source = ESP32_RAW_HIDP.read_text(encoding="utf-8")
+    esp32_led_status_source = ESP32_LED_STATUS.read_text(encoding="utf-8")
+    esp32_dual_defaults = ESP32_DUAL_DEFAULTS.read_text(encoding="utf-8")
+    esp32_dual_left_defaults = ESP32_DUAL_LEFT_DEFAULTS.read_text(encoding="utf-8")
+    esp32_dual_vspi_defaults = ESP32_DUAL_VSPI_DEFAULTS.read_text(encoding="utf-8")
+    dual_wiring_doc = DUAL_WIRING_DOC.read_text(encoding="utf-8")
     required_snippets = [
         "payload_offset = 3;",
         "payload_offset = 2;",
@@ -488,6 +928,7 @@ def test_c_source_contract() -> None:
         "DS5_STATE_ALLOW_RIGHT_TRIGGER_FFB",
         "DS5_STATE_ALLOW_LED_COLOR",
         "copy_set_state",
+        "dualsense_output_apply_audio_controls",
         "DS5_OUTPUT_REPORT31_BT_LEN",
         "DS5_OUTPUT_REPORT32_BT_LEN",
         "DS5_OUTPUT_REPORT36_BT_LEN",
@@ -550,6 +991,8 @@ def test_c_source_contract() -> None:
         "bt_mic_active",
         "host_mic_active && !speaker_active",
         "hidp_last_mic_active != bt_mic_active",
+        "maybe_forward_audio_controls",
+        "hidp_send_audio_control_state",
         "mic_enabled=%u",
         "USB DualSense registration waits for controller full report",
         "usb_after_ds=%d",
@@ -559,10 +1002,148 @@ def test_c_source_contract() -> None:
     assert "m61_haptics_resampler" not in m61_cmake_source
     assert "resample.cpp" not in m61_cmake_source
 
+    dual_chip_snippets = [
+        "DS5_DUAL_HELLO_PAYLOAD_LEN",
+        "DS5_DUAL_TIME_SYNC_PAYLOAD_LEN",
+        "DS5_DUAL_BT_STATE_PAYLOAD_LEN",
+        "DS5_DUAL_STATS_PAYLOAD_LEN",
+        "bool ds5_dual_hello_encode",
+        "bool ds5_dual_hello_decode",
+        "bool ds5_dual_time_sync_encode",
+        "bool ds5_dual_time_sync_decode",
+        "bool ds5_dual_bt_state_encode",
+        "bool ds5_dual_bt_state_decode",
+        "bool ds5_dual_ack_encode",
+        "bool ds5_dual_ack_decode",
+        "bool ds5_dual_stats_encode",
+        "bool ds5_dual_stats_decode",
+        "set_pending_hello();",
+        "set_pending_time_sync(&sync)",
+        "set_pending_bt_state(state, timestamp_us)",
+        "set_pending_stats();",
+        "send_hello();",
+        "send_time_sync();",
+        "start_time_sync_task();",
+        "CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS",
+        "CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD",
+        "CONFIG_M61_ESP32_RECOVERY_COOLDOWN_MS",
+        "perform_recovery(reason)",
+        "bflb_gpio_reset(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_RESET_PIN)",
+        "s_transport.stats.time_sync_failures++",
+        "s_transport.stats.recovery_attempts++",
+        "s_transport.stats.rx_hello++",
+        "s_transport.stats.rx_time_sync++",
+        "s_transport.stats.rx_bt_state++",
+        "s_transport.stats.rx_stats++",
+        "s_stats.hello_rx++",
+        "s_stats.time_sync_rx++",
+        "s_stats.bt_state_tx++",
+        "s_stats.stats_rx++",
+        "bt_dualsense_raw_hidp_set_state_callback",
+        "bt_dualsense_raw_hidp_connect",
+        "bt_dualsense_raw_hidp_disconnect",
+        "DS5_RAW_HIDP_AUTO_CONNECT",
+        "Raw HIDP auto-connect enabled at startup",
+        "DS5_DUAL_MSG_BT_CONNECT",
+        "DS5_DUAL_MSG_BT_DISCONNECT",
+        "DS5_DUAL_MSG_BT_FORGET",
+        "uint8_t packet[1 + DS5_OUTPUT_REPORT36_BT_LEN]",
+        "DS5_DUAL_MSG_WIRE_TEST",
+        "DS5_DUAL_WIRE_TEST_PASS",
+        "m61_esp32_transport_connect",
+        "m61_esp32_transport_disconnect",
+        "m61_esp32_transport_forget",
+        "m61_esp32_transport_wire_test",
+        "m61_esp32_transport_set_input_callback",
+        "dual_chip_input_callback",
+        "dual_chip_usb_start_task",
+        "DualSense full report seen via ESP32; starting USB composite device",
+        "esp32_wire_test HINT",
+        "esp32-wire-test",
+        "DS5_LED_STATE_WIRE_TEST_PASS",
+        "WIRE_HINT_RE",
+        "--require-full-report",
+        "--require-usb-after-ds",
+        "--require-input-reports",
+        "--require-audio-rt",
+        "--require-mic-opus",
+        "--require-no-rt-errors",
+        "set_pending_ack(&header, 0)",
+        "set_pending_ack(&header, -ENOMEM)",
+        "CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH",
+        "response_queue_push_front_locked(&item)",
+        "response_queue_push_back_locked(&item, replace_existing)",
+        "poll_reliable_ack(seq, type)",
+        "CONFIG_M61_ESP32_ACK_POLL_COUNT",
+        "CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT",
+        "s_transport.stats.tx_ack_polls++",
+        "s_transport.stats.ack_retries++",
+        "s_transport.stats.ack_failures++",
+        "s_transport.stats.ack_miss++",
+        "m61_esp32_transport_request_stats",
+        "esp32_peer_stats",
+    ]
+    combined_dual_chip_source = "\n".join(
+        [
+            dual_proto_source,
+            esp32_dual_spi_source,
+            esp32_raw_hidp_source,
+            esp32_led_status_source,
+            m61_transport_source,
+            m61_main_source,
+            check_dual_chip_log_source,
+        ]
+    )
+    for snippet in dual_chip_snippets:
+        assert snippet in combined_dual_chip_source, f"missing dual-chip snippet: {snippet}"
+
+    wiring_snippets = [
+        "CONFIG_M61_ESP32_SPI_SCLK_PIN =13",
+        "CONFIG_M61_ESP32_SPI_MOSI_PIN =11",
+        "CONFIG_M61_ESP32_SPI_MISO_PIN =10",
+        "CONFIG_M61_ESP32_SPI_CS_PIN =20",
+        "CONFIG_M61_ESP32_READY_PIN =16",
+        "CONFIG_M61_ESP32_IRQ_PIN =17",
+        "CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT =1",
+        "CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS =1000",
+        "CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD =8",
+        "CONFIG_M61_ESP32_RECOVERY_COOLDOWN_MS =5000",
+        "CONFIG_DS5_DUAL_CHIP_SPI_SCLK_GPIO=27",
+        "CONFIG_DS5_RAW_HIDP_AUTO_CONNECT=y",
+        "CONFIG_DS5_DUAL_CHIP_SPI_MOSI_GPIO=26",
+        "CONFIG_DS5_DUAL_CHIP_SPI_MISO_GPIO=25",
+        "CONFIG_DS5_DUAL_CHIP_SPI_CS_GPIO=33",
+        "CONFIG_DS5_DUAL_CHIP_ESP_READY_GPIO=32",
+        "CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO=13",
+        "M61 Left Side + ESP32 Left Side",
+        "--pin-profile devkit-left",
+        "sdkconfig.dual_chip.devkit_left.defaults",
+        "./build.sh all --profile dual-chip-left-spi",
+        "\"dual-chip-left-spi\"",
+        "BUILD_DIR_NAME=\"build_dual_chip_left_spi\"",
+        "esp32-dual-chip-left",
+        "m61-dual-chip-left",
+        "Do not merge it into `m61/dualsense_hidp_probe/defconfig`",
+    ]
+    combined_wiring_source = "\n".join(
+        [
+            m61_left_spi_example,
+            esp32_dual_defaults,
+            esp32_dual_left_defaults,
+            esp32_dual_vspi_defaults,
+            dual_wiring_doc,
+            m61_build_source,
+            firmware_manifest_source,
+        ]
+    )
+    for snippet in wiring_snippets:
+        assert snippet in combined_wiring_source, f"missing wiring snippet: {snippet}"
+
 
 def main() -> int:
     test_vectors()
     test_output_vectors()
+    test_dual_chip_spi_vectors()
     test_c_source_contract()
     print("DualSense protocol vectors passed.")
     return 0

@@ -24,6 +24,37 @@
 - ESP32 双核和原生 Classic BT 适合承接 BT Host/transport 这种并发多、单次计算小、但调度敏感的任务。
 - 跨芯片只传 DS5 层报文时，数据量约几十 KB/s，SPI 很宽裕；传原始 USB Audio OUT 会变成数百 KB/s，并且把 1 ms USB 抖动传播到第二颗芯片。
 
+## 当前代码分支状态
+
+分支 `m61-esp32-dual-chip` 已开始按本目标拆分代码边界：
+
+- 共享 SPI frame 协议已落到 `main/dual_chip_spi_proto.*`，包含固定 header、CRC、消息类型、channel、priority、deadline、`HELLO` 能力握手、`TIME_SYNC` payload、ACK payload、`STATS` 快照和 `0x36` 实时 report 识别；`tools/test_dualsense_protocol.py` 已加入 SPI frame、`HELLO`、`TIME_SYNC`、`FLOW_CREDIT`、ACK、`STATS` 与 `RESET_STATS` 离线向量。
+- M61 侧新增 `m61/dualsense_hidp_probe/m61_esp32_transport.*`，现有 USB/Opus/DS5 output report 生成点可以在 `CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT=y` 时走 ESP32 transport，而不是 M61 本机 HIDP 发送。
+- M61 侧已有可配置 SPI master shell：`CONFIG_M61_ESP32_SPI_ENABLE` 和 `CONFIG_M61_ESP32_SPI_READY` 默认关闭，`SCLK/MOSI/MISO/CS/READY/IRQ/RESET` 默认 `255` 作为无效 pin，不碰硬件；填入实际接线并显式打开后会用固定 532B MTU 与 ESP32 slave 做同步 exchange。
+- M61 SPI exchange 已能验证 ESP32 返回 frame，并把 `BT_RX_INPUT` 回灌到 USB HID input、把 `BT_RX_MIC_OPUS` 回灌到 USB microphone Opus 队列。
+- M61 侧已有默认关闭的 IRQ RX poll shell：`CONFIG_M61_ESP32_RX_POLL_ENABLE=n`，接好 `ESP_IRQ` 并显式打开后会在 IRQ 高电平时 clock 空事务读取 ESP32 pending response。
+- 双芯片 feature report 控制面已分离为 `BT_TX_FEATURE_GET`、`BT_TX_FEATURE_SET`、`BT_RX_FEATURE_REPORT`，ESP32 走 HIDP control channel，M61 回填 USB feature cache。
+- `BT_CONNECT/BT_DISCONNECT` 可靠控制面已接入：M61 transport 和 `ds5 connect`/`ds5 disconnect [reconnect]` shell 命令会转发到 ESP32；ESP32 raw HIDP 可按保存地址/扫描自动连接，也可按 6 字节 BDA 指定目标，断开时可选择抑制自动重连。
+- `BT_FORGET` 可靠控制面已接入：M61 `ds5 forget` 会转发到 ESP32，清掉 ESP32 侧保存的 DualSense 地址并删除 Classic BT bond database，避免双芯片模式只清掉 M61 本地缓存、但 ESP32 仍继续按旧地址/旧 link key 自动连接。
+- 可靠控制面的 ACK 与超时重传已接入：M61 对 `HELLO`、feature/reset 这类 reliable frame 带 `DS5_DUAL_FLAG_RELIABLE`，ESP32 收到后用同 type + `DS5_DUAL_FLAG_ACK` 回传原 seq/type/status；M61 发送 reliable frame 后会 clock 空事务取 ACK，ACK miss 或可恢复错误会按 `CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT` 重发，并在 transport stats 记录 ACK/miss/retry/fail/status。
+- `HELLO` 握手已接入：ESP32 SPI slave ready 后预置本机 role/capability/MTU/queue-depth，M61 初始化 SPI transport 时发可靠 `HELLO`，并在 stats 中记录对端 role、protocol version、MTU、max payload、queue depth 和 capabilities。
+- `TIME_SYNC` 已接入一跳同步和周期刷新：M61 初始化时发送本地微秒时间，ESP32 返回 `esp_timer` 微秒时间，M61 估算 offset 后才把实时 `0x36` 的 FreeRTOS tick deadline 转成 ESP32 微秒 deadline；`CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS` 默认 1000 ms，transport ready 后低优先级刷新 offset，同步状态、失败次数、RTT、age 和 offset 会显示在 M61 transport stats 中。
+- `BT_STATE` 基础回传已接入：ESP32 raw HIDP 在 L2CAP/SDP/open/close/bring-up/full-report 等状态变化时上报 flags、last error、RSSI、MTU、目标地址和状态序号；M61 transport stats 会打印最近一次协处理器蓝牙状态。
+- ESP32 已能通过 `FLOW_CREDIT` 回报 BT TX 队列余量、raw HIDP ready、SPI response drop 和 HIDP TX error 计数；M61 侧在 transport stats 中记录最近一次 credit，并会对 `DROP_OK` 的最新实时包做主动限流。
+- M61 侧已有 reset 恢复状态机：连续通信/同步失败达到 `CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD=8` 且冷却时间满足后，会在有效 `CONFIG_M61_ESP32_RESET_PIN` 上拉低 50 ms、等待 750 ms boot，再重新 `HELLO` + `TIME_SYNC`；当前左侧接线 profile 仍保持 `RESET_PIN=255`，因此默认不会实际拉任何 GPIO。
+- ESP32 侧新增 `main/esp32_dual_chip_spi.*`，用于接收 M61 的完整 BT report frame、latest-wins 入队，并复用 raw HIDP backend 发送到 DualSense；ESP32 -> M61 response 使用小型环形队列，ACK 插到队头，避免可靠控制帧被旧状态/credit response 阻塞。
+- ESP32 侧已有可配置 SPI slave 任务：`CONFIG_DS5_DUAL_CHIP_SPI_SCLK_GPIO/MOSI/MISO/CS_GPIO` 默认 `-1` 不碰硬件；填入实际接线后会初始化 `spi_slave_transmit()` 固定 MTU 事务，并可用 `ESP_READY/ESP_IRQ` GPIO 暴露 ready 和 pending response。
+- ESP32 raw HIDP 暴露 `bt_dualsense_raw_hidp_send_report()` 和 RX callback，方便双芯片 transport 只负责 L2CAP/HIDP 传输与输入回传统计。
+- `STATS` 诊断快照已接通：M61 `ds5 status` 会向 ESP32 请求 SPI/HIDP/deadline/ACK/connect 计数，ESP32 返回低优先级快照，不进入实时音频通道。
+- 双芯片 bring-up 日志检查已接入：`tools/check_dual_chip_log.py` 可离线校验 M61 `ds5 status` 输出，`tools/validate_dual_chip_hardware.py` 可通过 M61 串口周期性采集 `ds5 status` 并自动检查 SPI 握手、`TIME_SYNC`、ACK、`STATS`、`FLOW_CREDIT` 和 `BT_STATE`。
+- `sdkconfig.dual_chip.defaults` 是 ESP32 双芯片 coprocessor 配置入口；M61 侧目前默认不启用双芯片 transport，避免在 SPI/IRQ/RESET 针脚未确定前刷入不可用固件。
+- 首个建议接线 profile 已记录在 `docs/DUAL_CHIP_WIRING.md`：M61 使用左侧 `IO13/IO11/IO10/IO20` 对 ESP32 左侧 `GPIO27/GPIO26/GPIO25/GPIO33`，`READY/IRQ` 使用 M61 左侧 `IO16/IO17` 对 ESP32 左侧 `GPIO32/GPIO13`；对应 ESP32 defaults 为 `sdkconfig.dual_chip.devkit_left.defaults`，M61 示例片段为 `m61/dualsense_hidp_probe/defconfig.dual_chip_left_spi.example`，M61 构建脚本支持 `--profile dual-chip-left-spi` 显式构建该配置。旧 `devkit-vspi` profile 保留为右侧排针备选。
+
+尚未完成：
+
+- 真实板级接线仍未完成，因此 M61/ESP32 两侧 SPI 硬件配置默认关闭，尚未做上板联调。
+- 真实 reset 线尚未分配和接线；如果 `TIME_SYNC` 没成功，M61 会继续发送零 deadline，避免不同 tick 基准导致 ESP32 误丢实时包。
+
 ## 性能边界
 
 当前 DualSense 相关实时流量：
@@ -169,11 +200,15 @@ payload    N bytes
 - `TIME_SYNC`：M61 tick 与 ESP32 tick 对齐，用于 deadline 判断。
 - `BT_CONNECT`：连接指定 DualSense 地址。
 - `BT_DISCONNECT`：主动断开。
+- `BT_FORGET`：清空保存地址和 bond database。
 - `BT_STATE`：连接、鉴权、SDP、HIDP channel、错误码、RSSI。
 - `BT_RX_INPUT`：ESP32 -> M61，手柄 input report。
 - `BT_RX_MIC_OPUS`：ESP32 -> M61，手柄 mic Opus payload。
 - `BT_TX_REPORT`：M61 -> ESP32，完整 BT output report。
 - `BT_TX_AUDIO_RT`：M61 -> ESP32，完整 `0x36` report，实时、drop-old。
+- `BT_TX_FEATURE_GET`：M61 -> ESP32，HIDP feature get request。
+- `BT_TX_FEATURE_SET`：M61 -> ESP32，HIDP feature set request。
+- `BT_RX_FEATURE_REPORT`：ESP32 -> M61，HIDP feature report response。
 - `FLOW_CREDIT`：ESP32 -> M61，BT TX queue credit 和 L2CAP buffer 状态。
 - `STATS`：双向统计计数，用于诊断。
 - `RESET_STATS`：清零统计。
@@ -191,16 +226,18 @@ payload    N bytes
 M61 -> ESP32：
 
 1. `BT_TX_AUDIO_RT`：最高优先级，deadline 10 ms，队列深度 2，满时丢旧。
-2. `BT_TX_REPORT` control/interrupt：高优先级，队列深度 4，状态类 latest-wins。
-3. `BT_CONNECT/BT_DISCONNECT`：可靠控制，队列深度 4。
-4. `STATS/LOG`：最低优先级，不能影响实时通道。
+2. `BT_TX_FEATURE_GET/BT_TX_FEATURE_SET`：可靠控制，高优先级。
+3. `BT_TX_REPORT` control/interrupt：高优先级，队列深度 4，状态类 latest-wins。
+4. `BT_CONNECT/BT_DISCONNECT`：可靠控制，队列深度 4。
+5. `STATS/LOG`：最低优先级，不能影响实时通道。
 
 ESP32 -> M61：
 
 1. `BT_RX_INPUT`：最高优先级，带时间戳，队列深度按 4-8 个输入报告，过期丢旧。
 2. `BT_RX_MIC_OPUS`：高优先级，但低于 input；speaker 活跃时允许降级。
-3. `BT_STATE/FLOW_CREDIT`：高优先级，状态变化即时上报。
-4. `STATS/LOG`：最低优先级。
+3. `BT_RX_FEATURE_REPORT`：可靠控制，高优先级。
+4. `BT_STATE/FLOW_CREDIT`：高优先级，状态变化即时上报。
+5. `STATS/LOG`：最低优先级。
 
 关键策略：
 
@@ -321,4 +358,3 @@ ESP32 必须输出：
 - 打开 Steam/DSX 时不死机、不掉线、不让 shell 长时间无响应。
 - 断开手柄后可自动重连上一次设备。
 - 任一芯片 reset 后系统可恢复到可连接状态，不需要重新刷写。
-

@@ -6,11 +6,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/unistd.h>
 
 #include "dualsense_output.h"
 #include "dualsense_parser.h"
+#include "dual_chip_spi_proto.h"
 #include "led_status.h"
 
 #include "esp_bt.h"
@@ -47,6 +49,12 @@
 #define CONFIG_DS5_BRINGUP_RETRY_MS 500
 #endif
 
+#ifdef CONFIG_DS5_RAW_HIDP_AUTO_CONNECT
+#define DS5_RAW_HIDP_AUTO_CONNECT 1
+#else
+#define DS5_RAW_HIDP_AUTO_CONNECT 0
+#endif
+
 #define DS5_RAW_LOCAL_NAME "DS5Bridge-ESP32-Raw"
 #define DS5_NVS_NAMESPACE "ds5bt"
 #define DS5_NVS_LAST_BDA_KEY "last_bda"
@@ -60,6 +68,7 @@
 #define DS5_HIDP_REPORT_TYPE_OUTPUT 0x02
 #define DS5_HIDP_REPORT_TYPE_FEATURE 0x03
 #define DS5_RAW_RX_TASK_STACK 4096
+#define DS5_RAW_RX_BUFFER_LEN 768
 #define DS5_RAW_RECONNECT_DELAY_US (2 * 1000 * 1000)
 #define DS5_RAW_MAX_SAVED_RECONNECT_FAILURES 3
 
@@ -96,16 +105,24 @@ static bool s_sdp_ready;
 static bool s_connecting;
 static bool s_sdp_searching;
 static bool s_current_target_from_saved;
+static bool s_auto_reconnect_enabled = true;
 static bool s_have_last_state;
 static bool s_have_full_report;
 static uint8_t s_bringup_attempts;
 static uint8_t s_saved_reconnect_failures;
+static uint16_t s_state_seq;
+static int8_t s_last_rssi;
+static int32_t s_last_error;
 static int64_t s_last_state_log_us;
 static dualsense_state_t s_last_state;
 static dualsense_output_context_t s_output_ctx;
 static raw_connect_step_t s_pending_step;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_bringup_timer;
+static bt_dualsense_raw_hidp_rx_cb_t s_rx_cb;
+static void *s_rx_cb_ctx;
+static bt_dualsense_raw_hidp_state_cb_t s_state_cb;
+static void *s_state_cb_ctx;
 
 static raw_hidp_channel_t s_control = {
     .id = RAW_CH_CONTROL,
@@ -126,12 +143,85 @@ static void start_discovery(void);
 static void connect_hidp_control(void);
 static void connect_hidp_interrupt(void);
 static void send_bringup(const char *reason);
+static void notify_state(void);
+static void stop_bringup_timer(void);
 
 static const char *bda_to_str(const esp_bd_addr_t bda, char *out, size_t out_len)
 {
     snprintf(out, out_len, "%02X:%02X:%02X:%02X:%02X:%02X",
              bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
     return out;
+}
+
+void bt_dualsense_raw_hidp_get_state(bt_dualsense_raw_hidp_state_t *state)
+{
+    uint32_t flags = 0;
+
+    if (state == NULL) {
+        return;
+    }
+
+    if (bt_dualsense_raw_hidp_ready()) {
+        flags |= DS5_DUAL_BT_STATE_READY;
+    }
+    if (s_l2cap_ready) {
+        flags |= DS5_DUAL_BT_STATE_L2CAP_READY;
+    }
+    if (s_sdp_ready) {
+        flags |= DS5_DUAL_BT_STATE_SDP_READY;
+    }
+    if (s_control.connected) {
+        flags |= DS5_DUAL_BT_STATE_CONTROL_OPEN;
+    }
+    if (s_interrupt.connected) {
+        flags |= DS5_DUAL_BT_STATE_INTERRUPT_OPEN;
+    }
+    if (s_have_full_report) {
+        flags |= DS5_DUAL_BT_STATE_FULL_REPORT;
+    }
+    if (s_connecting) {
+        flags |= DS5_DUAL_BT_STATE_CONNECTING;
+    }
+    if (s_sdp_searching) {
+        flags |= DS5_DUAL_BT_STATE_SDP_SEARCHING;
+    }
+    if (s_target_found) {
+        flags |= DS5_DUAL_BT_STATE_TARGET_FOUND;
+    }
+    if (s_have_saved_bda) {
+        flags |= DS5_DUAL_BT_STATE_HAVE_SAVED;
+    }
+    if (s_current_target_from_saved) {
+        flags |= DS5_DUAL_BT_STATE_FROM_SAVED;
+    }
+
+    memset(state, 0, sizeof(*state));
+    state->flags = flags;
+    state->last_error = s_last_error;
+    state->rssi = s_last_rssi;
+    state->bringup_attempts = s_bringup_attempts;
+    state->reconnect_failures = s_saved_reconnect_failures;
+    state->control_mtu = s_control.tx_mtu > 0 ? (uint16_t)s_control.tx_mtu : 0;
+    state->interrupt_mtu = s_interrupt.tx_mtu > 0 ? (uint16_t)s_interrupt.tx_mtu : 0;
+    if (s_target_found) {
+        memcpy(state->bda, s_target_bda, sizeof(state->bda));
+    } else if (s_have_saved_bda) {
+        memcpy(state->bda, s_saved_bda, sizeof(state->bda));
+    }
+    state->state_seq = s_state_seq;
+}
+
+static void notify_state(void)
+{
+    bt_dualsense_raw_hidp_state_t state;
+
+    s_state_seq++;
+    if (s_state_cb == NULL) {
+        return;
+    }
+
+    bt_dualsense_raw_hidp_get_state(&state);
+    s_state_cb(&state, esp_timer_get_time(), s_state_cb_ctx);
 }
 
 static bool text_contains_case_insensitive(const char *text, const char *needle)
@@ -240,6 +330,136 @@ static bool load_saved_bda(void)
     return true;
 }
 
+static void clear_saved_bda_state(void)
+{
+    memset(s_saved_bda, 0, sizeof(s_saved_bda));
+    s_have_saved_bda = false;
+    s_saved_reconnect_failures = 0;
+    s_current_target_from_saved = false;
+}
+
+static int forget_saved_bda(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(DS5_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        clear_saved_bda_state();
+        return 0;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Open NVS namespace failed while forgetting controller: %s",
+                 esp_err_to_name(err));
+        return -EIO;
+    }
+
+    err = nvs_erase_key(nvs, DS5_NVS_LAST_BDA_KEY);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Clearing saved DualSense address failed: %s", esp_err_to_name(err));
+        return -EIO;
+    }
+
+    clear_saved_bda_state();
+    memset(s_target_bda, 0, sizeof(s_target_bda));
+    s_target_found = false;
+    ESP_LOGI(TAG, "Raw HIDP cleared saved DualSense address");
+    return 0;
+}
+
+static bool saved_bda_has_bond(void)
+{
+    int device_count;
+    esp_bd_addr_t *devices;
+    bool found = false;
+    esp_err_t err;
+
+    if (!s_have_saved_bda) {
+        return false;
+    }
+
+    device_count = esp_bt_gap_get_bond_device_num();
+    if (device_count <= 0) {
+        return false;
+    }
+
+    devices = calloc((size_t)device_count, sizeof(*devices));
+    if (devices == NULL) {
+        ESP_LOGW(TAG, "Allocating bonded device list for %d entries failed; keeping saved address",
+                 device_count);
+        return true;
+    }
+
+    err = esp_bt_gap_get_bond_device_list(&device_count, devices);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Reading bonded device list failed: %s", esp_err_to_name(err));
+        free(devices);
+        return true;
+    }
+
+    for (int i = 0; i < device_count; i++) {
+        if (memcmp(devices[i], s_saved_bda, sizeof(s_saved_bda)) == 0) {
+            found = true;
+            break;
+        }
+    }
+
+    free(devices);
+    return found;
+}
+
+static int clear_bonded_devices(void)
+{
+    int device_count;
+    esp_bd_addr_t *devices;
+    esp_err_t err;
+    int first_error = 0;
+
+    device_count = esp_bt_gap_get_bond_device_num();
+    if (device_count < 0) {
+        ESP_LOGW(TAG, "Querying bonded device count failed");
+        return -EIO;
+    }
+    if (device_count == 0) {
+        ESP_LOGI(TAG, "Raw HIDP bond database already empty");
+        return 0;
+    }
+
+    devices = calloc((size_t)device_count, sizeof(*devices));
+    if (devices == NULL) {
+        return -ENOMEM;
+    }
+
+    err = esp_bt_gap_get_bond_device_list(&device_count, devices);
+    if (err != ESP_OK) {
+        free(devices);
+        ESP_LOGW(TAG, "Reading bonded device list failed: %s", esp_err_to_name(err));
+        return -EIO;
+    }
+
+    for (int i = 0; i < device_count; i++) {
+        char addr[18];
+
+        err = esp_bt_gap_remove_bond_device(devices[i]);
+        if (err != ESP_OK && first_error == 0) {
+            first_error = -EIO;
+        }
+        ESP_LOGI(TAG, "Raw HIDP remove bond %s result=%s",
+                 bda_to_str(devices[i], addr, sizeof(addr)),
+                 esp_err_to_name(err));
+    }
+
+    free(devices);
+    return first_error;
+}
+
 static void save_bda_if_needed(const esp_bd_addr_t bda)
 {
     if (s_have_saved_bda && memcmp(s_saved_bda, bda, sizeof(esp_bd_addr_t)) == 0) {
@@ -291,11 +511,16 @@ static void reset_hidp_channels(void)
     s_have_full_report = false;
     s_bringup_attempts = 0;
     dualsense_output_init(&s_output_ctx);
+    notify_state();
 }
 
 static void schedule_reconnect(void)
 {
-    if (s_reconnect_timer == NULL) {
+    if (s_reconnect_timer == NULL || !s_auto_reconnect_enabled) {
+        if (!s_auto_reconnect_enabled) {
+            ESP_LOGI(TAG, "Raw HIDP reconnect suppressed by control plane");
+            notify_state();
+        }
         return;
     }
 
@@ -318,11 +543,12 @@ static void note_connect_failure(void)
     ESP_LOGI(TAG, "Raw HIDP saved DualSense reconnect failure %u/%u",
              (unsigned)s_saved_reconnect_failures,
              (unsigned)DS5_RAW_MAX_SAVED_RECONNECT_FAILURES);
+    notify_state();
 }
 
 static void maybe_start_flow(void)
 {
-    if (s_l2cap_ready && s_sdp_ready) {
+    if (s_auto_reconnect_enabled && s_l2cap_ready && s_sdp_ready) {
         start_connect_flow();
     }
 }
@@ -340,7 +566,11 @@ static void start_discovery(void)
                                                inquiry_len_from_seconds(), 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Raw HIDP discovery failed: %s", esp_err_to_name(err));
+        s_last_error = err;
+        notify_state();
         schedule_reconnect();
+    } else {
+        notify_state();
     }
 }
 
@@ -356,11 +586,14 @@ static void start_sdp_or_connect(void)
         s_sdp_searching = true;
         ESP_LOGI(TAG, "Raw HIDP SDP search for HID service 0x%04X started",
                  DS5_HIDP_SERVICE_UUID);
+        notify_state();
         return;
     }
 
     ESP_LOGW(TAG, "Raw HIDP SDP search failed to start: %s; connecting known HID PSMs",
              esp_err_to_name(err));
+    s_last_error = err;
+    notify_state();
     connect_hidp_control();
 }
 
@@ -393,7 +626,9 @@ static void reconnect_timer_cb(void *arg)
 {
     (void)arg;
     reset_hidp_channels();
-    start_connect_flow();
+    if (s_auto_reconnect_enabled) {
+        start_connect_flow();
+    }
 }
 
 static void bringup_timer_cb(void *arg)
@@ -419,7 +654,9 @@ static esp_err_t connect_psm(raw_connect_step_t step, uint16_t psm)
                  psm, esp_err_to_name(err));
         s_pending_step = RAW_CONNECT_IDLE;
         s_connecting = false;
+        s_last_error = err;
     }
+    notify_state();
     return err;
 }
 
@@ -435,6 +672,78 @@ static void connect_hidp_interrupt(void)
     if (connect_psm(RAW_CONNECT_INTERRUPT, DS5_HIDP_PSM_INTERRUPT) != ESP_OK) {
         schedule_reconnect();
     }
+}
+
+int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len)
+{
+    if (bda != NULL && len != sizeof(esp_bd_addr_t)) {
+        return -EINVAL;
+    }
+    if (bt_dualsense_raw_hidp_ready() || s_connecting || s_sdp_searching) {
+        return 0;
+    }
+
+    s_auto_reconnect_enabled = true;
+    if (s_reconnect_timer != NULL) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+
+    if (bda != NULL) {
+        memcpy(s_target_bda, bda, sizeof(esp_bd_addr_t));
+        s_target_found = true;
+        s_current_target_from_saved = false;
+        s_saved_reconnect_failures = 0;
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP control connect requested for %s",
+                 bda_to_str(s_target_bda, addr, sizeof(addr)));
+    } else {
+        ESP_LOGI(TAG, "Raw HIDP control connect requested using saved address or scan");
+    }
+
+    if (!s_l2cap_ready || !s_sdp_ready) {
+        notify_state();
+        return -EAGAIN;
+    }
+
+    if (bda != NULL) {
+        start_sdp_or_connect();
+    } else {
+        start_connect_flow();
+    }
+    return 0;
+}
+
+static void close_channel(raw_hidp_channel_t *channel)
+{
+    if (channel == NULL || !channel->connected || channel->fd < 0) {
+        return;
+    }
+
+    close(channel->fd);
+    channel->fd = -1;
+    channel->connected = false;
+    channel->handle = 0;
+    channel->tx_mtu = 0;
+}
+
+int bt_dualsense_raw_hidp_disconnect(bool allow_reconnect)
+{
+    s_auto_reconnect_enabled = allow_reconnect;
+    if (s_reconnect_timer != NULL) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+    stop_bringup_timer();
+    esp_bt_gap_cancel_discovery();
+
+    close_channel(&s_interrupt);
+    close_channel(&s_control);
+    reset_hidp_channels();
+    led_status_set(allow_reconnect ? DS5_LED_STATE_BT_CONNECTING : DS5_LED_STATE_BOOT_OK);
+    if (allow_reconnect) {
+        start_connect_flow();
+    }
+    notify_state();
+    return 0;
 }
 
 static raw_hidp_channel_t *channel_for_handle(uint32_t handle)
@@ -507,16 +816,124 @@ static int send_set_report_output(const uint8_t *report, size_t report_len)
     return raw_write(&s_control, packet, report_len + 1);
 }
 
+static int send_set_report_feature(uint8_t report_id, const uint8_t *data, size_t len)
+{
+    uint8_t packet[2 + 64];
+
+    if ((data == NULL && len != 0) || len > sizeof(packet) - 2U) {
+        return -EINVAL;
+    }
+
+    packet[0] = (uint8_t)(DS5_HIDP_SET_REPORT | DS5_HIDP_REPORT_TYPE_FEATURE);
+    packet[1] = report_id;
+    if (len != 0) {
+        memcpy(packet + 2, data, len);
+    }
+    return raw_write(&s_control, packet, len + 2U);
+}
+
 static int send_data_output(const uint8_t *report, size_t report_len)
 {
-    uint8_t packet[1 + DS5_OUTPUT_REPORT32_BT_LEN];
-    if (report == NULL || report_len > DS5_OUTPUT_REPORT32_BT_LEN) {
+    uint8_t packet[1 + DS5_OUTPUT_REPORT36_BT_LEN];
+    if (report == NULL || report_len > DS5_OUTPUT_REPORT36_BT_LEN) {
         return -EINVAL;
     }
 
     packet[0] = DS5_HIDP_DATA_OUTPUT;
     memcpy(packet + 1, report, report_len);
     return raw_write(&s_interrupt, packet, report_len + 1);
+}
+
+bool bt_dualsense_raw_hidp_ready(void)
+{
+    return s_control.connected && s_interrupt.connected;
+}
+
+int bt_dualsense_raw_hidp_forget(uint8_t flags)
+{
+    int first_error = 0;
+    int err;
+
+    if ((flags & ~(DS5_DUAL_FORGET_SAVED_ADDR | DS5_DUAL_FORGET_BONDS)) != 0 ||
+        flags == 0) {
+        return -EINVAL;
+    }
+
+    s_auto_reconnect_enabled = false;
+    if (s_reconnect_timer != NULL) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+    stop_bringup_timer();
+    esp_bt_gap_cancel_discovery();
+
+    close_channel(&s_interrupt);
+    close_channel(&s_control);
+    reset_hidp_channels();
+
+    if ((flags & DS5_DUAL_FORGET_BONDS) != 0) {
+        err = clear_bonded_devices();
+        if (err != 0 && first_error == 0) {
+            first_error = err;
+        }
+    }
+    if ((flags & DS5_DUAL_FORGET_SAVED_ADDR) != 0) {
+        err = forget_saved_bda();
+        if (err != 0 && first_error == 0) {
+            first_error = err;
+        }
+    }
+
+    s_target_found = false;
+    memset(s_target_bda, 0, sizeof(s_target_bda));
+    s_last_error = first_error;
+    led_status_set(DS5_LED_STATE_BOOT_OK);
+    notify_state();
+
+    ESP_LOGI(TAG, "Raw HIDP forget request flags=0x%02X status=%d",
+             (unsigned)flags, first_error);
+    return first_error;
+}
+
+int bt_dualsense_raw_hidp_send_report(const uint8_t *report,
+                                      size_t report_len,
+                                      bool realtime)
+{
+    (void)realtime;
+
+    if (report == NULL || report_len == 0) {
+        return -EINVAL;
+    }
+    if (!bt_dualsense_raw_hidp_ready()) {
+        return -ENOTCONN;
+    }
+    return send_data_output(report, report_len);
+}
+
+int bt_dualsense_raw_hidp_get_feature(uint8_t report_id)
+{
+    return send_get_feature(report_id);
+}
+
+int bt_dualsense_raw_hidp_set_feature(uint8_t report_id,
+                                      const uint8_t *data,
+                                      size_t len)
+{
+    return send_set_report_feature(report_id, data, len);
+}
+
+void bt_dualsense_raw_hidp_set_rx_callback(bt_dualsense_raw_hidp_rx_cb_t cb,
+                                           void *ctx)
+{
+    s_rx_cb = cb;
+    s_rx_cb_ctx = ctx;
+}
+
+void bt_dualsense_raw_hidp_set_state_callback(bt_dualsense_raw_hidp_state_cb_t cb,
+                                              void *ctx)
+{
+    s_state_cb = cb;
+    s_state_cb_ctx = ctx;
+    notify_state();
 }
 
 static void send_output_init_reports(void)
@@ -580,6 +997,7 @@ static void send_bringup(const char *reason)
     }
 
     s_bringup_attempts++;
+    notify_state();
     ESP_LOGI(TAG, "Raw HIDP DualSense bring-up attempt %u/%u reason=%s",
              (unsigned)s_bringup_attempts,
              (unsigned)CONFIG_DS5_BRINGUP_RETRIES,
@@ -601,6 +1019,10 @@ static void handle_input_report(const uint8_t *data, size_t len)
     dualsense_state_t state;
     dualsense_parse_result_t parse;
 
+    if (s_rx_cb != NULL) {
+        s_rx_cb(data, len, esp_timer_get_time(), s_rx_cb_ctx);
+    }
+
     if (!dualsense_parse_report(data, len, &state, &parse)) {
         if (parse.kind == DS5_REPORT_MIC_AUDIO) {
             ESP_LOGD(TAG, "Raw HIDP microphone/audio payload len=%u skipped", (unsigned)len);
@@ -616,6 +1038,7 @@ static void handle_input_report(const uint8_t *data, size_t len)
         stop_bringup_timer();
         ESP_LOGI(TAG, "Raw HIDP full report=0x31 received; bring-up complete after %u attempts",
                  (unsigned)s_bringup_attempts);
+        notify_state();
     }
 
     int64_t now = esp_timer_get_time();
@@ -638,11 +1061,15 @@ static void handle_input_report(const uint8_t *data, size_t len)
 static void rx_task(void *arg)
 {
     raw_hidp_channel_t *channel = (raw_hidp_channel_t *)arg;
-    uint8_t data[256];
+    uint8_t data[DS5_RAW_RX_BUFFER_LEN];
 
     while (channel->fd >= 0) {
         int len = read(channel->fd, data, sizeof(data));
-        if (len <= 0) {
+        if (len == 0) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+            continue;
+        }
+        if (len < 0) {
             ESP_LOGW(TAG, "Raw HIDP %s read ended len=%d errno=%d",
                      channel->name, len, errno);
             break;
@@ -652,6 +1079,8 @@ static void rx_task(void *arg)
                  channel->name, len, data[0]);
         if (channel->id == RAW_CH_INTERRUPT) {
             handle_input_report(data, (size_t)len);
+        } else if (s_rx_cb != NULL && len >= 3 && data[0] == 0xA3) {
+            s_rx_cb(data, (size_t)len, esp_timer_get_time(), s_rx_cb_ctx);
         }
     }
 
@@ -686,20 +1115,26 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             esp_err_t err = esp_bt_l2cap_vfs_register();
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Raw HIDP L2CAP VFS register failed: %s", esp_err_to_name(err));
+                s_last_error = err;
             } else {
                 s_l2cap_ready = true;
                 maybe_start_flow();
             }
+        } else {
+            s_last_error = param->init.status;
         }
+        notify_state();
         break;
 
     case ESP_BT_L2CAP_CL_INIT_EVT:
         ESP_LOGI(TAG, "Raw HIDP L2CAP client init status=%d handle=0x%" PRIX32,
                  param->cl_init.status, param->cl_init.handle);
         if (param->cl_init.status != ESP_BT_L2CAP_SUCCESS) {
+            s_last_error = param->cl_init.status;
             note_connect_failure();
             s_connecting = false;
             s_pending_step = RAW_CONNECT_IDLE;
+            notify_state();
             schedule_reconnect();
         }
         break;
@@ -714,9 +1149,11 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
                  param->open.tx_mtu);
 
         if (param->open.status != ESP_BT_L2CAP_SUCCESS || channel == NULL) {
+            s_last_error = param->open.status;
             note_connect_failure();
             s_connecting = false;
             s_pending_step = RAW_CONNECT_IDLE;
+            notify_state();
             schedule_reconnect();
             break;
         }
@@ -729,6 +1166,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         start_rx_task(channel);
         ESP_LOGI(TAG, "Raw HIDP %s connected: fd=%d tx_mtu=%" PRId32,
                  channel->name, channel->fd, channel->tx_mtu);
+        s_last_error = 0;
 
         s_pending_step = RAW_CONNECT_IDLE;
         s_connecting = false;
@@ -740,11 +1178,15 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             led_status_set(DS5_LED_STATE_BT_CONNECTED);
             send_bringup("l2cap-open");
         }
+        notify_state();
         break;
     }
 
     case ESP_BT_L2CAP_CLOSE_EVT: {
         raw_hidp_channel_t *channel = channel_for_handle(param->close.handle);
+        bool failed_pending_connect = channel == NULL &&
+                                      (s_connecting ||
+                                       s_pending_step != RAW_CONNECT_IDLE);
         ESP_LOGI(TAG, "Raw HIDP L2CAP close status=%d handle=0x%" PRIX32 " async=%d channel=%s",
                  param->close.status,
                  param->close.handle,
@@ -755,8 +1197,15 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             channel->fd = -1;
             channel->handle = 0;
         }
+        s_last_error = param->close.status;
+        if (failed_pending_connect) {
+            note_connect_failure();
+            s_connecting = false;
+            s_pending_step = RAW_CONNECT_IDLE;
+        }
         stop_bringup_timer();
         led_status_set(DS5_LED_STATE_BT_CONNECTING);
+        notify_state();
         schedule_reconnect();
         break;
     }
@@ -783,13 +1232,19 @@ static void sdp_callback(esp_sdp_cb_event_t event, esp_sdp_cb_param_t *param)
         if (param->init.status == ESP_SDP_SUCCESS) {
             s_sdp_ready = true;
             maybe_start_flow();
+        } else {
+            s_last_error = param->init.status;
         }
+        notify_state();
         break;
 
     case ESP_SDP_SEARCH_COMP_EVT:
         s_sdp_searching = false;
         ESP_LOGI(TAG, "Raw HIDP SDP search status=%d records=%d",
                  param->search.status, param->search.record_count);
+        if (param->search.status != ESP_SDP_SUCCESS) {
+            s_last_error = param->search.status;
+        }
         if (param->search.status == ESP_SDP_SUCCESS && param->search.records != NULL) {
             for (int i = 0; i < param->search.record_count; i++) {
                 ESP_LOGI(TAG,
@@ -803,6 +1258,7 @@ static void sdp_callback(esp_sdp_cb_event_t event, esp_sdp_cb_param_t *param)
                          param->search.records[i].hdr.profile_version);
             }
         }
+        notify_state();
         connect_hidp_control();
         break;
 
@@ -845,6 +1301,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                 break;
             case ESP_BT_GAP_DEV_PROP_RSSI:
                 rssi = *(int8_t *)prop->val;
+                s_last_rssi = rssi;
                 break;
             case ESP_BT_GAP_DEV_PROP_EIR:
                 if (name[0] == '\0') {
@@ -868,6 +1325,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             s_target_found = true;
             s_current_target_from_saved = false;
             ESP_LOGI(TAG, "Raw HIDP selected candidate %s; stopping inquiry", addr);
+            notify_state();
             esp_bt_gap_cancel_discovery();
         }
         break;
@@ -879,10 +1337,12 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             if (s_target_found) {
                 start_sdp_or_connect();
             } else {
+                notify_state();
                 schedule_reconnect();
             }
         } else {
             ESP_LOGI(TAG, "Raw HIDP discovery started");
+            notify_state();
         }
         break;
 
@@ -893,6 +1353,10 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                  bda_to_str(param->auth_cmpl.bda, addr, sizeof(addr)),
                  param->auth_cmpl.lk_type,
                  (char *)param->auth_cmpl.device_name);
+        if (param->auth_cmpl.stat != ESP_BT_STATUS_SUCCESS) {
+            s_last_error = param->auth_cmpl.stat;
+        }
+        notify_state();
         break;
     }
 
@@ -920,6 +1384,32 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
         esp_bt_gap_ssp_passkey_reply(param->key_req.bda, false, 0);
         ESP_LOGW(TAG, "Raw HIDP rejected unexpected SSP passkey entry request");
         break;
+
+    case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT: {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP ACL connect status=%d handle=0x%04X addr=%s",
+                 param->acl_conn_cmpl_stat.stat,
+                 param->acl_conn_cmpl_stat.handle,
+                 bda_to_str(param->acl_conn_cmpl_stat.bda, addr, sizeof(addr)));
+        break;
+    }
+
+    case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT: {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP ACL disconnect reason=0x%02X handle=0x%04X addr=%s",
+                 param->acl_disconn_cmpl_stat.reason,
+                 param->acl_disconn_cmpl_stat.handle,
+                 bda_to_str(param->acl_disconn_cmpl_stat.bda, addr, sizeof(addr)));
+        break;
+    }
+
+    case ESP_BT_GAP_ENC_CHG_EVT: {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP encryption change mode=%d addr=%s",
+                 param->enc_chg.enc_mode,
+                 bda_to_str(param->enc_chg.bda, addr, sizeof(addr)));
+        break;
+    }
 
     default:
         ESP_LOGD(TAG, "Raw HIDP unhandled GAP event %d", event);
@@ -978,6 +1468,10 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
                                              ESP_BT_NON_DISCOVERABLE));
 
     load_saved_bda();
+    if (s_have_saved_bda && !saved_bda_has_bond()) {
+        ESP_LOGW(TAG, "Raw HIDP saved address has no matching bond; clearing stale entry");
+        (void)forget_saved_bda();
+    }
 
     const esp_timer_create_args_t reconnect_timer_args = {
         .callback = reconnect_timer_cb,
@@ -1008,6 +1502,11 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
         char addr[18];
         ESP_LOGI(TAG, "Raw HIDP local BR/EDR address: %s",
                  bda_to_str(local_bda, addr, sizeof(addr)));
+    }
+
+    if (DS5_RAW_HIDP_AUTO_CONNECT) {
+        ESP_LOGI(TAG, "Raw HIDP auto-connect enabled at startup");
+        start_connect_flow();
     }
 
     return ESP_OK;
