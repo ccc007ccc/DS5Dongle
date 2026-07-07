@@ -64,6 +64,12 @@ if(ENABLE_VERBOSE)
 else()
     set(ENABLE_VERBOSE_VALUE 0)
 endif ()
+option(ENABLE_DEBUG "Enable debug probes" OFF)
+if(ENABLE_DEBUG)
+    set(ENABLE_DEBUG_VALUE 1)
+else()
+    set(ENABLE_DEBUG_VALUE 0)
+endif ()
 option(ENABLE_BATT_LED "Blink Pico LED when DualSense battery is low (<=10%)" ON)
 if (ENABLE_BATT_LED)
         set(ENABLE_BATT_LED_VALUE 1)
@@ -115,6 +121,10 @@ add_executable(ds5-bridge
         src/cmd.cpp
         src/ram_mem.c
 )
+
+if (ENABLE_DEBUG)
+        target_sources(ds5-bridge PRIVATE src/debug.cpp)
+endif ()
 
 if (ENABLE_BATT_LED)
         target_sources(ds5-bridge PRIVATE src/battery_led.cpp)
@@ -283,6 +293,7 @@ target_compile_definitions(ds5-bridge PRIVATE
         # registers via flash_safe_execute_core_init().
         PICO_FLASH_ASSUME_CORE1_SAFE=0
         WDL_RESAMPLE_TYPE=float
+        ENABLE_DEBUG=${ENABLE_DEBUG_VALUE}
         CYW43_PIO_CLOCK_DIV_INT=${CYW43_PIO_CLOCK_DIV_VALUE}
         PICO_STDIO_USB_USE_DEFAULT_DESCRIPTORS=0
         PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=0

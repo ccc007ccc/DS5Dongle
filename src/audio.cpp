@@ -10,6 +10,9 @@
 
 #include "audio.h"
 #include "bt.h"
+#if ENABLE_DEBUG
+#include "debug.h"
+#endif
 #include "resample.h"
 #include "tusb.h"
 #include <algorithm>
@@ -42,7 +45,7 @@ extern uint8_t reportSeqCounter;
 extern uint8_t packetCounter;
 static bool plug_headset = false;
 static bool mic_active = false; // host has opened the mic IN interface (alt != 0)
-alignas(8) static uint32_t audio_core1_stack[7680];
+alignas(8) static uint32_t audio_core1_stack[7000];
 queue_t audio_fifo; // raw pcm data
 queue_t mic_fifo;
 queue_t mic_decode_fifo;
@@ -280,7 +283,8 @@ void __not_in_flash_func(audio_loop)() {
 }
 
 void audio_init() {
-    resampler.SetMode(true, 0, false);
+    resampler.SetMode(true, 2, false);
+    resampler.SetFilterParms(0.85f, 0.707f);
     resampler.SetRates(48000, 3000);
     resampler.SetFeedMode(true);
     resampler.Prealloc(2, 48, 4);
@@ -292,6 +296,11 @@ void audio_init() {
 #if !DISABLE_SPEAKER_PROC
     queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
     queue_init(&audio_spk_fifo, sizeof(audio_spk_element), 2);
+#if ENABLE_DEBUG
+    // 通常 stack 最大使用 25836 bytes 即 stack[6459]
+    debug_fill_core1_stack_watermark(audio_core1_stack,
+                                     sizeof(audio_core1_stack) / sizeof(audio_core1_stack[0]));
+#endif
     multicore_launch_core1_with_stack(core1_entry, audio_core1_stack, sizeof(audio_core1_stack));
 #endif
 }

@@ -9,6 +9,9 @@
 #include "utils.h"
 #include "resample.h"
 #include "audio.h"
+#if ENABLE_DEBUG
+#include "debug.h"
+#endif
 #include "wake.h"
 #ifdef ENABLE_WAKE_HID
 #include "ps_shortcut.h"
@@ -311,6 +314,9 @@ int main() {
         tud_task();
         wake_task();
         audio_loop();
+#if ENABLE_DEBUG
+        debug_log_core1_stack_usage();
+#endif
         interrupt_loop();
 #if ENABLE_BATT_LED
         battery_led_tick();
