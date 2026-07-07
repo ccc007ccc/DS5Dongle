@@ -91,24 +91,15 @@ void update_mic_status() {
     pkt[1] = reportSeqCounter << 4;
     reportSeqCounter = (reportSeqCounter + 1) & 0x0F;
     pkt[2] = 0x11 | 0 << 6 | 1 << 7;
-    pkt[3] = 7;
-    pkt[4] = (mic_active && !get_config().disable_mic) ? 0b11111111 : 0b11111110;
-    const auto buf_len = get_config().audio_buffer_length;
-    pkt[5] = buf_len;
-    pkt[6] = buf_len;
-    pkt[7] = buf_len;
-    pkt[8] = buf_len;
-    pkt[9] = buf_len;
-    pkt[10] = packetCounter++;
+    pkt[3] = 1;
+    pkt[4] = (mic_active && !get_config().disable_mic) ? 0b00000011 : 0b00000010;
     bt_write(pkt, sizeof(pkt));
 }
 
 void __not_in_flash_func(audio_bt_task)() {
     const Config_body &cfg = get_config();
     const bool mic_enabled = mic_active && !cfg.disable_mic;
-#if DISABLE_SPEAKER_PROC
-    const bool speaker_enabled = false;
-#else
+#if !DISABLE_SPEAKER_PROC
     const bool speaker_enabled = !cfg.disable_speaker;
 #endif
 
@@ -132,11 +123,11 @@ void __not_in_flash_func(audio_bt_task)() {
     // bit 6 是必须的
     // 其余 bit 每多设置一个为0，就需要将pkt[3] - 1，然后将下面这些缩短一个字节的数据。
     // 最终实测，可以只保留一个 buf_len + packetCounter
-    // pkt 5-7 的注释是根据 Nielk 采样到的数据进行猜测。但是实际上修改还是发现有任何效果
+    // pkt 5-7 的注释是根据 Nielk1 采样到的数据进行猜测。但是实际上修改还是发现有任何效果
     const auto buf_len = cfg.audio_buffer_length;
-    pkt[5] = buf_len; // VolumeHeadphones
-    pkt[6] = buf_len; // VolumeMic
-    pkt[7] = buf_len; // VolumeSpeaker
+    pkt[5] = buf_len; // VolumeHeadphones - guess but no work
+    pkt[6] = buf_len; // VolumeMic - guess but no work
+    pkt[7] = buf_len; // VolumeSpeaker - guess but no work
     pkt[8] = buf_len; // AudioBufferLength
     pkt[9] = packetCounter += 2;
     pkt[10] = 0x12 | 1 << 6 | 1 << 7;
