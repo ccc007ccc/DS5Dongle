@@ -108,7 +108,7 @@ static void note_hidp_report(uint8_t report_id)
     case 0x32:
         s_stats.hidp_tx_32++;
         break;
-    case 0x36:
+    case 0x39:
         s_stats.hidp_tx_36++;
         break;
     default:
@@ -811,7 +811,7 @@ static void tx_task(void *arg)
         if (item.deadline_us != 0 &&
             esp_timer_get_time() > (int64_t)item.deadline_us) {
             if (item.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT ||
-                (item.len > 0 && item.payload[0] == 0x36)) {
+                (item.len > 0 && item.payload[0] == 0x39)) {
                 s_stats.deadline_miss_36++;
             }
             continue;

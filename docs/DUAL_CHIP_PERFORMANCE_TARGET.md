@@ -28,9 +28,9 @@
 
 分支 `m61-esp32-dual-chip` 已开始按本目标拆分代码边界：
 
-- 共享 SPI frame 协议已落到 `main/dual_chip_spi_proto.*`，包含固定 header、CRC、消息类型、channel、priority、deadline、`HELLO` 能力握手、`TIME_SYNC` payload、ACK payload、`STATS` 快照和 `0x36` 实时 report 识别；`tools/test_dualsense_protocol.py` 已加入 SPI frame、`HELLO`、`TIME_SYNC`、`FLOW_CREDIT`、ACK、`STATS` 与 `RESET_STATS` 离线向量。
+- 共享 SPI frame 协议已落到 `main/dual_chip_spi_proto.*`，包含固定 header、CRC、消息类型、channel、priority、deadline、`HELLO` 能力握手、`TIME_SYNC` payload、ACK payload、`STATS` 快照和 `0x39` 实时 report 识别；`tools/test_dualsense_protocol.py` 已加入 SPI frame、`HELLO`、`TIME_SYNC`、`FLOW_CREDIT`、ACK、`STATS` 与 `RESET_STATS` 离线向量。
 - M61 侧新增 `m61/dualsense_hidp_probe/m61_esp32_transport.*`，现有 USB/Opus/DS5 output report 生成点可以在 `CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT=y` 时走 ESP32 transport，而不是 M61 本机 HIDP 发送。
-- M61 侧已有可配置 SPI master shell：`CONFIG_M61_ESP32_SPI_ENABLE` 和 `CONFIG_M61_ESP32_SPI_READY` 默认关闭，`SCLK/MOSI/MISO/CS/READY/IRQ/RESET` 默认 `255` 作为无效 pin，不碰硬件；填入实际接线并显式打开后会用固定 532B MTU 与 ESP32 slave 做同步 exchange。
+- M61 侧已有可配置 SPI master shell：`CONFIG_M61_ESP32_SPI_ENABLE` 和 `CONFIG_M61_ESP32_SPI_READY` 默认关闭，`SCLK/MOSI/MISO/CS/READY/IRQ/RESET` 默认 `255` 作为无效 pin，不碰硬件；填入实际接线并显式打开后会用固定 692B transaction 与 ESP32 slave 做同步 exchange，可承载 672B payload。
 - M61 SPI exchange 已能验证 ESP32 返回 frame，并把 `BT_RX_INPUT` 回灌到 USB HID input、把 `BT_RX_MIC_OPUS` 回灌到 USB microphone Opus 队列。
 - M61 侧已有默认关闭的 RX poll shell：`CONFIG_M61_ESP32_RX_POLL_ENABLE=n`；接好 `ESP_IRQ` 并显式打开后会在 IRQ 高电平时 clock 空事务读取 ESP32 pending response；如果 `ESP_IRQ` 暂未接线但需要先 bring-up，也可以只打开该选项，让 M61 按固定间隔 fallback polling。
 - 双芯片 feature report 控制面已分离为 `BT_TX_FEATURE_GET`、`BT_TX_FEATURE_SET`、`BT_RX_FEATURE_REPORT`，ESP32 走 HIDP control channel，M61 回填 USB feature cache。
@@ -39,7 +39,7 @@
 - ESP32 raw HIDP 现在会把“保存 DualSense 地址”和“成功显式重配后移除黑名单”的 NVS 持久化延后到连接稳定窗口之后处理，而不是在 `L2CAP open` 热路径里同步刷 flash，减少刚连上时的阻塞风险。
 - 可靠控制面的 ACK 与超时重传已接入：M61 对 `HELLO`、feature/reset 这类 reliable frame 带 `DS5_DUAL_FLAG_RELIABLE`，ESP32 收到后用同 type + `DS5_DUAL_FLAG_ACK` 回传原 seq/type/status；M61 发送 reliable frame 后会 clock 空事务取 ACK，ACK miss 或可恢复错误会按 `CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT` 重发，并在 transport stats 记录 ACK/miss/retry/fail/status。
 - `HELLO` 握手已接入：ESP32 SPI slave ready 后预置本机 role/capability/MTU/queue-depth，M61 初始化 SPI transport 时发可靠 `HELLO`，并在 stats 中记录对端 role、protocol version、MTU、max payload、queue depth 和 capabilities。
-- `TIME_SYNC` 已接入一跳同步和周期刷新：M61 初始化时发送本地微秒时间，ESP32 返回 `esp_timer` 微秒时间，M61 估算 offset 后才把实时 `0x36` 的 FreeRTOS tick deadline 转成 ESP32 微秒 deadline；`CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS` 默认 1000 ms，transport ready 后低优先级刷新 offset，同步状态、失败次数、RTT、age 和 offset 会显示在 M61 transport stats 中。
+- `TIME_SYNC` 已接入一跳同步和周期刷新：M61 初始化时发送本地微秒时间，ESP32 返回 `esp_timer` 微秒时间，M61 估算 offset 后才把实时 `0x39` 的 FreeRTOS tick deadline 转成 ESP32 微秒 deadline；`CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS` 默认 1000 ms，transport ready 后低优先级刷新 offset，同步状态、失败次数、RTT、age 和 offset 会显示在 M61 transport stats 中。
 - `BT_STATE` 基础回传已接入：ESP32 raw HIDP 在 L2CAP/SDP/open/close/bring-up/full-report 等状态变化时上报 flags、last error、RSSI、MTU、目标地址和状态序号；M61 transport stats 会打印最近一次协处理器蓝牙状态。
 - ESP32 已能通过 `FLOW_CREDIT` 回报 BT TX 队列余量、raw HIDP ready、SPI response drop 和 HIDP TX error 计数；M61 侧在 transport stats 中记录最近一次 credit，并会对 `DROP_OK` 的最新实时包做主动限流。
 - M61 侧已有 reset 恢复状态机：连续通信/同步失败达到 `CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD=8` 且冷却时间满足后，会在有效 `CONFIG_M61_ESP32_RESET_PIN` 上拉低 50 ms、等待 750 ms boot，再重新 `HELLO` + `TIME_SYNC`；当前左侧接线 profile 仍保持 `RESET_PIN=255`，因此默认不会实际拉任何 GPIO。
@@ -63,7 +63,7 @@
 - USB Audio OUT：48 kHz, 4 channel, 16-bit，原始速率约 384 KB/s。当前 USB iso packet 为 392 B/ms。
 - speaker Opus：200 B / 10 ms，约 20 KB/s。
 - HD haptics block：64 B / 10 ms，约 6.4 KB/s。
-- BT report `0x36`：398 B / 10 ms，约 39.8 KB/s。
+- BT realtime report `0x39`：547 B / 20 ms，内含两个 10 ms haptics block 和两个 200B speaker/headset Opus block，约 27.4 KB/s。
 - BT output `0x31`：78 B，状态类，低频或合并发送。
 - BT output `0x32`：142 B，mic/audio status，低频或状态变化发送。
 - BT input `0x31`：手柄输入，按手柄上报频率转发，必须低延迟。
@@ -73,9 +73,9 @@
 
 - USB HID input 端到端延迟：目标 < 4 ms，最大 < 8 ms。
 - USB output 到 BT `0x31/0x32` 状态生效：目标 < 10 ms。
-- USB Audio OUT 到 BT `0x36` 发送：稳定 100 Hz，deadline jitter 目标 < 1 ms。
+- USB Audio OUT 到 BT `0x39` 发送：稳定 50 Hz report cadence，每包覆盖两个 10 ms 音频/触觉 block，deadline jitter 目标 < 1 ms。
 - speaker Opus encode：M61 上平均 < 8 ms，P95 < 9 ms，最大不超过 10 ms；持续播放时 `qdrop=0` 为目标。
-- BT `0x36` 发送错误：持续 60 s 播放时 `errors=0`，无 L2CAP buffer starvation。
+- BT `0x39` 发送错误：持续 60 s 播放时 `errors=0`，无 L2CAP buffer starvation。
 - SPI 实时通道占用：目标 < 20% bus utilization，避免芯片间链路成为新瓶颈。
 
 ## M61 目标职责
@@ -97,7 +97,7 @@ M61 是 USB 主控和协议真源。
 - DualSense 私有 output report 生成：
   - BT `0x31` SetStateData
   - BT `0x32` audio/mic status
-  - BT `0x36` haptics/speaker/headset audio
+  - BT `0x39` haptics/speaker/headset audio
   - CRC、sequence、audio packet counter、audio buffer length
 - 音频和触觉计算：
   - USB Audio OUT ch0/ch1 -> speaker Opus
@@ -120,7 +120,7 @@ M61 调度目标：
 
 - USB ISR/callback 只做拷贝和轻量状态更新，不做 BT 发送。
 - Opus encode 任务独立于 BT stack，不被 L2CAP 发送阻塞。
-- `0x36` 生成使用最新 haptics block 和最新 speaker Opus，错过 deadline 时丢旧包，不追历史包。
+- `0x39` 生成聚合两个 10 ms haptics block 和两个 speaker/headset Opus block，错过 deadline 时丢旧包，不追历史包。
 - mic decode 低于 speaker encode 优先级；speaker 活跃时允许暂停或降频 mic decode，保证播放和 haptics。
 
 ## ESP32-WROOM-32 目标职责
@@ -154,7 +154,7 @@ ESP32 双核目标分配：
 
 ESP32 对 DS5 报文的理解应保持最小：
 
-- 识别 report id：`0x31`、`0x32`、`0x36`。
+- 识别 report id：`0x31`、`0x32`、`0x39`。
 - 识别通道类型：control / interrupt。
 - 识别 deadline 和 priority。
 - 不重建 DualSense output payload，不修改 payload 字段，除非后续明确需要由 ESP32 做 CRC/sequence。
@@ -206,7 +206,7 @@ payload    N bytes
 - `BT_RX_INPUT`：ESP32 -> M61，手柄 input report。
 - `BT_RX_MIC_OPUS`：ESP32 -> M61，手柄 mic Opus payload。
 - `BT_TX_REPORT`：M61 -> ESP32，完整 BT output report。
-- `BT_TX_AUDIO_RT`：M61 -> ESP32，完整 `0x36` report，实时、drop-old。
+- `BT_TX_AUDIO_RT`：M61 -> ESP32，完整 `0x39` report，实时、drop-old。
 - `BT_TX_FEATURE_GET`：M61 -> ESP32，HIDP feature get request。
 - `BT_TX_FEATURE_SET`：M61 -> ESP32，HIDP feature set request。
 - `BT_RX_FEATURE_REPORT`：ESP32 -> M61，HIDP feature report response。
@@ -219,14 +219,14 @@ payload    N bytes
 - control 消息可靠 ACK，失败重发。
 - feature/status 类消息可靠或 latest-wins，取决于语义。
 - input report 不重传，保留最新若干个，过期丢弃。
-- `0x36` audio/haptics 不重传，过 deadline 直接丢弃。
+- `0x39` audio/haptics 不重传，过 deadline 直接丢弃。
 - BT output `0x31` 状态可以合并，保留最新 state；trigger/LED 这类状态不追历史。
 
 ## 队列和优先级
 
 M61 -> ESP32：
 
-1. `BT_TX_AUDIO_RT`：最高优先级，deadline 10 ms，队列深度 2，满时丢旧。
+1. `BT_TX_AUDIO_RT`：最高优先级，20 ms report cadence，队列深度 2，满时丢旧。
 2. `BT_TX_FEATURE_GET/BT_TX_FEATURE_SET`：可靠控制，高优先级。
 3. `BT_TX_REPORT` control/interrupt：高优先级，队列深度 4，状态类 latest-wins。
 4. `BT_CONNECT/BT_DISCONNECT`：可靠控制，队列深度 4。
@@ -256,7 +256,7 @@ Windows USB Audio OUT
     -> M61 ch0/ch1 speaker frame
     -> M61 Opus encode
     -> M61 ch2/ch3 HD haptics downsample
-    -> M61 make DS5 BT 0x36
+    -> M61 make DS5 BT 0x39
     -> SPI BT_TX_AUDIO_RT
     -> ESP32 HIDP interrupt send
     -> DualSense
@@ -288,7 +288,7 @@ DualSense input 0x31
 ```text
 Windows HID output/feature
     -> M61 state cache and DS5 output merge
-    -> M61 make BT 0x31/0x32/0x36
+    -> M61 make BT 0x31/0x32/0x39
     -> SPI BT_TX_REPORT / BT_TX_AUDIO_RT
     -> ESP32 HIDP send
     -> DualSense
@@ -309,9 +309,9 @@ Windows HID output/feature
 - 状态拆散后会增加跨芯片一致性问题。
 - 性能上更好的边界是 M61 生成完整 BT payload，ESP32 只传输。
 
-不让 ESP32 修改 `0x36` payload：
+不让 ESP32 修改 `0x39` payload：
 
-- `0x36` 包含 sequence、audio packet counter、haptics block、speaker/headset block、CRC。
+- `0x39` 包含 sequence、audio packet counter、两个 haptics block、两个 speaker/headset Opus block、CRC。
 - ESP32 修改 payload 会让协议状态跨芯片同步变复杂。
 - ESP32 只需要知道 deadline，不需要知道音频内容。
 
@@ -331,18 +331,18 @@ M61 必须保留或新增：
 ESP32 必须输出：
 
 - BT connected/security/sdp/hidp channel state。
-- HIDP TX report count by id：`0x31/0x32/0x36`。
+- HIDP TX report count by id：`0x31/0x32/0x39`。当前日志字段名仍保留 `tx36/deadline36`，用于兼容旧解析脚本。
 - HIDP TX errors、last_err、L2CAP credit/buffer pressure。
 - HIDP RX input count、mic Opus count。
 - BT reconnect count、disconnect reason。
 - SPI RX/TX frame count、crc errors、queue drops。
-- `0x36` deadline miss count。
+- `0x39` deadline miss count。
 
 联合判定目标：
 
 - 如果 M61 `enc_us` 仍超过 10 ms，瓶颈是 M61 Opus encode 或 USB/Opus 调度。
-- 如果 M61 `enc_us` 达标但 ESP32 `0x36 deadline miss` 增长，瓶颈是 SPI/ESP32/BT transport。
-- 如果 ESP32 `0x36 sent` 稳定但声音仍卡，瓶颈是 DS5 `0x36` payload 格式、音频 block/cadence 或 Opus 参数。
+- 如果 M61 `enc_us` 达标但 ESP32 `0x39 deadline miss` 增长，瓶颈是 SPI/ESP32/BT transport。
+- 如果 ESP32 `0x39 sent` 稳定但声音仍卡，瓶颈是 DS5 `0x39` payload 格式、音频 block/cadence 或 Opus 参数。
 - 如果 BT errors 或 credit pressure 增长，瓶颈是 Classic BT L2CAP buffering 或 ESP32 BT stack 调度。
 
 ## 最终完成标准
@@ -353,8 +353,8 @@ ESP32 必须输出：
 - USB 只在 DualSense 手柄 full report 已稳定后注册，避免空设备或错误设备。
 - 摇杆、按键、触摸板、IMU、电量输入稳定转发。
 - LED、player light、mute light、普通震动、自适应扳机可由 Windows/Steam/DSX 控制。
-- HD haptics 通过 USB Audio ch2/ch3 转 BT `0x36`，长时间无明显丢节奏。
-- 手柄扬声器通过 USB Audio ch0/ch1 -> Opus -> BT `0x36`，60 s 连续播放无可感知断续。
+- HD haptics 通过 USB Audio ch2/ch3 转 BT `0x39`，长时间无明显丢节奏。
+- 手柄扬声器通过 USB Audio ch0/ch1 -> Opus -> BT `0x39`，60 s 连续播放无可感知断续。
 - 手柄麦克风通过 BT mic Opus -> USB Audio IN，有稳定非零输入。
 - 打开 Steam/DSX 时不死机、不掉线、不让 shell 长时间无响应。
 - 断开手柄后可自动重连上一次设备。

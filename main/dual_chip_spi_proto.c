@@ -179,7 +179,7 @@ size_t ds5_dual_spi_frame_len(uint16_t payload_len)
 
 bool ds5_dual_spi_report_is_audio_rt(const uint8_t *report, size_t len)
 {
-    return report != NULL && len >= 1 && report[0] == 0x36;
+    return report != NULL && len >= 1 && report[0] == 0x39;
 }
 
 bool ds5_dual_hello_encode(const ds5_dual_hello_t *hello,

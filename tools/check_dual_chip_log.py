@@ -23,8 +23,8 @@ DS5_DUAL_BT_STATE_FULL_REPORT = 0x20
 
 SAMPLE_LOG = "\n".join([
     "M61 dual-chip mode: local Classic BT host is not started; ESP32 owns HIDP transport",
-    "M61 ESP32 dual-chip SPI transport ready enable=1 pins=13/11/10/20 ready_pin=16 irq_pin=17 reset_pin=255 rx_poll=1 tsync_ms=1000 recov_threshold=8 recov_cooldown_ms=5000 err=0 hello=1 time_sync=1 sync_fail=0 sync_valid=1 rtt_us=320 offset_us=42 peer_role=2 peer_ver=1 peer_mtu=532 peer_caps=0x0000003e",
-    "esp32_spi ready=1 tx=12 bytes=1024 hello_tx=1 tsync_tx=4 tsync_fail=0 tsync_age_ms=20 recov=0 recov_ok=0 recov_fail=0 recov_skip=0 recov_suppress=0 recov_consec=0 recov_reason=0 audio_rt=5 reports=2 fget=1 fset=1 bt_conn=1 bt_disc=0 rst=0 stats_req=1 rx=11 rx_bytes=900 hello_rx=1 tsync_rx=4 stats_rx=1 sync=1 rtt_us=310 offset_us=41 ack=3 ack_poll=4 ack_retry=0 ack_fail=0 ack_miss=0 ack_err=0 ack_seq=7 ack_type=13 ack_status=0 credit=2 free=3/4 bt=1 peer_role=2 peer_ver=1 peer_mtu=532 peer_payload=512 peer_q=4 peer_caps=0x0000003e peer_drop=0 peer_txerr=0 peer_last=0 ferr=0 crc=0 deadline=0 drop_old=0 not_ready=0 seq=12 last_err=0",
+    "M61 ESP32 dual-chip SPI transport ready enable=1 pins=13/11/10/20 ready_pin=16 irq_pin=17 reset_pin=255 rx_poll=1 tsync_ms=1000 recov_threshold=8 recov_cooldown_ms=5000 err=0 hello=1 time_sync=1 sync_fail=0 sync_valid=1 rtt_us=320 offset_us=42 peer_role=2 peer_ver=1 peer_mtu=692 peer_caps=0x0000003e",
+    "esp32_spi ready=1 tx=12 bytes=1024 hello_tx=1 tsync_tx=4 tsync_fail=0 tsync_age_ms=20 recov=0 recov_ok=0 recov_fail=0 recov_skip=0 recov_suppress=0 recov_consec=0 recov_reason=0 audio_rt=5 reports=2 fget=1 fset=1 bt_conn=1 bt_disc=0 rst=0 stats_req=1 rx=11 rx_bytes=900 hello_rx=1 tsync_rx=4 stats_rx=1 sync=1 rtt_us=310 offset_us=41 ack=3 ack_poll=4 ack_retry=0 ack_fail=0 ack_miss=0 ack_err=0 ack_seq=7 ack_type=13 ack_status=0 credit=2 free=3/4 bt=1 peer_role=2 peer_ver=1 peer_mtu=692 peer_payload=672 peer_q=4 peer_caps=0x0000003e peer_drop=0 peer_txerr=0 peer_last=0 ferr=0 crc=0 deadline=0 drop_old=0 not_ready=0 seq=12 last_err=0",
     "auto=1 sequence=1 security=1 sdp=1 hidp=1 full_report=1 usb_after_ds=1 bringup=1/8",
     "esp32_bt state_rx=1 flags=0x0000003f seq=4 err=0 rssi=-45 bringup=1 reconnect_fail=0 mtu=672/672 bda=aa:bb:cc:dd:ee:ff",
     "esp32_peer_stats role=2 ver=1 uptime_us=123456 spi_rx=12 spi_tx=11 spi_crc=0 spi_drop=0 tx31=1 tx32=1 tx36=5 fget=1 fset=1 txerr=0 deadline36=0 rx_input=20 rx_mic=4 rx_feature=1 ack_tx=3 ack_drop=0 credit_tx=2 bt_conn_rx=1 bt_disc_rx=0",
@@ -200,7 +200,7 @@ def check_log(text: str, args: argparse.Namespace) -> int:
         if not wire_passed and parse_int(spi.get("ack_fail")) not in (0, None):
             failures.append(f"ACK failures present: ack_fail={spi.get('ack_fail')}")
         if args.require_audio_rt:
-            require_counter(failures, spi, "audio_rt", 1, "M61 realtime 0x36 TX")
+            require_counter(failures, spi, "audio_rt", 1, "M61 realtime 0x39 TX")
         if args.require_no_rt_errors:
             require_zero(failures, spi, "deadline", "M61 realtime deadline miss")
             require_zero(failures, spi, "not_ready", "M61 transport not-ready drops")
@@ -223,13 +223,13 @@ def check_log(text: str, args: argparse.Namespace) -> int:
             if realtime_required and parse_int(peer.get("txerr")) not in (0, None):
                 failures.append(f"ESP32 HIDP TX errors present: txerr={peer.get('txerr')}")
             if args.require_audio_rt:
-                require_counter(failures, peer, "tx36", 1, "ESP32 HIDP 0x36 TX")
+                require_counter(failures, peer, "tx36", 1, "ESP32 HIDP realtime 0x39 TX")
             if args.require_mic_opus:
                 require_counter(failures, peer, "rx_mic", 1, "ESP32 mic Opus RX")
             if args.require_input_reports:
                 require_counter(failures, peer, "rx_input", 1, "ESP32 input reports")
             if args.require_no_rt_errors:
-                require_zero(failures, peer, "deadline36", "ESP32 0x36 deadline miss")
+                require_zero(failures, peer, "deadline36", "ESP32 realtime 0x39 deadline miss")
                 require_zero(failures, peer, "txerr", "ESP32 HIDP TX errors")
 
     print("Dual-chip log summary:")

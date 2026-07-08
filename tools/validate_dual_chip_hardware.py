@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-full-report", action="store_true", help="require DualSense full report in ds5 status")
     parser.add_argument("--require-usb-after-ds", action="store_true", help="require USB composite startup after full report")
     parser.add_argument("--require-input-reports", action="store_true", help="require ESP32-to-M61 input reports")
-    parser.add_argument("--require-audio-rt", action="store_true", help="require realtime 0x36 audio/haptics reports")
+    parser.add_argument("--require-audio-rt", action="store_true", help="require realtime 0x39 audio/haptics reports")
     parser.add_argument("--require-mic-opus", action="store_true", help="require DualSense mic Opus packets")
     parser.add_argument("--require-no-rt-errors", action="store_true", help="require zero realtime deadline/TX errors")
     parser.add_argument("--require-boot-banners", action="store_true", help="require one-shot M61 boot/init banners in the capture")

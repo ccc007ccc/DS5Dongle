@@ -1267,8 +1267,8 @@ static int send_set_report_feature(uint8_t report_id, const uint8_t *data, size_
 
 static int send_data_output(const uint8_t *report, size_t report_len)
 {
-    uint8_t packet[1 + DS5_OUTPUT_REPORT36_BT_LEN];
-    if (report == NULL || report_len > DS5_OUTPUT_REPORT36_BT_LEN) {
+    uint8_t packet[1 + DS5_OUTPUT_BT_MAX_LEN];
+    if (report == NULL || report_len > DS5_OUTPUT_BT_MAX_LEN) {
         return -EINVAL;
     }
 

@@ -6,7 +6,7 @@
 #define DS5_OUTPUT_TAG 0x10
 #define DS5_OUTPUT_AUDIO_TAG 0x91
 #define DS5_OUTPUT_AUDIO_STATE_TAG 0x90
-#define DS5_OUTPUT_HAPTICS_TAG 0x92
+#define DS5_OUTPUT_HAPTICS_TAG 0xD2
 
 #define DS5_STATE_ENABLE_RUMBLE_EMULATION 0x01
 #define DS5_STATE_USE_RUMBLE_NOT_HAPTICS 0x02
@@ -50,12 +50,12 @@
 #define DS5_STATE_LED_RED 44
 
 static const uint8_t s_ds5_set_state_default[DS5_OUTPUT_SET_STATE_LEN] = {
-    0xFD, 0xF7, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
-    0x00, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x04, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x07, 0x00,
-    0x00, 0x02, 0x01, 0x00, 0xFF, 0xD7, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+    0x00, 0x02, 0x00, 0x00, 0xFF, 0xD7, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
@@ -100,98 +100,6 @@ static void copy_set_state(uint8_t *dst, const dualsense_output_context_t *ctx)
     memcpy(dst, ctx->set_state, DS5_OUTPUT_SET_STATE_LEN);
 }
 
-static bool apply_usb_set_state(dualsense_output_context_t *ctx,
-                                const uint8_t *usb_payload,
-                                size_t usb_payload_len)
-{
-    uint8_t *state;
-    uint8_t flags0;
-    uint8_t flags1;
-    uint8_t flags2;
-
-    if (ctx == NULL || usb_payload == NULL || usb_payload_len < DS5_USB_SET_STATE_LEN) {
-        return false;
-    }
-
-    ensure_set_state(ctx);
-    state = ctx->set_state;
-    flags0 = usb_payload[DS5_STATE_FLAGS0];
-    flags1 = usb_payload[DS5_STATE_FLAGS1];
-    flags2 = usb_payload[DS5_STATE_FLAGS2];
-
-    state[DS5_STATE_FLAGS0] = (uint8_t)((state[DS5_STATE_FLAGS0] &
-                                         ~(DS5_STATE_ENABLE_RUMBLE_EMULATION |
-                                           DS5_STATE_USE_RUMBLE_NOT_HAPTICS)) |
-                                        (flags0 & (DS5_STATE_ENABLE_RUMBLE_EMULATION |
-                                                   DS5_STATE_USE_RUMBLE_NOT_HAPTICS)));
-    state[DS5_STATE_FLAGS2] = (uint8_t)((state[DS5_STATE_FLAGS2] &
-                                         ~(DS5_STATE_ENABLE_IMPROVED_RUMBLE |
-                                           DS5_STATE_USE_RUMBLE_NOT_HAPTICS2)) |
-                                        (flags2 & (DS5_STATE_ENABLE_IMPROVED_RUMBLE |
-                                                   DS5_STATE_USE_RUMBLE_NOT_HAPTICS2)));
-
-    if ((state[DS5_STATE_FLAGS0] & DS5_STATE_USE_RUMBLE_NOT_HAPTICS) ||
-        (state[DS5_STATE_FLAGS2] & DS5_STATE_USE_RUMBLE_NOT_HAPTICS2)) {
-        state[DS5_STATE_RUMBLE_RIGHT] = usb_payload[DS5_STATE_RUMBLE_RIGHT];
-        state[DS5_STATE_RUMBLE_LEFT] = usb_payload[DS5_STATE_RUMBLE_LEFT];
-    } else {
-        state[DS5_STATE_RUMBLE_RIGHT] = 0;
-        state[DS5_STATE_RUMBLE_LEFT] = 0;
-    }
-
-    if (flags0 & DS5_STATE_ALLOW_HEADPHONE_VOLUME) {
-        state[DS5_STATE_VOLUME_HEADPHONES] = usb_payload[DS5_STATE_VOLUME_HEADPHONES];
-    }
-    if (flags0 & DS5_STATE_ALLOW_SPEAKER_VOLUME) {
-        state[DS5_STATE_VOLUME_SPEAKER] = usb_payload[DS5_STATE_VOLUME_SPEAKER];
-    }
-    if (flags0 & DS5_STATE_ALLOW_MIC_VOLUME) {
-        state[DS5_STATE_VOLUME_MIC] = usb_payload[DS5_STATE_VOLUME_MIC];
-    }
-    if (flags0 & DS5_STATE_ALLOW_AUDIO_CONTROL) {
-        state[DS5_STATE_AUDIO_CONTROL] = usb_payload[DS5_STATE_AUDIO_CONTROL];
-    }
-    if (flags1 & DS5_STATE_ALLOW_MUTE_LIGHT) {
-        state[DS5_STATE_MUTE_LIGHT] = usb_payload[DS5_STATE_MUTE_LIGHT];
-    }
-    if (flags1 & DS5_STATE_ALLOW_AUDIO_MUTE) {
-        state[DS5_STATE_AUDIO_MUTE] = usb_payload[DS5_STATE_AUDIO_MUTE];
-    }
-    if (flags0 & DS5_STATE_ALLOW_RIGHT_TRIGGER_FFB) {
-        memcpy(state + DS5_STATE_RIGHT_TRIGGER_FFB,
-               usb_payload + DS5_STATE_RIGHT_TRIGGER_FFB,
-               11);
-    }
-    if (flags0 & DS5_STATE_ALLOW_LEFT_TRIGGER_FFB) {
-        memcpy(state + DS5_STATE_LEFT_TRIGGER_FFB,
-               usb_payload + DS5_STATE_LEFT_TRIGGER_FFB,
-               11);
-    }
-    if (flags1 & DS5_STATE_ALLOW_MOTOR_POWER_LEVEL) {
-        state[DS5_STATE_MOTOR_POWER_LEVEL] = usb_payload[DS5_STATE_MOTOR_POWER_LEVEL];
-    }
-    if (flags1 & DS5_STATE_ALLOW_AUDIO_CONTROL2) {
-        state[DS5_STATE_AUDIO_CONTROL2] = usb_payload[DS5_STATE_AUDIO_CONTROL2];
-    }
-    if (flags1 & DS5_STATE_ALLOW_HAPTIC_LOW_PASS) {
-        state[DS5_STATE_HAPTIC_LOW_PASS] = usb_payload[DS5_STATE_HAPTIC_LOW_PASS];
-    }
-    if (flags2 & DS5_STATE_ALLOW_LIGHT_FADE) {
-        state[DS5_STATE_LIGHT_FADE] = usb_payload[DS5_STATE_LIGHT_FADE];
-    }
-    if (flags2 & DS5_STATE_ALLOW_LIGHT_BRIGHTNESS) {
-        state[DS5_STATE_LIGHT_BRIGHTNESS] = usb_payload[DS5_STATE_LIGHT_BRIGHTNESS];
-    }
-    if (flags1 & DS5_STATE_ALLOW_PLAYER_INDICATORS) {
-        state[DS5_STATE_PLAYER_LIGHTS] = usb_payload[DS5_STATE_PLAYER_LIGHTS];
-    }
-    if (flags1 & DS5_STATE_ALLOW_LED_COLOR) {
-        memcpy(state + DS5_STATE_LED_RED, usb_payload + DS5_STATE_LED_RED, 3);
-    }
-
-    return true;
-}
-
 void dualsense_output_init(dualsense_output_context_t *ctx)
 {
     if (ctx != NULL) {
@@ -215,13 +123,16 @@ void dualsense_output_apply_audio_controls(dualsense_output_context_t *ctx,
         return;
     }
 
-    ensure_set_state(ctx);
+    memset(ctx->set_state, 0, sizeof(ctx->set_state));
+    ctx->set_state[DS5_STATE_FLAGS0] = DS5_STATE_ALLOW_HEADPHONE_VOLUME |
+                                       DS5_STATE_ALLOW_SPEAKER_VOLUME |
+                                       DS5_STATE_ALLOW_MIC_VOLUME;
+    ctx->set_state[DS5_STATE_FLAGS1] = DS5_STATE_ALLOW_AUDIO_MUTE;
     ctx->set_state[DS5_STATE_VOLUME_SPEAKER] = speaker_volume;
     ctx->set_state[DS5_STATE_VOLUME_HEADPHONES] = headphone_volume;
     ctx->set_state[DS5_STATE_VOLUME_MIC] = mic_volume;
 
-    mute = ctx->set_state[DS5_STATE_AUDIO_MUTE];
-    mute = (uint8_t)(mute & ~(0x10U | 0x20U | 0x40U));
+    mute = 0;
     if (mic_mute) {
         mute |= 0x10U;
     }
@@ -298,7 +209,7 @@ bool dualsense_output_make_report32(dualsense_output_context_t *ctx,
     ensure_set_state(ctx);
     memset(report, 0, DS5_OUTPUT_REPORT32_BT_LEN);
     report[0] = DS5_OUTPUT_REPORT32_BT_ID;
-    report[1] = (uint8_t)((ctx->sequence++ & 0x0F) << 4);
+    report[1] = 0x10;
     report[2] = 0x90;
     report[3] = DS5_OUTPUT_SET_STATE_LEN;
     copy_set_state(report + 4, ctx);
@@ -306,87 +217,75 @@ bool dualsense_output_make_report32(dualsense_output_context_t *ctx,
     return true;
 }
 
-bool dualsense_output_make_report36_haptics(dualsense_output_context_t *ctx,
-                                            const uint8_t *haptics,
-                                            size_t haptics_len,
-                                            bool mic_active,
-                                            uint8_t audio_buffer_len,
-                                            uint8_t *report,
-                                            size_t report_len)
+bool dualsense_output_make_audio_rt(dualsense_output_context_t *ctx,
+                                    const uint8_t *haptics0,
+                                    const uint8_t *haptics1,
+                                    const uint8_t *speaker_opus0,
+                                    const uint8_t *speaker_opus1,
+                                    size_t speaker_opus_len,
+                                    uint8_t speaker_block_id,
+                                    bool mic_active,
+                                    uint8_t audio_buffer_len,
+                                    uint8_t *report,
+                                    size_t report_len)
 {
-    return dualsense_output_make_report36_audio(ctx,
-                                                haptics,
-                                                haptics_len,
-                                                NULL,
-                                                0,
-                                                DS5_OUTPUT_SPEAKER_BLOCK_ID,
-                                                mic_active,
-                                                audio_buffer_len,
-                                                report,
-                                                report_len);
-}
+    bool have_haptics = haptics0 != NULL || haptics1 != NULL;
+    bool have_speaker = speaker_opus0 != NULL || speaker_opus1 != NULL;
+    size_t copy_len = speaker_opus_len;
 
-bool dualsense_output_make_report36_audio(dualsense_output_context_t *ctx,
-                                          const uint8_t *haptics,
-                                          size_t haptics_len,
-                                          const uint8_t *speaker_opus,
-                                          size_t speaker_opus_len,
-                                          uint8_t speaker_block_id,
-                                          bool mic_active,
-                                          uint8_t audio_buffer_len,
-                                          uint8_t *report,
-                                          size_t report_len)
-{
-    bool have_haptics = haptics != NULL && haptics_len >= DS5_OUTPUT_HAPTICS_BLOCK_LEN;
-    bool have_speaker = speaker_opus != NULL && speaker_opus_len > 0;
-
-    if (ctx == NULL || report == NULL || report_len < DS5_OUTPUT_REPORT36_BT_LEN ||
+    if (ctx == NULL || report == NULL || report_len < DS5_OUTPUT_AUDIO_RT_BT_LEN ||
         (!have_haptics && !have_speaker)) {
         return false;
     }
 
-    ensure_set_state(ctx);
     if (audio_buffer_len == 0) {
-        audio_buffer_len = 64;
+        audio_buffer_len = 48;
+    }
+    if (copy_len > DS5_OUTPUT_SPEAKER_OPUS_LEN) {
+        copy_len = DS5_OUTPUT_SPEAKER_OPUS_LEN;
     }
 
-    memset(report, 0, DS5_OUTPUT_REPORT36_BT_LEN);
-    report[0] = DS5_OUTPUT_REPORT36_BT_ID;
+    memset(report, 0, DS5_OUTPUT_AUDIO_RT_BT_LEN);
+    report[0] = DS5_OUTPUT_AUDIO_RT_BT_ID;
     report[1] = (uint8_t)((ctx->sequence++ & 0x0F) << 4);
     report[2] = DS5_OUTPUT_AUDIO_TAG;
-    report[3] = 7;
-    report[4] = mic_active ? 0xFF : 0xFE;
+    report[3] = 6;
+    report[4] = mic_active ? 0x7F : 0x7E;
     report[5] = audio_buffer_len;
     report[6] = audio_buffer_len;
     report[7] = audio_buffer_len;
     report[8] = audio_buffer_len;
-    report[9] = audio_buffer_len;
-    report[10] = ctx->audio_packet_counter++;
+    ctx->audio_packet_counter = (uint8_t)(ctx->audio_packet_counter + 2U);
+    report[9] = ctx->audio_packet_counter;
 
-    report[11] = DS5_OUTPUT_AUDIO_STATE_TAG;
-    report[12] = DS5_OUTPUT_SET_STATE_LEN;
-    copy_set_state(report + 13, ctx);
-
-    report[76] = DS5_OUTPUT_HAPTICS_TAG;
-    report[77] = DS5_OUTPUT_HAPTICS_BLOCK_LEN;
-    if (have_haptics) {
-        memcpy(report + 78, haptics, DS5_OUTPUT_HAPTICS_BLOCK_LEN);
+    report[10] = DS5_OUTPUT_HAPTICS_TAG;
+    report[11] = DS5_OUTPUT_HAPTICS_BLOCK_LEN;
+    if (haptics0 != NULL) {
+        memcpy(report + 12, haptics0, DS5_OUTPUT_HAPTICS_BLOCK_LEN);
+    }
+    if (haptics1 != NULL) {
+        memcpy(report + 12 + DS5_OUTPUT_HAPTICS_BLOCK_LEN,
+               haptics1,
+               DS5_OUTPUT_HAPTICS_BLOCK_LEN);
     }
 
     if (have_speaker) {
-        size_t copy_len = speaker_opus_len;
-        if (copy_len > DS5_OUTPUT_SPEAKER_OPUS_LEN) {
-            copy_len = DS5_OUTPUT_SPEAKER_OPUS_LEN;
-        }
         if (speaker_block_id == 0) {
             speaker_block_id = DS5_OUTPUT_SPEAKER_BLOCK_ID;
         }
-        report[142] = (uint8_t)(speaker_block_id | 0x80);
-        report[143] = DS5_OUTPUT_SPEAKER_OPUS_LEN;
-        memcpy(report + 144, speaker_opus, copy_len);
+        report[140] = (uint8_t)(speaker_block_id | 0xC0);
+        report[141] = DS5_OUTPUT_SPEAKER_OPUS_LEN;
+        if (speaker_opus0 != NULL && copy_len != 0) {
+            memcpy(report + 142, speaker_opus0, copy_len);
+        }
+        if (speaker_opus1 != NULL && copy_len != 0) {
+            memcpy(report + 142 + DS5_OUTPUT_SPEAKER_OPUS_LEN,
+                   speaker_opus1,
+                   copy_len);
+        }
     }
 
-    fill_crc(report, DS5_OUTPUT_REPORT36_BT_LEN);
+    fill_crc(report, DS5_OUTPUT_AUDIO_RT_BT_LEN);
     return true;
 }
 
@@ -400,22 +299,14 @@ bool dualsense_output_make_report32_audio_status(dualsense_output_context_t *ctx
         return false;
     }
 
-    if (audio_buffer_len == 0) {
-        audio_buffer_len = 64;
-    }
+    (void)audio_buffer_len;
 
     memset(report, 0, DS5_OUTPUT_REPORT32_BT_LEN);
     report[0] = DS5_OUTPUT_REPORT32_BT_ID;
     report[1] = (uint8_t)((ctx->sequence++ & 0x0F) << 4);
     report[2] = DS5_OUTPUT_AUDIO_TAG;
-    report[3] = 7;
-    report[4] = mic_active ? 0xFF : 0xFE;
-    report[5] = audio_buffer_len;
-    report[6] = audio_buffer_len;
-    report[7] = audio_buffer_len;
-    report[8] = audio_buffer_len;
-    report[9] = audio_buffer_len;
-    report[10] = ctx->audio_packet_counter++;
+    report[3] = 1;
+    report[4] = mic_active ? 0x03 : 0x02;
 
     fill_crc(report, DS5_OUTPUT_REPORT32_BT_LEN);
     return true;
@@ -431,7 +322,7 @@ bool dualsense_output_make_report31_from_usb(dualsense_output_context_t *ctx,
         report_len < DS5_OUTPUT_REPORT31_BT_LEN) {
         return false;
     }
-    if (!apply_usb_set_state(ctx, usb_payload, usb_payload_len)) {
+    if (usb_payload_len < DS5_USB_SET_STATE_LEN) {
         return false;
     }
 
@@ -439,7 +330,9 @@ bool dualsense_output_make_report31_from_usb(dualsense_output_context_t *ctx,
     report[0] = DS5_OUTPUT_REPORT31_BT_ID;
     report[1] = (uint8_t)((ctx->sequence++ & 0x0F) << 4);
     report[2] = DS5_OUTPUT_TAG;
-    copy_set_state(report + 3, ctx);
+    memcpy(report + 3, usb_payload, DS5_USB_SET_STATE_LEN);
+    memset(ctx->set_state, 0, sizeof(ctx->set_state));
+    memcpy(ctx->set_state, usb_payload, DS5_USB_SET_STATE_LEN);
     fill_crc(report, DS5_OUTPUT_REPORT31_BT_LEN);
     return true;
 }

@@ -60,9 +60,9 @@
 #define HIDP_REPORT_TYPE_FEATURE 0x03
 #define HIDP_DISCOVERY_SLOTS 10
 #define HIDP_EIR_MAX_LEN 240
-#define HIDP_TX_MAX_LEN 512
+#define HIDP_TX_MAX_LEN (1 + DS5_OUTPUT_BT_MAX_LEN)
 #define DS5_LAST_ADDR_KEY "ds5_last_bda"
-#define DS5_AUDIO_BUFFER_LENGTH_DEFAULT 128
+#define DS5_AUDIO_BUFFER_LENGTH_DEFAULT 64
 #define DS5_STATE_FLAGS0 0
 #define DS5_STATE_FLAGS1 1
 #define DS5_STATE_RUMBLE_RIGHT 2
@@ -113,7 +113,7 @@
 #endif
 
 #ifndef CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS
-#define CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS 10
+#define CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS 20
 #endif
 
 #ifndef CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS
@@ -1501,26 +1501,8 @@ static int hidp_send_data_output(const uint8_t *report, size_t report_len)
 
 static int hidp_send_ds5_output_init(void)
 {
-    uint8_t report31[DS5_OUTPUT_REPORT31_BT_LEN];
     uint8_t report32[DS5_OUTPUT_REPORT32_BT_LEN];
-    int first_err = 0;
     int err;
-
-    if (!dualsense_output_make_report31(&output_ctx, report31, sizeof(report31))) {
-        printf("build output 0x31 failed\r\n");
-        return -EINVAL;
-    }
-    err = hidp_send_data_output(report31, sizeof(report31));
-    printf("output 0x31 over interrupt result=%d\r\n", err);
-    if (err && !first_err) {
-        first_err = err;
-    }
-
-    err = hidp_set_report(HIDP_REPORT_TYPE_OUTPUT, report31, sizeof(report31));
-    printf("set-report 0x31 over control result=%d\r\n", err);
-    if (err && !first_err) {
-        first_err = err;
-    }
 
     if (!dualsense_output_make_report32(&output_ctx, report32, sizeof(report32))) {
         printf("build output 0x32 failed\r\n");
@@ -1528,17 +1510,7 @@ static int hidp_send_ds5_output_init(void)
     }
     err = hidp_send_data_output(report32, sizeof(report32));
     printf("output 0x32 over interrupt result=%d\r\n", err);
-    if (err && !first_err) {
-        first_err = err;
-    }
-
-    err = hidp_set_report(HIDP_REPORT_TYPE_OUTPUT, report32, sizeof(report32));
-    printf("set-report 0x32 over control result=%d\r\n", err);
-    if (err && !first_err) {
-        first_err = err;
-    }
-
-    return first_err;
+    return err;
 }
 
 static int hidp_dualsense_bringup(void)
@@ -1775,17 +1747,20 @@ static int hidp_send_audio_status_report(bool mic_active)
     return err;
 }
 
-static int hidp_send_audio_report(const uint8_t *haptics,
-                                  const uint8_t *speaker_opus,
+static int hidp_send_audio_report(const uint8_t *haptics0,
+                                  const uint8_t *haptics1,
+                                  const uint8_t *speaker_opus0,
+                                  const uint8_t *speaker_opus1,
                                   bool headset,
                                   bool mic_active)
 {
     static const uint8_t zero_haptics[M61_DS5_HAPTICS_BLOCK_LEN];
-    uint8_t report36[DS5_OUTPUT_REPORT36_BT_LEN];
-    const uint8_t *haptics_payload = haptics;
+    uint8_t report[DS5_OUTPUT_AUDIO_RT_BT_LEN];
     uint8_t speaker_block = headset ? DS5_OUTPUT_HEADSET_BLOCK_ID : DS5_OUTPUT_SPEAKER_BLOCK_ID;
-    bool has_haptics = haptics != NULL;
-    bool has_speaker = speaker_opus != NULL;
+    bool has_haptics = haptics0 != NULL || haptics1 != NULL;
+    bool has_speaker = speaker_opus0 != NULL || speaker_opus1 != NULL;
+    const uint8_t *h0 = haptics0;
+    const uint8_t *h1 = haptics1;
     int err;
 
     if (!has_haptics && !has_speaker) {
@@ -1802,20 +1777,24 @@ static int hidp_send_audio_report(const uint8_t *haptics,
         }
         return -ENOTCONN;
     }
-    if (!haptics_payload && has_speaker) {
-        haptics_payload = zero_haptics;
+    if (h0 == NULL) {
+        h0 = zero_haptics;
+    }
+    if (h1 == NULL) {
+        h1 = zero_haptics;
     }
 
-    if (!dualsense_output_make_report36_audio(&output_ctx,
-                                              haptics_payload,
-                                              haptics_payload ? M61_DS5_HAPTICS_BLOCK_LEN : 0,
-                                              speaker_opus,
-                                              has_speaker ? M61_DS5_SPEAKER_OPUS_LEN : 0,
-                                              speaker_block,
-                                              mic_active,
-                                              DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
-                                              report36,
-                                              sizeof(report36))) {
+    if (!dualsense_output_make_audio_rt(&output_ctx,
+                                        h0,
+                                        h1,
+                                        speaker_opus0,
+                                        speaker_opus1,
+                                        has_speaker ? M61_DS5_SPEAKER_OPUS_LEN : 0,
+                                        speaker_block,
+                                        mic_active,
+                                        DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                        report,
+                                        sizeof(report))) {
         if (has_haptics) {
             hidp_haptics_send_errors++;
             hidp_haptics_last_error = -EINVAL;
@@ -1829,13 +1808,13 @@ static int hidp_send_audio_report(const uint8_t *haptics,
 
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
     err = m61_esp32_transport_send_bt_report(
-        report36,
-        sizeof(report36),
+        report,
+        sizeof(report),
         xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS),
         true);
 #else
-    err = hidp_send_data_output_timeout(report36,
-                                        sizeof(report36),
+    err = hidp_send_data_output_timeout(report,
+                                        sizeof(report),
                                         HIDP_BT_AUDIO_ALLOC_TIMEOUT);
 #endif
     if (err) {
@@ -1913,11 +1892,10 @@ static void handle_usb_host_report(const m61_usb_gamepad_host_report_t *report)
 
 static void usb_hid_bridge_task(void *pvParameters)
 {
-    uint8_t latest_speaker_opus[M61_DS5_SPEAKER_OPUS_LEN];
-    uint8_t latest_haptics[M61_DS5_HAPTICS_BLOCK_LEN];
-    bool have_latest_speaker_opus = false;
-    bool speaker_dirty = false;
-    bool haptics_dirty = false;
+    uint8_t pending_speaker_opus[DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS][M61_DS5_SPEAKER_OPUS_LEN];
+    uint8_t pending_haptics[DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS][M61_DS5_HAPTICS_BLOCK_LEN];
+    uint8_t pending_speaker_count = 0;
+    uint8_t pending_haptics_count = 0;
 
     (void)pvParameters;
 
@@ -1937,8 +1915,7 @@ static void usb_hid_bridge_task(void *pvParameters)
         bool bt_mic_active = host_mic_active && !speaker_active;
 
         if (!speaker_active) {
-            have_latest_speaker_opus = false;
-            speaker_dirty = false;
+            pending_speaker_count = 0;
         }
 
         if (ds5_bt_transport_ready() &&
@@ -1994,34 +1971,60 @@ static void usb_hid_bridge_task(void *pvParameters)
         while (speaker_drained_this_tick < 4 &&
                m61_usb_gamepad_take_speaker_opus(speaker_opus, sizeof(speaker_opus))) {
             if (speaker_active) {
-                memcpy(latest_speaker_opus, speaker_opus, sizeof(latest_speaker_opus));
-                have_latest_speaker_opus = true;
-                speaker_dirty = true;
+                if (pending_speaker_count >= DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS) {
+                    memmove(pending_speaker_opus[0],
+                            pending_speaker_opus[1],
+                            M61_DS5_SPEAKER_OPUS_LEN);
+                    pending_speaker_count = DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS - 1U;
+                }
+                memcpy(pending_speaker_opus[pending_speaker_count],
+                       speaker_opus,
+                       sizeof(speaker_opus));
+                pending_speaker_count++;
             }
             speaker_drained_this_tick++;
         }
 
         while (haptics_drained_this_tick < 4 &&
                m61_usb_gamepad_take_haptics_block(haptics, sizeof(haptics))) {
-            memcpy(latest_haptics, haptics, sizeof(latest_haptics));
-            haptics_dirty = true;
+            if (pending_haptics_count >= DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS) {
+                memmove(pending_haptics[0],
+                        pending_haptics[1],
+                        M61_DS5_HAPTICS_BLOCK_LEN);
+                pending_haptics_count = DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS - 1U;
+            }
+            memcpy(pending_haptics[pending_haptics_count], haptics, sizeof(haptics));
+            pending_haptics_count++;
             haptics_drained_this_tick++;
         }
 
         if (ds5_bt_transport_ready() &&
             tick_due(now, hidp_next_audio_report_tick) &&
-            (haptics_dirty || speaker_dirty)) {
-            const uint8_t *haptics_payload = haptics_dirty ? latest_haptics : NULL;
-            const uint8_t *speaker_payload =
-                (speaker_active && have_latest_speaker_opus &&
-                 (haptics_dirty || speaker_dirty)) ? latest_speaker_opus : NULL;
+            (pending_haptics_count >= DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS ||
+             (speaker_active &&
+              pending_speaker_count >= DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS))) {
+            const bool send_speaker =
+                speaker_active &&
+                pending_speaker_count >= DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS;
+            const uint8_t *haptics0 =
+                pending_haptics_count > 0 ? pending_haptics[0] : NULL;
+            const uint8_t *haptics1 =
+                pending_haptics_count > 1 ? pending_haptics[1] : NULL;
+            const uint8_t *speaker0 =
+                send_speaker ? pending_speaker_opus[0] : NULL;
+            const uint8_t *speaker1 =
+                send_speaker ? pending_speaker_opus[1] : NULL;
 
-            if (hidp_send_audio_report(haptics_payload,
-                                       speaker_payload,
+            if (hidp_send_audio_report(haptics0,
+                                       haptics1,
+                                       speaker0,
+                                       speaker1,
                                        dualsense_headphones_connected,
                                        bt_mic_active) == 0) {
-                haptics_dirty = false;
-                speaker_dirty = false;
+                pending_haptics_count = 0;
+                if (send_speaker) {
+                    pending_speaker_count = 0;
+                }
                 hidp_next_audio_report_tick =
                     now + pdMS_TO_TICKS(CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS);
             } else {

@@ -41,14 +41,15 @@ DS5_BASIC_INPUT_REPORT_ID = 0x01
 DS5_BASIC_PAYLOAD_LEN = 9
 DS5_OUTPUT_REPORT31_BT_LEN = 78
 DS5_OUTPUT_REPORT32_BT_LEN = 142
-DS5_OUTPUT_REPORT36_BT_LEN = 398
+DS5_OUTPUT_AUDIO_RT_BT_LEN = 547
 DS5_OUTPUT_SET_STATE_LEN = 63
+DS5_USB_SET_STATE_LEN = 47
 DS5_OUTPUT_HAPTICS_BLOCK_LEN = 64
 DS5_OUTPUT_SPEAKER_OPUS_LEN = 200
 DS5_DUAL_SPI_MAGIC = 0x3544
 DS5_DUAL_SPI_VERSION = 1
 DS5_DUAL_SPI_HEADER_LEN = 20
-DS5_DUAL_SPI_MAX_PAYLOAD = 512
+DS5_DUAL_SPI_MAX_PAYLOAD = 672
 DS5_DUAL_HELLO_PAYLOAD_LEN = 16
 DS5_DUAL_TIME_SYNC_PAYLOAD_LEN = 16
 DS5_DUAL_BT_STATE_PAYLOAD_LEN = 24
@@ -117,12 +118,12 @@ BUTTON_EDGE_PADDLE_R = 1 << 18
 
 DEFAULT_SET_STATE = bytes(
     [
-        0xFD, 0xF7, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
-        0x00, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x04, 0x00, 0x00, 0x64, 0x64, 0xFF, 0x09,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x07, 0x00,
-        0x00, 0x02, 0x01, 0x00, 0xFF, 0xD7, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
+        0x00, 0x02, 0x00, 0x00, 0xFF, 0xD7, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]
@@ -381,7 +382,7 @@ def make_output31(seq: int) -> bytes:
 def make_output32(seq: int) -> bytes:
     report = bytearray(DS5_OUTPUT_REPORT32_BT_LEN)
     report[0] = 0x32
-    report[1] = (seq & 0x0F) << 4
+    report[1] = 0x10
     report[2] = 0x90
     report[3] = DS5_OUTPUT_SET_STATE_LEN
     report[4:4 + DS5_OUTPUT_SET_STATE_LEN] = DEFAULT_SET_STATE
@@ -394,38 +395,45 @@ def make_output32_audio_status(seq: int, packet_counter: int, mic_active: bool) 
     report[0] = 0x32
     report[1] = (seq & 0x0F) << 4
     report[2] = 0x91
-    report[3] = 7
-    report[4] = 0xFF if mic_active else 0xFE
-    report[5:10] = bytes([64, 64, 64, 64, 64])
-    report[10] = packet_counter & 0xFF
+    report[3] = 1
+    report[4] = 0x03 if mic_active else 0x02
     fill_output_crc(report)
     return bytes(report)
 
 
-def make_output36_haptics(seq: int, packet_counter: int, haptics: bytes, mic_active: bool = False) -> bytes:
-    report = bytearray(DS5_OUTPUT_REPORT36_BT_LEN)
-    report[0] = 0x36
+def make_audio_rt(
+    seq: int,
+    packet_counter: int,
+    haptics0: bytes | None,
+    haptics1: bytes | None,
+    opus0: bytes | None = None,
+    opus1: bytes | None = None,
+    headset: bool = False,
+    mic_active: bool = False,
+) -> bytes:
+    report = bytearray(DS5_OUTPUT_AUDIO_RT_BT_LEN)
+    report[0] = 0x39
     report[1] = (seq & 0x0F) << 4
     report[2] = 0x91
-    report[3] = 7
-    report[4] = 0xFF if mic_active else 0xFE
-    report[5:10] = bytes([64, 64, 64, 64, 64])
-    report[10] = packet_counter & 0xFF
-    report[11] = 0x90
-    report[12] = DS5_OUTPUT_SET_STATE_LEN
-    report[13:13 + DS5_OUTPUT_SET_STATE_LEN] = DEFAULT_SET_STATE
-    report[76] = 0x92
-    report[77] = DS5_OUTPUT_HAPTICS_BLOCK_LEN
-    report[78:78 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] = haptics
-    fill_output_crc(report)
-    return bytes(report)
-
-
-def make_output36_audio(seq: int, packet_counter: int, haptics: bytes, opus: bytes, headset: bool) -> bytes:
-    report = bytearray(make_output36_haptics(seq, packet_counter, haptics, mic_active=True))
-    report[142] = 0x96 if headset else 0x93
-    report[143] = DS5_OUTPUT_SPEAKER_OPUS_LEN
-    report[144:144 + DS5_OUTPUT_SPEAKER_OPUS_LEN] = opus
+    report[3] = 6
+    report[4] = 0x7F if mic_active else 0x7E
+    report[5:9] = bytes([64, 64, 64, 64])
+    report[9] = packet_counter & 0xFF
+    report[10] = 0xD2
+    report[11] = DS5_OUTPUT_HAPTICS_BLOCK_LEN
+    if haptics0 is not None:
+        report[12:12 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] = haptics0
+    if haptics1 is not None:
+        start = 12 + DS5_OUTPUT_HAPTICS_BLOCK_LEN
+        report[start:start + DS5_OUTPUT_HAPTICS_BLOCK_LEN] = haptics1
+    if opus0 is not None or opus1 is not None:
+        report[140] = (0x16 if headset else 0x13) | 0xC0
+        report[141] = DS5_OUTPUT_SPEAKER_OPUS_LEN
+        if opus0 is not None:
+            report[142:142 + DS5_OUTPUT_SPEAKER_OPUS_LEN] = opus0
+        if opus1 is not None:
+            start = 142 + DS5_OUTPUT_SPEAKER_OPUS_LEN
+            report[start:start + DS5_OUTPUT_SPEAKER_OPUS_LEN] = opus1
     fill_output_crc(report)
     return bytes(report)
 
@@ -643,35 +651,37 @@ def test_output_vectors() -> None:
 
     report31 = make_output31(0)
     assert len(report31) == DS5_OUTPUT_REPORT31_BT_LEN
-    assert report31[0:4] == bytes([0x31, 0x00, 0x10, 0xFD])
+    assert report31[0:4] == bytes([0x31, 0x00, 0x10, 0x00])
     assert report31[3:3 + DS5_OUTPUT_SET_STATE_LEN] == DEFAULT_SET_STATE
     assert int.from_bytes(report31[-4:], "little") == dualsense_output_crc32(report31[:-4])
 
     report32 = make_output32(1)
     assert len(report32) == DS5_OUTPUT_REPORT32_BT_LEN
-    assert report32[0:5] == bytes([0x32, 0x10, 0x90, DS5_OUTPUT_SET_STATE_LEN, 0xFD])
+    assert report32[0:5] == bytes([0x32, 0x10, 0x90, DS5_OUTPUT_SET_STATE_LEN, 0x00])
     assert report32[4:4 + DS5_OUTPUT_SET_STATE_LEN] == DEFAULT_SET_STATE
     assert int.from_bytes(report32[-4:], "little") == dualsense_output_crc32(report32[:-4])
 
     mic_status = make_output32_audio_status(2, 9, mic_active=True)
-    assert mic_status[0:11] == bytes([0x32, 0x20, 0x91, 7, 0xFF, 64, 64, 64, 64, 64, 9])
+    assert mic_status[0:5] == bytes([0x32, 0x20, 0x91, 1, 0x03])
     assert int.from_bytes(mic_status[-4:], "little") == dualsense_output_crc32(mic_status[:-4])
 
     haptics = bytes(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN))
-    report36 = make_output36_haptics(3, 3, haptics)
-    assert len(report36) == DS5_OUTPUT_REPORT36_BT_LEN
-    assert report36[0:13] == bytes([0x36, 0x30, 0x91, 7, 0xFE, 64, 64, 64, 64, 64, 3, 0x90, 63])
-    assert report36[13:13 + DS5_OUTPUT_SET_STATE_LEN] == DEFAULT_SET_STATE
-    assert report36[76:78] == bytes([0x92, DS5_OUTPUT_HAPTICS_BLOCK_LEN])
-    assert report36[78:78 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] == haptics
-    assert int.from_bytes(report36[-4:], "little") == dualsense_output_crc32(report36[:-4])
+    haptics2 = bytes(reversed(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN)))
+    audio_rt = make_audio_rt(3, 4, haptics, haptics2)
+    assert len(audio_rt) == DS5_OUTPUT_AUDIO_RT_BT_LEN
+    assert audio_rt[0:12] == bytes([0x39, 0x30, 0x91, 6, 0x7E, 64, 64, 64, 64, 4, 0xD2, 64])
+    assert audio_rt[12:12 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] == haptics
+    assert audio_rt[76:76 + DS5_OUTPUT_HAPTICS_BLOCK_LEN] == haptics2
+    assert int.from_bytes(audio_rt[-4:], "little") == dualsense_output_crc32(audio_rt[:-4])
 
     opus = bytes([0x55] * DS5_OUTPUT_SPEAKER_OPUS_LEN)
-    speaker_report = make_output36_audio(4, 10, haptics, opus, headset=False)
-    headset_report = make_output36_audio(5, 11, haptics, opus, headset=True)
-    assert speaker_report[142:144] == bytes([0x93, DS5_OUTPUT_SPEAKER_OPUS_LEN])
-    assert speaker_report[144:144 + DS5_OUTPUT_SPEAKER_OPUS_LEN] == opus
-    assert headset_report[142:144] == bytes([0x96, DS5_OUTPUT_SPEAKER_OPUS_LEN])
+    opus2 = bytes([0xAA] * DS5_OUTPUT_SPEAKER_OPUS_LEN)
+    speaker_report = make_audio_rt(4, 6, haptics, haptics2, opus, opus2, headset=False, mic_active=True)
+    headset_report = make_audio_rt(5, 8, haptics, haptics2, opus, opus2, headset=True, mic_active=True)
+    assert speaker_report[140:142] == bytes([0xD3, DS5_OUTPUT_SPEAKER_OPUS_LEN])
+    assert speaker_report[142:142 + DS5_OUTPUT_SPEAKER_OPUS_LEN] == opus
+    assert speaker_report[342:342 + DS5_OUTPUT_SPEAKER_OPUS_LEN] == opus2
+    assert headset_report[140:142] == bytes([0xD6, DS5_OUTPUT_SPEAKER_OPUS_LEN])
     assert int.from_bytes(speaker_report[-4:], "little") == dualsense_output_crc32(speaker_report[:-4])
     assert int.from_bytes(headset_report[-4:], "little") == dualsense_output_crc32(headset_report[:-4])
 
@@ -750,7 +760,15 @@ def test_dual_chip_spi_vectors() -> None:
         0x1234,
     )
 
-    payload = make_output36_audio(6, 12, bytes(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN)), bytes([0x33] * 200), False)
+    payload = make_audio_rt(
+        6,
+        12,
+        bytes(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN)),
+        bytes(reversed(range(DS5_OUTPUT_HAPTICS_BLOCK_LEN))),
+        bytes([0x33] * DS5_OUTPUT_SPEAKER_OPUS_LEN),
+        bytes([0x44] * DS5_OUTPUT_SPEAKER_OPUS_LEN),
+        False,
+    )
     frame = make_dual_spi_frame(
         DS5_DUAL_MSG_BT_TX_AUDIO_RT,
         DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK,
@@ -761,7 +779,7 @@ def test_dual_chip_spi_vectors() -> None:
         payload,
     )
 
-    assert len(frame) == DS5_DUAL_SPI_HEADER_LEN + DS5_OUTPUT_REPORT36_BT_LEN
+    assert len(frame) == DS5_DUAL_SPI_HEADER_LEN + DS5_OUTPUT_AUDIO_RT_BT_LEN
     assert frame[0:4] == bytes([0x44, 0x35, DS5_DUAL_SPI_VERSION, DS5_DUAL_MSG_BT_TX_AUDIO_RT])
     assert int.from_bytes(frame[4:6], "little") == DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK
     assert frame[6] == DS5_DUAL_CHANNEL_AUDIO
@@ -966,26 +984,25 @@ def test_c_source_contract() -> None:
         "#define DS5_OUTPUT_CRC32_SEED 0xA2",
         "s_ds5_set_state_default",
         "DS5_USB_SET_STATE_LEN",
-        "apply_usb_set_state",
         "DS5_STATE_ALLOW_RIGHT_TRIGGER_FFB",
         "DS5_STATE_ALLOW_LED_COLOR",
         "copy_set_state",
         "dualsense_output_apply_audio_controls",
         "DS5_OUTPUT_REPORT31_BT_LEN",
         "DS5_OUTPUT_REPORT32_BT_LEN",
-        "DS5_OUTPUT_REPORT36_BT_LEN",
-        "dualsense_output_make_report36_haptics",
-        "dualsense_output_make_report36_audio",
+        "DS5_OUTPUT_AUDIO_RT_BT_LEN",
+        "dualsense_output_make_audio_rt",
         "dualsense_output_make_report32_audio_status",
         "report[2] = DS5_OUTPUT_AUDIO_TAG;",
-        "report[76] = DS5_OUTPUT_HAPTICS_TAG;",
-        "report[142] = (uint8_t)(speaker_block_id | 0x80);",
+        "memcpy(report + 3, usb_payload, DS5_USB_SET_STATE_LEN);",
+        "report[10] = DS5_OUTPUT_HAPTICS_TAG;",
+        "report[140] = (uint8_t)(speaker_block_id | 0xC0);",
         "report[2] = DS5_OUTPUT_TAG;",
         "report[2] = 0x90;",
         "report[3] = DS5_OUTPUT_SET_STATE_LEN;",
         "fill_crc(report, DS5_OUTPUT_REPORT31_BT_LEN);",
         "fill_crc(report, DS5_OUTPUT_REPORT32_BT_LEN);",
-        "fill_crc(report, DS5_OUTPUT_REPORT36_BT_LEN);",
+        "fill_crc(report, DS5_OUTPUT_AUDIO_RT_BT_LEN);",
     ]
     for snippet in output_snippets:
         assert snippet in output_source, f"missing C output snippet: {snippet}"
@@ -1132,7 +1149,7 @@ def test_c_source_contract() -> None:
         "DS5_DUAL_CAP_BT_CONNECT_MODES",
         "DS5_DUAL_MSG_BT_DISCONNECT",
         "DS5_DUAL_MSG_BT_FORGET",
-        "uint8_t packet[1 + DS5_OUTPUT_REPORT36_BT_LEN]",
+        "uint8_t packet[1 + DS5_OUTPUT_BT_MAX_LEN]",
         "DS5_DUAL_MSG_WIRE_TEST",
         "DS5_DUAL_WIRE_TEST_PASS",
         "m61_esp32_transport_connect",
