@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "m61_ds5_bridge_config.h"
 #include "m61_ds5_dse.h"
 #include "bflb_clock.h"
 #include "bflb_core.h"
@@ -66,9 +67,6 @@
 #define AUDIO_MIC_OPUS_QUEUE_DEPTH 2
 #define AUDIO_MIC_PCM_RING_SIZE 4096
 #define AUDIO_MIC_PAUSE_AFTER_SPEAKER_MS 250
-#ifndef CONFIG_M61_DS5_MIC_DEFAULT_ENABLED
-#define CONFIG_M61_DS5_MIC_DEFAULT_ENABLED 1
-#endif
 #define AUDIO_CODEC_TASK_STACK_WORDS 8192
 #define AUDIO_CODEC_TASK_PRIORITY (configMAX_PRIORITIES - 6)
 #define AUDIO_OPUS_ENCODER_STATE_MAX 49152U
@@ -77,8 +75,8 @@
 #define AUDIO_CODEC_ERR_STATE_TOO_SMALL -1001
 #define HAPTICS_DOWNSAMPLE_FACTOR 16
 #define HAPTICS_RESAMPLE_MODE_WDL_EQUIV 2
-#ifndef HAPTICS_GAIN_Q8
-#define HAPTICS_GAIN_Q8 256
+#ifndef CONFIG_M61_DS5_BRIDGE_VERSION_STRING
+#define CONFIG_M61_DS5_BRIDGE_VERSION_STRING "m61-ds5-bridge"
 #endif
 #define HAPTICS_QUEUE_DEPTH 2
 #define DS5_USB_SET_STATE_LEN 47
@@ -563,7 +561,7 @@ static uint8_t abs_i8(int8_t value)
 
 static int8_t haptic_pcm16_to_i8(int16_t sample)
 {
-    int32_t scaled = ((int32_t)sample * HAPTICS_GAIN_Q8) / 256;
+    int32_t scaled = ((int32_t)sample * m61_ds5_bridge_config_haptics_gain_q8()) / 256;
     int32_t value;
 
     if (scaled > 32768) {
@@ -805,7 +803,7 @@ static void fill_audio_in_buffer(void)
     uint16_t nonzero = 0;
 
     memset(audio_in_buffer, 0, AUDIO_IN_STREAM_PACKET_SIZE);
-    if (!CONFIG_M61_DS5_MIC_DEFAULT_ENABLED || audio_mic_mute || !audio_in_open) {
+    if (!m61_ds5_bridge_config_mic_enabled() || audio_mic_mute || !audio_in_open) {
         return;
     }
 
@@ -834,7 +832,8 @@ static void process_audio_speaker(const uint8_t *data, uint32_t nbytes)
     static int16_t resampled[AUDIO_SPEAKER_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS];
     uint32_t frames;
 
-    if (!data || nbytes < AUDIO_FRAME_BYTES || audio_speaker_mute) {
+    if (!data || nbytes < AUDIO_FRAME_BYTES || audio_speaker_mute ||
+        !m61_ds5_bridge_config_speaker_enabled()) {
         return;
     }
 
@@ -873,7 +872,8 @@ static void process_audio_haptics(const uint8_t *data, uint32_t nbytes)
         return;
     }
 
-    speaker_packet = audio_packet_has_nonzero_speaker(data, nbytes);
+    speaker_packet = m61_ds5_bridge_config_speaker_enabled() &&
+                     audio_packet_has_nonzero_speaker(data, nbytes);
     force_zero_haptics = audio_out_open &&
                          (speaker_packet ||
                           speaker_accum_nonzero ||
@@ -1033,6 +1033,9 @@ static void audio_codec_task(void *pvParameters)
         uint8_t speaker_budget = audio_out_open ? 2U : 1U;
         TickType_t now;
 
+        if (!m61_ds5_bridge_config_speaker_enabled()) {
+            flush_speaker_queues();
+        }
         while (speaker_budget > 0 && encoder && take_speaker_frame(speaker_frame)) {
             uint64_t encode_start_us;
             uint64_t encode_elapsed_us;
@@ -1068,6 +1071,7 @@ static void audio_codec_task(void *pvParameters)
              speaker_opus_queue_count > 0 ||
              (int32_t)(now - pause_mic_until_tick) < 0);
         if (decoder &&
+            m61_ds5_bridge_config_mic_enabled() &&
             !speaker_recent &&
             take_mic_opus(mic_opus)) {
             usb_diag.audio_codec_stage = 4;
@@ -1186,6 +1190,112 @@ static void queue_feature_request(uint8_t report_id, uint32_t requested_len)
     pending_feature_report_len = requested_len;
     pending_feature_request_valid = true;
     usb_unlock(flags);
+}
+
+static bool is_bridge_config_report(uint8_t report_id)
+{
+    return report_id == 0xF6 || report_id == 0xF7 ||
+           report_id == 0xF8 || report_id == 0xF9;
+}
+
+static bool get_bridge_config_report(uint8_t report_id, uint32_t requested_len, uint32_t *out_len)
+{
+    uint32_t len = requested_len;
+
+    if (out_len == NULL) {
+        return false;
+    }
+    if (!is_bridge_config_report(report_id)) {
+        return false;
+    }
+    if (len > sizeof(usb_control_buffer)) {
+        len = sizeof(usb_control_buffer);
+    }
+
+    switch (report_id) {
+        case 0xF7: {
+            uint32_t copy_len = sizeof(m61_ds5_bridge_config_body_t);
+            if (copy_len > len) {
+                copy_len = len;
+            }
+            memcpy(usb_control_buffer, m61_ds5_bridge_config_get(), copy_len);
+            *out_len = copy_len;
+            return true;
+        }
+        case 0xF8: {
+            const char *version = CONFIG_M61_DS5_BRIDGE_VERSION_STRING;
+            uint32_t copy_len = (uint32_t)strlen(version);
+            if (copy_len > len) {
+                copy_len = len;
+            }
+            memcpy(usb_control_buffer, version, copy_len);
+            *out_len = copy_len;
+            return true;
+        }
+        case 0xF9:
+            if (len == 0U) {
+                *out_len = 0;
+                return true;
+            }
+            usb_control_buffer[0] = 0;
+            if (len >= 2U) {
+                uint8_t flags = 0x80;
+                if (audio_in_open && !audio_mic_mute &&
+                    m61_ds5_bridge_config_mic_enabled()) {
+                    flags |= 0x01;
+                }
+                if (audio_out_open && !audio_speaker_mute &&
+                    m61_ds5_bridge_config_speaker_enabled()) {
+                    flags |= 0x02;
+                }
+                usb_control_buffer[1] = flags;
+                *out_len = 2;
+            } else {
+                *out_len = 1;
+            }
+            return true;
+        default:
+            *out_len = 0;
+            return true;
+    }
+}
+
+static bool set_bridge_config_report(uint8_t report_id, const uint8_t *report, uint32_t report_len)
+{
+    const uint8_t *payload = report;
+    uint32_t payload_len = report_len;
+
+    if (!report || report_len == 0U) {
+        return false;
+    }
+    if (report_id == 0U) {
+        report_id = report[0];
+        payload = report + 1;
+        payload_len = report_len - 1U;
+    }
+    if (!is_bridge_config_report(report_id)) {
+        return false;
+    }
+    if (report_id != 0xF6 || payload_len == 0U) {
+        return true;
+    }
+
+    switch (payload[0]) {
+        case 0x01:
+            m61_ds5_bridge_config_set_raw(payload + 1, payload_len - 1U);
+            printf("[Config] bridge config updated from HID report\r\n");
+            break;
+        case 0x02:
+            (void)m61_ds5_bridge_config_save();
+            break;
+        case 0x03:
+            printf("[Config] bridge config USB reconnect request ignored; use ds5 usb-reinit\r\n");
+            break;
+        default:
+            printf("[Config] unknown bridge config command 0x%02x\r\n", payload[0]);
+            break;
+    }
+    return true;
 }
 
 static void update_last_out_state_diag(uint8_t report_id, const uint8_t *data, uint32_t len)
@@ -1709,7 +1819,7 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
     uintptr_t flags;
     bool nonzero;
 
-    if (!CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ||
+    if (!m61_ds5_bridge_config_mic_enabled() ||
         !data || len < M61_DS5_MIC_OPUS_LEN || !audio_in_open || audio_mic_mute) {
         return;
     }
@@ -1733,12 +1843,12 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
 
 bool m61_usb_gamepad_audio_mic_enabled(void)
 {
-    return CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ? true : false;
+    return m61_ds5_bridge_config_mic_enabled();
 }
 
 bool m61_usb_gamepad_audio_in_active(void)
 {
-    if (!CONFIG_M61_DS5_MIC_DEFAULT_ENABLED) {
+    if (!m61_ds5_bridge_config_mic_enabled()) {
         return false;
     }
     return audio_in_open && !audio_mic_mute;
@@ -1746,7 +1856,8 @@ bool m61_usb_gamepad_audio_in_active(void)
 
 bool m61_usb_gamepad_audio_speaker_active(void)
 {
-    return audio_out_open && !audio_speaker_mute;
+    return audio_out_open && !audio_speaker_mute &&
+           m61_ds5_bridge_config_speaker_enabled();
 }
 
 bool m61_usb_gamepad_ready(void)
@@ -1891,7 +2002,7 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_haptic_last_peak = usb_diag.audio_haptic_last_peak;
     diag->audio_haptic_downsample = HAPTICS_DOWNSAMPLE_FACTOR;
     diag->audio_haptic_resample_mode = HAPTICS_RESAMPLE_MODE_WDL_EQUIV;
-    diag->audio_haptic_gain_q8 = HAPTICS_GAIN_Q8;
+    diag->audio_haptic_gain_q8 = m61_ds5_bridge_config_haptics_gain_q8();
     diag->audio_speaker_mute = audio_speaker_mute ? 1 : 0;
     diag->audio_mic_mute = audio_mic_mute ? 1 : 0;
     diag->audio_speaker_volume_db = audio_speaker_volume_db;
@@ -1934,6 +2045,11 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
     }
 
     if (report_type != HID_REPORT_FEATURE) {
+        return;
+    }
+
+    if (get_bridge_config_report(report_id, requested_len, len)) {
+        usb_diag.feature_cache_hits++;
         return;
     }
 
@@ -1992,6 +2108,10 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
     usb_diag.hid_set_report++;
     usb_diag.last_report_id = report_id;
     usb_diag.last_report_type = report_type;
+    if (report_type == HID_REPORT_FEATURE &&
+        set_bridge_config_report(report_id, report, report_len)) {
+        return;
+    }
     queue_host_report(report_id, report_type, report, report_len);
 }
 

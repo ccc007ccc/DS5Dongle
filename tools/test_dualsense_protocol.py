@@ -19,6 +19,8 @@ OUTPUT = ROOT / "main" / "dualsense_output.c"
 M61_USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
 M61_MAIN = ROOT / "m61" / "dualsense_hidp_probe" / "main.c"
 M61_DSE = ROOT / "m61" / "dualsense_hidp_probe" / "m61_ds5_dse.c"
+M61_BRIDGE_CONFIG = ROOT / "m61" / "dualsense_hidp_probe" / "m61_ds5_bridge_config.c"
+M61_BRIDGE_CONFIG_H = ROOT / "m61" / "dualsense_hidp_probe" / "m61_ds5_bridge_config.h"
 M61_CMAKE = ROOT / "m61" / "dualsense_hidp_probe" / "CMakeLists.txt"
 M61_BUILD_SH = ROOT / "m61" / "dualsense_hidp_probe" / "build.sh"
 M61_TRANSPORT = ROOT / "m61" / "dualsense_hidp_probe" / "m61_esp32_transport.c"
@@ -948,6 +950,8 @@ def test_c_source_contract() -> None:
     m61_usb_source = M61_USB.read_text(encoding="utf-8")
     m61_main_source = M61_MAIN.read_text(encoding="utf-8")
     m61_dse_source = M61_DSE.read_text(encoding="utf-8")
+    m61_bridge_config_source = M61_BRIDGE_CONFIG.read_text(encoding="utf-8")
+    m61_bridge_config_header = M61_BRIDGE_CONFIG_H.read_text(encoding="utf-8")
     m61_cmake_source = M61_CMAKE.read_text(encoding="utf-8")
     m61_build_source = M61_BUILD_SH.read_text(encoding="utf-8")
     m61_transport_source = M61_TRANSPORT.read_text(encoding="utf-8")
@@ -1038,11 +1042,16 @@ def test_c_source_contract() -> None:
         "resample_speaker_upstream_frame",
         "m61_usb_gamepad_submit_mic_opus",
         "m61_usb_gamepad_audio_mic_enabled",
-        "CONFIG_M61_DS5_MIC_DEFAULT_ENABLED",
+        "m61_ds5_bridge_config_mic_enabled",
+        "m61_ds5_bridge_config_speaker_enabled",
         "m61_usb_gamepad_take_speaker_opus",
         "AUDIO_IN_STREAM_PACKET_SIZE",
         "audio_mic_usb_nonzero_packets",
         "audio_speaker_encode_us_max",
+        "get_bridge_config_report",
+        "set_bridge_config_report",
+        "report_id == 0xF6 || report_id == 0xF7",
+        "CONFIG_M61_DS5_BRIDGE_VERSION_STRING",
     ]
     for snippet in m61_audio_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
@@ -1052,6 +1061,9 @@ def test_c_source_contract() -> None:
         "hidp_last_mic_active != bt_mic_active",
         "maybe_forward_audio_controls",
         "hidp_send_audio_control_state",
+        "m61_ds5_bridge_config_apply_usb_set_state",
+        "m61_ds5_bridge_config_audio_buffer_length",
+        "bridge_cfg ver=%u",
         "mic_enabled=%u",
         "USB DualSense registration waits for controller full report",
         "usb_after_ds=%d",
@@ -1085,8 +1097,30 @@ def test_c_source_contract() -> None:
     for snippet in m61_bridge_dse_snippets:
         assert snippet in combined_m61_dse_source, f"missing M61 DSE bridge snippet: {snippet}"
     assert "m61_ds5_dse.c" in m61_cmake_source
+    assert "m61_ds5_bridge_config.c" in m61_cmake_source
     assert "m61_haptics_resampler" not in m61_cmake_source
     assert "resample.cpp" not in m61_cmake_source
+
+    m61_bridge_config_snippets = [
+        "M61_DS5_BRIDGE_CONFIG_VERSION 5U",
+        "m61_ds5_bridge_config_body_t",
+        "CONFIG_M61_DS5_BRIDGE_AUDIO_BUFFER_LENGTH",
+        "CONFIG_M61_DS5_BRIDGE_CONTROLLER_MODE",
+        "CONFIG_M61_DS5_BRIDGE_DISABLE_MIC",
+        "CONFIG_M61_DS5_BRIDGE_DISABLE_SPEAKER",
+        "M61_DS5_BRIDGE_CONFIG_KEY \"ds5_bridge_cfg\"",
+        "ef_get_env_blob(M61_DS5_BRIDGE_CONFIG_KEY",
+        "ef_set_env_blob(M61_DS5_BRIDGE_CONFIG_KEY",
+        "m61_ds5_bridge_config_set_raw",
+        "m61_ds5_bridge_config_save",
+        "m61_ds5_bridge_config_haptics_gain_q8",
+        "payload[DS5_STATE_FLAGS1] |= DS5_STATE_ALLOW_MOTOR_POWER_LEVEL;",
+        "payload[DS5_STATE_FLAGS1] |= DS5_STATE_ALLOW_AUDIO_CONTROL2;",
+        "payload[DS5_STATE_FLAGS0] &= (uint8_t)~(DS5_STATE_ALLOW_HEADPHONE_VOLUME",
+    ]
+    combined_bridge_config_source = "\n".join([m61_bridge_config_header, m61_bridge_config_source])
+    for snippet in m61_bridge_config_snippets:
+        assert snippet in combined_bridge_config_source, f"missing bridge config snippet: {snippet}"
 
     dual_chip_snippets = [
         "DS5_DUAL_HELLO_PAYLOAD_LEN",

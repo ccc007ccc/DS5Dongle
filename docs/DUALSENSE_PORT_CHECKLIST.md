@@ -51,7 +51,7 @@
 - `部分` USB Audio Control/OUT/IN 已注册；Audio OUT 已拆分 ch0/ch1 扬声器 Opus encode 与 ch2/ch3 haptics，Audio IN 已接入手柄 mic Opus decode。
 - `部分` HID report descriptor 已是 321 字节 DualSense 描述符，HID interface/endpoint 已改为 interface 3、IN `0x84`、OUT `0x03`。
 - `部分` BT `0x31` full report 的 63 字节 payload 当前会 raw pass-through 到 USB report `0x01`。
-- `部分` USB HID output/feature 有转发雏形，`SetStateData` 已加入状态缓存；HD haptics-only `0x39` 已实现，待刷写实机验证。
+- `部分` USB HID output/feature 有转发雏形，`SetStateData` 已加入状态缓存，并按 ds5-bridge 配置支持 `trigger_reduce`、`speaker_gain`、`lock_volume` 最小 patch；HD haptics-only `0x39` 已实现，待刷写实机验证。
 - `完成` 复合 USB 固件已构建、刷写成功；手动 RST/EN normal boot 后 Windows 枚举成功，`ds5 status` 显示 `configured=1`。
 - `部分` BT `0x39` 已按上游当前格式实现两个 haptics block + 两个 speaker/headset Opus block 合包路径；麦克风 Opus decode -> USB IN 已实测通，扬声器 Opus encode 路径已完成 0.5s/2s tone 稳定性验证，仍需继续优化丢帧和音质。
 
@@ -124,10 +124,11 @@
 | Player LEDs | `PlayerLight1..5` | 随 `0x02` payload 透传 | 部分 | 验证白色玩家灯 |
 | Mute light | `MuteLightMode` | 随 `0x02` payload 透传 | 部分 | 验证 mute 灯模式 |
 | Light brightness/fade | `LightBrightness` / `LightFadeAnimation` | 随 `0x02` payload 透传 | 部分 | 验证亮度和动画 |
-| 音量/静音控制 | USB Audio control + `SetStateData` | HID payload 可透传，USB Audio control 缺失 | 缺失 | 实现 UAC mute/volume 回调 |
+| 音量/静音控制 | USB Audio control + `SetStateData` | UAC mute/volume 回调已记录并转 `SetStateData`；`lock_volume` 可屏蔽 host 音量/静音 allow bits | 部分 | 实机验证 Windows 音量/mute 与手柄状态联动 |
 | Feature GET | Host GET_REPORT -> BT feature get -> cache | 已有转发/cache | 部分 | 验证 calibration/firmware/hardware info |
 | Feature SET | Host SET_REPORT feature -> BT control with CRC | 已有雏形 | 部分 | 验证 `0x80`、Edge profile 相关不会误处理 |
-| 输出状态合并 | 上游 `state_mgr` 维护最新状态 | 已有 63-byte state cache 和 47-byte USB `0x02` flag 合并 | 部分 | 实机验证 LED/rumble/trigger 后再补配置持久化 |
+| ds5-bridge 配置 | Vendor feature `0xF6-0xF9` | 已实现 `Config_body` 兼容结构、`0xF7` 读取配置、`0xF6` 内存更新/保存、`0xF8` 版本、`0xF9` RSSI/音频 gating；默认值走 M61 defconfig 并可用 EasyFlash 保存 | 部分 | 配置 UI 实测读写；USB reconnect/wake/PS shortcut/polling 描述符相关项暂未改变枚举形态 |
+| 输出状态合并 | 上游 `state_mgr` 维护最新状态 | 当前保持 USB `0x02` raw 透传到 BT `0x31`，并叠加 ds5-bridge 配置 patch；状态缓存用于诊断和低频 audio control | 部分 | 实机验证 LED/rumble/trigger 后再评估是否需要完整 `state_mgr` |
 | DSX 高频 output | DSX/Steam 可能高频刷新 LED/rumble/trigger | 已新增 USB `0x02` 最新态合并、20ms 蓝牙转发限速、每轮 host/feature report 处理上限，并新增 `usb_ds5_last`/`bt_state`/`hidp_usb_output` 诊断 | 部分 | 刷写 SHA `C3586805...` 后用户确认 DSX 功能可用；串口 shell 在 DSX 高负载下仍可能无回包，继续优化调度/诊断 |
 
 ## 音频和触觉清单
@@ -140,7 +141,7 @@
 | HD haptics/高级震动 | USB Audio OUT ch2/ch3 -> 48 kHz to 3 kHz -> int8 -> BT `0x39` | 已实现 haptics-only 初版 | 部分 | 当前按上游 `SetMode(true,0,false)`、`SetRates(48000,3000)` 的整数 16:1 input-driven linear path 做 C 等价实现，保留跨包相位和一帧 lookahead |
 | 手柄 mic 到电脑 | BT mic payload -> Opus decode -> USB Audio IN | 已实现并补充 `opus_nz/pcm_nz/usb_nz` 分层诊断；speaker 活跃后临时暂停 mic decode 250ms，并让 BT mic active 置 0 来减少手柄 mic 上报 | 部分 | 继续验证 Windows 录音波形；扬声器稳定后再收窄 mic 退让策略 |
 | mic active 控制 | Host 打开 Audio IN alternate setting 后启用 | 已接 report `0x32` audio status，`0x39` mic active 位默认随 `audio_in_open` 更新；speaker OUT 活跃时临时发送 `bt_mic=0`，播放结束恢复 | 部分 | 验证应用关闭录音后手柄停止上报 mic audio；验证 speaker 播放时 `hidp_audio ... mic_active=1 bt_mic=0` |
-| 音量和 mute | UAC SET_CUR/GET_CUR -> `SetStateData` | 已记录 UAC 音量/静音，未接 `SetStateData` | 部分 | 参考上游 `usb.cpp` 更新 state cache |
+| 音量和 mute | UAC SET_CUR/GET_CUR -> `SetStateData` | 已记录 UAC 音量/静音并生成低频 `0x31` audio control state；`lock_volume` 可阻止 host 覆盖音量/静音 | 部分 | 实机验证 Windows 音量/mute 与手柄实际输出 |
 
 ## 蓝牙私有协议清单
 

@@ -9,6 +9,7 @@
 #include "dualsense_output.h"
 #include "dualsense_parser.h"
 #include "dual_chip_spi_proto.h"
+#include "m61_ds5_bridge_config.h"
 #include "m61_ds5_dse.h"
 #include "m61_esp32_transport.h"
 #include "m61_usb_gamepad.h"
@@ -62,7 +63,6 @@
 #define HIDP_EIR_MAX_LEN 240
 #define HIDP_TX_MAX_LEN (1 + DS5_OUTPUT_BT_MAX_LEN)
 #define DS5_LAST_ADDR_KEY "ds5_last_bda"
-#define DS5_AUDIO_BUFFER_LENGTH_DEFAULT 64
 #define DS5_STATE_FLAGS0 0
 #define DS5_STATE_FLAGS1 1
 #define DS5_STATE_RUMBLE_RIGHT 2
@@ -1122,7 +1122,9 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
 
     if (channel == &hid_control && buf->len >= 3 && buf->data[0] == 0xA3) {
         m61_usb_gamepad_store_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
-        m61_ds5_dse_note_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
+        if (m61_ds5_bridge_config_dse_enabled()) {
+            m61_ds5_dse_note_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
+        }
     }
 
     if (channel == &hid_interrupt &&
@@ -1594,6 +1596,9 @@ static void m61_dse_note_feature_report(uint8_t report_id,
                                         void *ctx)
 {
     (void)ctx;
+    if (!m61_ds5_bridge_config_dse_enabled()) {
+        return;
+    }
     m61_ds5_dse_note_feature_report(report_id, data, len);
 }
 
@@ -1612,6 +1617,7 @@ static int m61_dse_set_feature_exact(void *ctx, uint8_t report_id, const uint8_t
 static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool includes_report_id)
 {
     uint8_t report31[DS5_OUTPUT_REPORT31_BT_LEN];
+    uint8_t patched_payload[DS5_USB_SET_STATE_LEN];
     const uint8_t *payload = data;
     size_t payload_len = len;
 
@@ -1627,9 +1633,15 @@ static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool inc
         payload_len = len - 1;
     }
 
+    if (payload_len < sizeof(patched_payload)) {
+        return -EINVAL;
+    }
+    memcpy(patched_payload, payload, sizeof(patched_payload));
+    m61_ds5_bridge_config_apply_usb_set_state(patched_payload, sizeof(patched_payload));
+
     if (!dualsense_output_make_report31_from_usb(&output_ctx,
-                                                 payload,
-                                                 payload_len,
+                                                 patched_payload,
+                                                 sizeof(patched_payload),
                                                  report31,
                                                  sizeof(report31))) {
         return -EINVAL;
@@ -1677,6 +1689,8 @@ static int hidp_send_audio_control_state(const m61_usb_gamepad_diag_t *diag)
                                            diag->audio_speaker_mute != 0,
                                            diag->audio_speaker_mute != 0,
                                            diag->audio_mic_mute != 0);
+    m61_ds5_bridge_config_apply_usb_set_state(output_ctx.set_state,
+                                              sizeof(output_ctx.set_state));
     if (!dualsense_output_make_report31(&output_ctx, report31, sizeof(report31))) {
         return -EINVAL;
     }
@@ -1726,7 +1740,7 @@ static int hidp_send_audio_status_report(bool mic_active)
 
     if (!dualsense_output_make_report32_audio_status(&output_ctx,
                                                      mic_active,
-                                                     DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                                     m61_ds5_bridge_config_audio_buffer_length(),
                                                      report32,
                                                      sizeof(report32))) {
         hidp_audio_send_errors++;
@@ -1792,7 +1806,7 @@ static int hidp_send_audio_report(const uint8_t *haptics0,
                                         has_speaker ? M61_DS5_SPEAKER_OPUS_LEN : 0,
                                         speaker_block,
                                         mic_active,
-                                        DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                        m61_ds5_bridge_config_audio_buffer_length(),
                                         report,
                                         sizeof(report))) {
         if (has_haptics) {
@@ -1885,7 +1899,9 @@ static void handle_usb_host_report(const m61_usb_gamepad_host_report_t *report)
                    (unsigned int)payload_len,
                    err);
         } else {
-            m61_ds5_dse_note_feature_set(report_id);
+            if (m61_ds5_bridge_config_dse_enabled()) {
+                m61_ds5_dse_note_feature_set(report_id);
+            }
         }
     }
 }
@@ -1930,7 +1946,9 @@ static void usb_hid_bridge_task(void *pvParameters)
             }
         }
 
-        m61_ds5_dse_task(now);
+        if (m61_ds5_bridge_config_dse_enabled()) {
+            m61_ds5_dse_task(now);
+        }
 
         while (feature_reports_this_tick < CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK &&
                m61_usb_gamepad_take_feature_request(&feature_report_id, &requested_len)) {
@@ -2712,6 +2730,24 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED],
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 1],
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 2]);
+        const m61_ds5_bridge_config_body_t *bridge_cfg = m61_ds5_bridge_config_get();
+        printf("bridge_cfg ver=%u haptics_q8=%u spk_vol=%u headset_vol=%u spk_gain=%u inactive_min=%u poll=%u buf_len=%u mode=%u usb_sn=%u ps_shortcut=%u disable_mic=%u disable_speaker=%u wake=%u trigger_reduce=%u lock_volume=%u\r\n",
+               (unsigned int)bridge_cfg->config_version,
+               (unsigned int)m61_ds5_bridge_config_haptics_gain_q8(),
+               (unsigned int)bridge_cfg->speaker_volume,
+               (unsigned int)bridge_cfg->headset_volume,
+               (unsigned int)bridge_cfg->speaker_gain,
+               (unsigned int)bridge_cfg->inactive_time,
+               (unsigned int)bridge_cfg->polling_rate_mode,
+               (unsigned int)bridge_cfg->audio_buffer_length,
+               (unsigned int)bridge_cfg->controller_mode,
+               (unsigned int)bridge_cfg->enable_usb_sn,
+               (unsigned int)bridge_cfg->ps_shortcut_enabled,
+               (unsigned int)bridge_cfg->disable_mic,
+               (unsigned int)bridge_cfg->disable_speaker,
+               (unsigned int)bridge_cfg->enable_wake,
+               (unsigned int)bridge_cfg->trigger_reduce,
+               (unsigned int)bridge_cfg->lock_volume);
         printf("usb_audio open=%lu close=%lu out_open=%u in_open=%u last_open=%u last_close=%u out_pkts=%lu out_bytes=%lu in_pkts=%lu in_bytes=%lu\r\n",
                (unsigned long)usb_diag.audio_open,
                (unsigned long)usb_diag.audio_close,
@@ -2820,7 +2856,7 @@ int cmd_ds5(int argc, char **argv)
                m61_usb_gamepad_audio_in_active() ? 1U : 0U,
                hidp_last_mic_active ? 1U : 0U,
                dualsense_headphones_connected ? 1U : 0U,
-               (unsigned int)DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+               (unsigned int)m61_ds5_bridge_config_audio_buffer_length(),
                (unsigned int)CONFIG_M61_DS5_MIC_STATUS_REFRESH_MS,
                (unsigned int)CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS,
                (unsigned int)CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS,
@@ -3177,10 +3213,14 @@ int main(void)
     bflb_mtd_init();
     if (easyflash_init() == EF_NO_ERR) {
         storage_ready = true;
+        m61_ds5_bridge_config_init();
         load_last_dualsense_addr();
     } else {
+        m61_ds5_bridge_config_reset_defaults();
         printf("easyflash init failed; saved DualSense address disabled\r\n");
     }
+#else
+    m61_ds5_bridge_config_init();
 #endif
 
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
