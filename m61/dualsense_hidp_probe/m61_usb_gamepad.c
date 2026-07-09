@@ -7,6 +7,7 @@
 
 #include "m61_ds5_bridge_config.h"
 #include "m61_ds5_dse.h"
+#include "m61_esp32_transport.h"
 #include "bflb_clock.h"
 #include "bflb_core.h"
 #include "bflb_irq.h"
@@ -1198,6 +1199,19 @@ static bool is_bridge_config_report(uint8_t report_id)
            report_id == 0xF8 || report_id == 0xF9;
 }
 
+static int8_t bridge_config_rssi(void)
+{
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+    m61_esp32_transport_stats_t stats;
+
+    m61_esp32_transport_get_stats(&stats);
+    if (stats.rx_bt_state > 0U) {
+        return stats.peer_bt_rssi;
+    }
+#endif
+    return 0;
+}
+
 static bool get_bridge_config_report(uint8_t report_id, uint32_t requested_len, uint32_t *out_len)
 {
     uint32_t len = requested_len;
@@ -1237,7 +1251,7 @@ static bool get_bridge_config_report(uint8_t report_id, uint32_t requested_len, 
                 *out_len = 0;
                 return true;
             }
-            usb_control_buffer[0] = 0;
+            usb_control_buffer[0] = (uint8_t)bridge_config_rssi();
             if (len >= 2U) {
                 uint8_t flags = 0x80;
                 if (audio_in_open && !audio_mic_mute &&

@@ -1051,6 +1051,9 @@ def test_c_source_contract() -> None:
         "get_bridge_config_report",
         "set_bridge_config_report",
         "report_id == 0xF6 || report_id == 0xF7",
+        "bridge_config_rssi",
+        "m61_esp32_transport_get_stats(&stats)",
+        "stats.peer_bt_rssi",
         "CONFIG_M61_DS5_BRIDGE_VERSION_STRING",
     ]
     for snippet in m61_audio_snippets:
