@@ -79,6 +79,16 @@
 #define DS5_BLACKLIST_MAX 8
 #define DS5_RAW_BRINGUP_NOTIFY_INITIAL 0x00000001UL
 #define DS5_RAW_BRINGUP_NOTIFY_RETRY 0x00000002UL
+#define DS5_GAP_BT_PASS 0x0000
+#define DS5_GAP_ERR_GRP 0x0100
+#define DS5_GAP_ERR_BAD_HANDLE (DS5_GAP_ERR_GRP + 0x0e)
+#define DS5_GAP_ERR_BAD_STATE (DS5_GAP_ERR_GRP + 0x10)
+#define DS5_GAP_ERR_CONGESTED (DS5_GAP_ERR_GRP + 0x12)
+
+extern uint16_t GAP_ConnWriteData(uint16_t gap_handle,
+                                  uint8_t *data,
+                                  uint16_t max_len,
+                                  uint16_t *written_len);
 
 typedef enum {
     RAW_CH_CONTROL = 0,
@@ -1506,6 +1516,22 @@ static raw_hidp_channel_t *incoming_channel(void)
     return NULL;
 }
 
+static int gap_status_to_errno(uint16_t status)
+{
+    switch (status) {
+    case DS5_GAP_BT_PASS:
+        return 0;
+    case DS5_GAP_ERR_BAD_HANDLE:
+        return -EBADF;
+    case DS5_GAP_ERR_BAD_STATE:
+        return -ENOTCONN;
+    case DS5_GAP_ERR_CONGESTED:
+        return -EBUSY;
+    default:
+        return -EIO;
+    }
+}
+
 static int raw_write(raw_hidp_channel_t *channel, const uint8_t *data, size_t len)
 {
     if (channel == NULL || !channel->connected || channel->fd < 0) {
@@ -1514,23 +1540,36 @@ static int raw_write(raw_hidp_channel_t *channel, const uint8_t *data, size_t le
     if (data == NULL || len == 0) {
         return -EINVAL;
     }
+    if (channel->handle > UINT16_MAX || len > UINT16_MAX) {
+        return -EINVAL;
+    }
 
     int64_t start_us = esp_timer_get_time();
-    int written = write(channel->fd, data, len);
+    uint16_t written = 0;
+    uint16_t status = GAP_ConnWriteData((uint16_t)channel->handle,
+                                        (uint8_t *)data,
+                                        (uint16_t)len,
+                                        &written);
     int64_t duration_us = esp_timer_get_time() - start_us;
-    if (written != (int)len) {
-        int err = written < 0 ? -errno : -EIO;
-        ESP_LOGW(TAG, "Raw HIDP %s write len=%u result=%d errno=%d dur_us=%" PRId64,
-                 channel->name, (unsigned)len, written, errno, duration_us);
+    if (status != DS5_GAP_BT_PASS || written != (uint16_t)len) {
+        int err = status != DS5_GAP_BT_PASS ? gap_status_to_errno(status) : -EIO;
+        ESP_LOGW(TAG,
+                 "Raw HIDP %s GAP write len=%u result=%u status=0x%04X err=%d dur_us=%" PRId64,
+                 channel->name,
+                 (unsigned)len,
+                 (unsigned)written,
+                 (unsigned)status,
+                 err,
+                 duration_us);
         bt_dualsense_raw_hidp_note_tx(data, len, err);
         return err;
     }
 
     if (duration_us > 50000) {
-        ESP_LOGW(TAG, "Raw HIDP %s tx len=%u first=0x%02X dur_us=%" PRId64,
+        ESP_LOGW(TAG, "Raw HIDP %s GAP tx len=%u first=0x%02X dur_us=%" PRId64,
                  channel->name, (unsigned)len, data[0], duration_us);
     } else {
-        ESP_LOGI(TAG, "Raw HIDP %s tx len=%u first=0x%02X dur_us=%" PRId64,
+        ESP_LOGI(TAG, "Raw HIDP %s GAP tx len=%u first=0x%02X dur_us=%" PRId64,
                  channel->name, (unsigned)len, data[0], duration_us);
     }
     bt_dualsense_raw_hidp_note_tx(data, len, 0);
@@ -1840,6 +1879,7 @@ static void send_bringup(const char *reason)
              (unsigned)s_bringup_attempts,
              (unsigned)CONFIG_DS5_BRINGUP_RETRIES,
              reason != NULL ? reason : "event");
+    notify_state();
 
     static const uint8_t feature_ids[] = {0x09, 0x20, 0x22, 0x05, 0x70};
     for (size_t i = 0; i < sizeof(feature_ids); i++) {
