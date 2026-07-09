@@ -476,6 +476,14 @@ static bool should_block_blacklisted_peer(const esp_bd_addr_t bda)
     return !target_origin_allows_blacklist_bypass();
 }
 
+static bool should_reject_unexpected_peer(const esp_bd_addr_t bda)
+{
+    if (!s_target_found || bda_is_zero(s_target_bda) || bda_is_zero(bda)) {
+        return false;
+    }
+    return !bda_equal(s_target_bda, bda);
+}
+
 static void maybe_add_blacklist_candidate(const esp_bd_addr_t bda, const char *reason)
 {
     if (blacklist_add_unique(bda)) {
@@ -1827,6 +1835,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         raw_hidp_channel_t *channel = requested_channel;
         bool outgoing_open = requested_channel != NULL;
         bool blocked_blacklisted = should_block_blacklisted_peer(param->open.rem_bda);
+        bool unexpected_peer = should_reject_unexpected_peer(param->open.rem_bda);
         ESP_LOGI(TAG,
                  "Raw HIDP L2CAP open status=%d handle=0x%" PRIX32 " fd=%d mtu=%" PRId32,
                  param->open.status,
@@ -1846,6 +1855,20 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             s_last_error = -EPERM;
             ESP_LOGW(TAG, "Raw HIDP rejected blacklisted incoming L2CAP open from %s",
                      bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
+            notify_state();
+            break;
+        }
+
+        if (unexpected_peer && param->open.status == ESP_BT_L2CAP_SUCCESS) {
+            char peer[18];
+            char target[18];
+            if (param->open.fd >= 0) {
+                close(param->open.fd);
+            }
+            s_last_error = -EPERM;
+            ESP_LOGW(TAG, "Raw HIDP rejected unexpected L2CAP open from %s while targeting %s",
+                     bda_to_str(param->open.rem_bda, peer, sizeof(peer)),
+                     bda_to_str(s_target_bda, target, sizeof(target)));
             notify_state();
             break;
         }
@@ -2140,6 +2163,7 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
     case ESP_BT_GAP_AUTH_CMPL_EVT: {
         char addr[18];
         bool blocked_blacklisted = should_block_blacklisted_peer(param->auth_cmpl.bda);
+        bool unexpected_peer = should_reject_unexpected_peer(param->auth_cmpl.bda);
         ESP_LOGI(TAG, "Raw HIDP auth %s for %s link_key_type=%d name=\"%s\"",
                  param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS ? "ok" : "failed",
                  bda_to_str(param->auth_cmpl.bda, addr, sizeof(addr)),
@@ -2148,6 +2172,13 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
         if (blocked_blacklisted && param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
             ESP_LOGW(TAG, "Raw HIDP blacklisted peer %s authenticated unexpectedly; dropping bond",
                      addr);
+            (void)esp_bt_gap_remove_bond_device(param->auth_cmpl.bda);
+        }
+        if (unexpected_peer && param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
+            char target[18];
+            ESP_LOGW(TAG, "Raw HIDP unexpected peer %s authenticated while targeting %s; dropping bond",
+                     addr,
+                     bda_to_str(s_target_bda, target, sizeof(target)));
             (void)esp_bt_gap_remove_bond_device(param->auth_cmpl.bda);
         }
         if (param->auth_cmpl.stat != ESP_BT_STATUS_SUCCESS) {
@@ -2168,6 +2199,15 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                      bda_to_str(param->pin_req.bda, addr, sizeof(addr)));
             break;
         }
+        if (should_reject_unexpected_peer(param->pin_req.bda)) {
+            char target[18];
+            memset(pin_code, 0, sizeof(pin_code));
+            esp_bt_gap_pin_reply(param->pin_req.bda, false, 0, pin_code);
+            ESP_LOGW(TAG, "Raw HIDP rejected PIN request from unexpected %s while targeting %s",
+                     bda_to_str(param->pin_req.bda, addr, sizeof(addr)),
+                     bda_to_str(s_target_bda, target, sizeof(target)));
+            break;
+        }
 
         memset(pin_code, 0, sizeof(pin_code));
         memcpy(pin_code, "0000", 4);
@@ -2183,6 +2223,15 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, false);
             ESP_LOGW(TAG, "Raw HIDP rejected SSP confirmation from blacklisted %s value=%" PRIu32,
                      bda_to_str(param->cfm_req.bda, addr, sizeof(addr)),
+                     param->cfm_req.num_val);
+            break;
+        }
+        if (should_reject_unexpected_peer(param->cfm_req.bda)) {
+            char target[18];
+            esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, false);
+            ESP_LOGW(TAG, "Raw HIDP rejected SSP confirmation from unexpected %s while targeting %s value=%" PRIu32,
+                     bda_to_str(param->cfm_req.bda, addr, sizeof(addr)),
+                     bda_to_str(s_target_bda, target, sizeof(target)),
                      param->cfm_req.num_val);
             break;
         }
@@ -2214,6 +2263,15 @@ static void gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
             s_last_error = -EPERM;
             ESP_LOGW(TAG, "Raw HIDP blacklisted incoming ACL from %s will be denied",
                      addr);
+            notify_state();
+        }
+        if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS &&
+            should_reject_unexpected_peer(param->acl_conn_cmpl_stat.bda)) {
+            char target[18];
+            s_last_error = -EPERM;
+            ESP_LOGW(TAG, "Raw HIDP unexpected ACL from %s while targeting %s will be denied",
+                     addr,
+                     bda_to_str(s_target_bda, target, sizeof(target)));
             notify_state();
         }
         break;

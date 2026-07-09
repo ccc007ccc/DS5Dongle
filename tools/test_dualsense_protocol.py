@@ -1261,9 +1261,14 @@ def test_c_source_contract() -> None:
         "RAW_TARGET_MANUAL",
         "saved DualSense %s is blacklisted; scanning for explicit re-pair",
         "should_block_blacklisted_peer",
+        "should_reject_unexpected_peer",
         "save_bda_if_needed(param->open.rem_bda);",
         "Raw HIDP rejected SSP confirmation from blacklisted",
         "Raw HIDP rejected blacklisted incoming L2CAP open",
+        "Raw HIDP rejected unexpected L2CAP open",
+        "Raw HIDP rejected PIN request from unexpected",
+        "Raw HIDP rejected SSP confirmation from unexpected",
+        "Raw HIDP unexpected peer %s authenticated while targeting %s; dropping bond",
         "from blacklist after successful pair",
     ]
     for snippet in esp32_blacklist_snippets:
