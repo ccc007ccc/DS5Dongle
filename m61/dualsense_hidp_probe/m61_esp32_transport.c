@@ -1438,7 +1438,11 @@ bool m61_esp32_transport_bt_ready(void)
     if (!s_transport.ready || !peer_link_ready()) {
         return false;
     }
-    if ((s_transport.stats.peer_bt_flags & DS5_DUAL_BT_STATE_READY) != 0U) {
+    /* "BT ready" for the HID data path means the interrupt channel to the
+     * controller is open. DS5_DUAL_BT_STATE_READY only says the ESP32 stack
+     * is up; using it here made the M61 stream output reports into a
+     * disconnected link (constant HIDP tx failures on the ESP32). */
+    if ((s_transport.stats.peer_bt_flags & DS5_DUAL_BT_STATE_INTERRUPT_OPEN) != 0U) {
         return true;
     }
     return s_transport.stats.rx_flow_credit > 0 &&

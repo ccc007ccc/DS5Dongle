@@ -890,6 +890,22 @@ static void status_led_apply_mode(enum status_led_mode mode, bool blink_on)
 
 static enum status_led_mode status_led_auto_mode(void)
 {
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+    /* Dual-chip: mirror the ESP32-side Bluetooth state reported over SPI.
+     * The local Classic BT host is not running, so default_conn/bt_ready
+     * never change and the LED would stay in BOOT forever. */
+    m61_esp32_transport_stats_t stats;
+
+    m61_esp32_transport_get_stats(&stats);
+    if (stats.rx_bt_state > 0U &&
+        (stats.peer_bt_flags & DS5_DUAL_BT_STATE_INTERRUPT_OPEN) != 0U) {
+        return STATUS_LED_CONNECTED;
+    }
+    if (stats.rx_hello > 0U || stats.rx_bt_state > 0U) {
+        return STATUS_LED_CONNECTING;
+    }
+    return STATUS_LED_BOOT;
+#else
     if (default_conn && hid_interrupt.connected) {
         return STATUS_LED_CONNECTED;
     }
@@ -899,6 +915,7 @@ static enum status_led_mode status_led_auto_mode(void)
     }
 
     return STATUS_LED_BOOT;
+#endif
 }
 
 static void status_led_init(void)
@@ -2416,6 +2433,13 @@ static void dual_chip_boot_task(void *pvParameters)
     printf("dual-chip auto wire-test result=%d led=%s\r\n",
            wire_err,
            wire_err == 0 ? "green" : "red");
+    if (wire_err == 0) {
+        /* Show the pass colour briefly, then hand the LED back to the
+         * automatic BT-state display; a permanent override made the board
+         * look "stuck solid green" with no connection. Failures stay red. */
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        (void)status_led_set_override_from_name("auto");
+    }
 #endif
 
 #if CONFIG_M61_ESP32_BOOT_AUTOCONNECT

@@ -909,12 +909,18 @@ static void tx_task(void *arg)
                 item.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT);
         }
         if (err) {
+            static uint32_t s_tx_fail_log_count;
+
             s_stats.hidp_tx_errors++;
             s_stats.hidp_last_err = err;
-            ESP_LOGW(TAG, "HIDP tx from SPI failed type=%s len=%u err=%d",
-                     ds5_dual_spi_type_name(item.type),
-                     (unsigned)item.len,
-                     err);
+            s_tx_fail_log_count++;
+            if (s_tx_fail_log_count <= 4U || (s_tx_fail_log_count % 64U) == 0U) {
+                ESP_LOGW(TAG, "HIDP tx from SPI failed type=%s len=%u err=%d (count=%u)",
+                         ds5_dual_spi_type_name(item.type),
+                         (unsigned)item.len,
+                         err,
+                         (unsigned)s_tx_fail_log_count);
+            }
         } else if ((item.type == DS5_DUAL_MSG_BT_TX_REPORT ||
                     item.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT) &&
                    item.len > 0) {
