@@ -1820,7 +1820,6 @@ static void send_bringup(const char *reason)
     }
 
     s_bringup_attempts++;
-    notify_state();
     ESP_LOGI(TAG, "Raw HIDP DualSense bring-up attempt %u/%u reason=%s",
              (unsigned)s_bringup_attempts,
              (unsigned)CONFIG_DS5_BRINGUP_RETRIES,
@@ -1834,6 +1833,7 @@ static void send_bringup(const char *reason)
 
     send_output_init_reports();
     schedule_bringup_retry();
+    notify_state();
 }
 
 static void handle_input_report(raw_hidp_channel_t *channel, const uint8_t *data, size_t len)
