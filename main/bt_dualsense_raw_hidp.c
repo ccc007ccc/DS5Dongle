@@ -2043,6 +2043,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         bool failed_pending_connect = channel == NULL &&
                                       (s_connecting ||
                                        s_pending_step != RAW_CONNECT_IDLE);
+        bool allow_reconnect = s_auto_reconnect_enabled;
         ESP_LOGI(TAG, "Raw HIDP L2CAP close status=%d handle=0x%" PRIX32 " async=%d channel=%s",
                  param->close.status,
                  param->close.handle,
@@ -2063,10 +2064,13 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             s_pending_step = RAW_CONNECT_IDLE;
         }
         stop_bringup_timer();
-        set_scan_availability(s_auto_reconnect_enabled, "l2cap-close");
-        led_status_set(DS5_LED_STATE_BT_CONNECTING);
+        set_scan_availability(allow_reconnect, "l2cap-close");
+        led_status_set(allow_reconnect ? DS5_LED_STATE_BT_CONNECTING :
+                                         DS5_LED_STATE_BOOT_OK);
         notify_state();
-        schedule_reconnect();
+        if (allow_reconnect) {
+            schedule_reconnect();
+        }
         break;
     }
 

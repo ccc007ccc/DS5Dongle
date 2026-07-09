@@ -1017,6 +1017,7 @@ static int send_payload(uint8_t type,
                CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT :
                0U)) :
         1U;
+    bool peer_ack_status_error = false;
     int err;
 
     if ((payload == NULL && payload_len != 0) ||
@@ -1079,6 +1080,7 @@ static int send_payload(uint8_t type,
         return -EBUSY;
     }
     for (uint32_t attempt = 0; attempt < max_attempts; attempt++) {
+        peer_ack_status_error = false;
         err = exchange_frame(frame, frame_len);
         if (err < 0) {
             break;
@@ -1090,12 +1092,18 @@ static int send_payload(uint8_t type,
             break;
         }
 
+        uint32_t ack_rx_before = s_transport.stats.rx_ack;
         int ack_result = poll_reliable_ack(seq, type);
+        bool got_peer_ack = s_transport.stats.rx_ack != ack_rx_before &&
+                            s_transport.stats.last_ack_seq == seq &&
+                            s_transport.stats.last_ack_type == type;
         if (ack_result >= 0) {
             err = 0;
+            peer_ack_status_error = false;
             break;
         }
         err = ack_result;
+        peer_ack_status_error = got_peer_ack;
         if (attempt + 1U < max_attempts &&
             ack_result_should_retry(ack_result)) {
             s_transport.stats.ack_retries++;
@@ -1109,7 +1117,9 @@ static int send_payload(uint8_t type,
     }
     if (err < 0) {
         s_transport.stats.last_error = err;
-        mark_transport_error(err, M61_ESP32_RECOVERY_REASON_TX);
+        if (!peer_ack_status_error) {
+            mark_transport_error(err, M61_ESP32_RECOVERY_REASON_TX);
+        }
         return err;
     }
 

@@ -69,8 +69,10 @@ typedef struct {
     uint16_t flags;
     uint8_t channel;
     uint8_t priority;
+    uint16_t ack_seq;
     uint32_t deadline_us;
     uint16_t len;
+    bool wants_ack;
     uint8_t payload[DS5_DUAL_SPI_MAX_PAYLOAD];
 } dual_chip_tx_item_t;
 
@@ -131,6 +133,11 @@ static bool enqueue_latest(const dual_chip_tx_item_t *item)
 
     if ((item->flags & DS5_DUAL_FLAG_LATEST) != 0 &&
         xQueueReceive(s_tx_queue, &dropped, 0) == pdPASS) {
+        if (dropped.wants_ack) {
+            (void)xQueueSendToFront(s_tx_queue, &dropped, 0);
+            s_stats.spi_queue_drops++;
+            return false;
+        }
         s_stats.spi_queue_drops++;
         return xQueueSend(s_tx_queue, item, 0) == pdPASS;
     }
@@ -508,26 +515,25 @@ static bool set_pending_response(uint8_t type,
                                            replace_existing);
 }
 
-static void set_pending_ack(const ds5_dual_spi_header_t *request, int32_t status)
+static void set_pending_ack_fields(uint16_t seq,
+                                   uint8_t type,
+                                   uint8_t channel,
+                                   int32_t status)
 {
     ds5_dual_ack_t ack;
     uint8_t payload[DS5_DUAL_ACK_PAYLOAD_LEN];
 
-    if (request == NULL) {
-        return;
-    }
-
-    ack.seq = request->seq;
-    ack.type = request->type;
+    ack.seq = seq;
+    ack.type = type;
     ack.status = status;
     if (!ds5_dual_ack_encode(&ack, payload, sizeof(payload))) {
         s_stats.spi_crc_errors++;
         return;
     }
 
-    if (set_pending_response_with_flags(request->type,
+    if (set_pending_response_with_flags(type,
                                         DS5_DUAL_FLAG_ACK,
-                                        request->channel,
+                                        channel,
                                         DS5_DUAL_PRIORITY_CONTROL,
                                         (uint32_t)esp_timer_get_time(),
                                         payload,
@@ -537,6 +543,15 @@ static void set_pending_ack(const ds5_dual_spi_header_t *request, int32_t status
     } else {
         s_stats.ack_drops++;
     }
+}
+
+static void set_pending_ack(const ds5_dual_spi_header_t *request, int32_t status)
+{
+    if (request == NULL) {
+        return;
+    }
+
+    set_pending_ack_fields(request->seq, request->type, request->channel, status);
 }
 
 static void set_pending_flow_credit(void)
@@ -841,6 +856,10 @@ static void tx_task(void *arg)
                 (item.len > 0 && item.payload[0] == 0x39)) {
                 s_stats.deadline_miss_36++;
             }
+            if (item.wants_ack) {
+                set_pending_ack_fields(item.ack_seq, item.type, item.channel, -ETIMEDOUT);
+            }
+            set_pending_flow_credit();
             continue;
         }
 
@@ -886,6 +905,10 @@ static void tx_task(void *arg)
         } else {
             s_stats.hidp_last_err = 0;
         }
+        if (item.wants_ack) {
+            set_pending_ack_fields(item.ack_seq, item.type, item.channel, err);
+        }
+        set_pending_flow_credit();
     }
 }
 
@@ -1234,8 +1257,10 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
     item.flags = header.flags;
     item.channel = header.channel;
     item.priority = header.priority;
+    item.ack_seq = header.seq;
     item.deadline_us = header.deadline;
     item.len = header.length;
+    item.wants_ack = wants_ack;
     memcpy(item.payload, payload, header.length);
 
     if (!enqueue_latest(&item)) {
@@ -1244,9 +1269,6 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
         }
         set_pending_flow_credit();
         return ESP_ERR_NO_MEM;
-    }
-    if (wants_ack) {
-        set_pending_ack(&header, 0);
     }
     set_pending_flow_credit();
     return ESP_OK;
