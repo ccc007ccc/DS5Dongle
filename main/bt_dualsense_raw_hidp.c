@@ -179,6 +179,7 @@ static void stop_bringup_timer(void);
 static void stop_reconnect_timer(void);
 static void schedule_reconnect_delay(uint64_t delay_us, const char *reason);
 static void schedule_persist_flush(void);
+static void handle_bringup_failure(const char *reason);
 static void start_hidp_servers(void);
 static void set_scan_availability(bool available, const char *reason);
 static bool ensure_hidp_servers_ready(const char *reason);
@@ -865,6 +866,67 @@ static void save_bda_if_needed(const esp_bd_addr_t bda)
              bda_to_str(s_saved_bda, addr, sizeof(addr)));
 }
 
+static bool hidp_channels_connected(void)
+{
+    return s_control.connected && s_interrupt.connected;
+}
+
+static void bind_target_peer_if_needed(const esp_bd_addr_t bda, const char *reason)
+{
+    if (s_target_found || bda_is_zero(bda)) {
+        return;
+    }
+
+    memcpy(s_target_bda, bda, sizeof(s_target_bda));
+    s_target_found = true;
+    if (s_have_saved_bda && bda_equal(s_saved_bda, bda)) {
+        s_target_origin = RAW_TARGET_SAVED_AUTO;
+        s_current_target_from_saved = true;
+    } else {
+        s_target_origin = RAW_TARGET_DISCOVERY;
+        s_current_target_from_saved = false;
+    }
+
+    char addr[18];
+    ESP_LOGI(TAG, "Raw HIDP bound incoming peer %s as active target reason=%s",
+             bda_to_str(s_target_bda, addr, sizeof(addr)),
+             reason != NULL ? reason : "?");
+}
+
+static void finalize_ready_peer(const char *reason)
+{
+    bool allow_blacklist_bypass = target_origin_allows_blacklist_bypass();
+
+    if (!bt_dualsense_raw_hidp_ready() || !s_target_found || bda_is_zero(s_target_bda)) {
+        return;
+    }
+
+    stop_reconnect_timer();
+    save_bda_if_needed(s_target_bda);
+    if (allow_blacklist_bypass && blacklist_remove(s_target_bda)) {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP removed %s from blacklist after validated DualSense report; persist deferred",
+                 bda_to_str(s_target_bda, addr, sizeof(addr)));
+    }
+    if (s_saved_bda_dirty || s_blacklist_dirty) {
+        schedule_persist_flush();
+    }
+    if (s_connect_mode != RAW_CONNECT_MODE_AUTO ||
+        s_target_origin == RAW_TARGET_MANUAL ||
+        s_target_origin == RAW_TARGET_DISCOVERY) {
+        char addr[18];
+        ESP_LOGI(TAG, "Raw HIDP normalizing reconnect policy to saved address after validated report for %s reason=%s",
+                 bda_to_str(s_target_bda, addr, sizeof(addr)),
+                 reason != NULL ? reason : "?");
+    }
+    s_target_origin = RAW_TARGET_SAVED_AUTO;
+    s_connect_mode = RAW_CONNECT_MODE_AUTO;
+    s_current_target_from_saved = false;
+    s_saved_reconnect_failures = 0;
+    set_scan_availability(false, "hid-full-report");
+    led_status_set(DS5_LED_STATE_BT_CONNECTED);
+}
+
 static void reset_hidp_channels(void)
 {
     close_channel(&s_interrupt);
@@ -1150,6 +1212,7 @@ static void reconnect_timer_cb(void *arg)
         note_connect_failure();
     }
 
+    stop_bringup_timer();
     reset_hidp_channels();
     if (preserve_manual_target) {
         memcpy(s_target_bda, retry_bda, sizeof(s_target_bda));
@@ -1193,6 +1256,10 @@ static void persist_timer_cb(void *arg)
 static void bringup_timer_cb(void *arg)
 {
     (void)arg;
+    if (s_bringup_attempts >= CONFIG_DS5_BRINGUP_RETRIES && !s_have_full_report) {
+        handle_bringup_failure("retry-exhausted");
+        return;
+    }
     send_bringup("retry");
 }
 
@@ -1242,7 +1309,7 @@ int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode)
         (bda != NULL && mode != RAW_CONNECT_MODE_AUTO)) {
         return -EINVAL;
     }
-    if (bt_dualsense_raw_hidp_ready() || s_connecting || s_sdp_searching) {
+    if (s_control.connected || s_interrupt.connected || s_connecting || s_sdp_searching) {
         return 0;
     }
     if (mode == RAW_CONNECT_MODE_SAVED_ONLY) {
@@ -1478,7 +1545,7 @@ static int send_data_output(const uint8_t *report, size_t report_len)
 
 bool bt_dualsense_raw_hidp_ready(void)
 {
-    return s_control.connected && s_interrupt.connected;
+    return hidp_channels_connected() && s_have_full_report;
 }
 
 int bt_dualsense_raw_hidp_forget(uint8_t flags)
@@ -1625,14 +1692,48 @@ static void schedule_persist_flush(void)
     ESP_ERROR_CHECK(esp_timer_start_once(s_persist_timer, DS5_RAW_PERSIST_SETTLE_US));
 }
 
+static void handle_bringup_failure(const char *reason)
+{
+    esp_bd_addr_t retry_bda = {0};
+    bool preserve_manual_target = s_target_origin == RAW_TARGET_MANUAL &&
+                                  s_target_found &&
+                                  !bda_is_zero(s_target_bda);
+
+    if (!hidp_channels_connected() || s_have_full_report) {
+        return;
+    }
+
+    if (preserve_manual_target) {
+        memcpy(retry_bda, s_target_bda, sizeof(retry_bda));
+    }
+    s_last_error = -ETIMEDOUT;
+    ESP_LOGW(TAG, "Raw HIDP bring-up failed after %u attempts reason=%s",
+             (unsigned)s_bringup_attempts,
+             reason != NULL ? reason : "?");
+    note_connect_failure();
+    stop_reconnect_timer();
+    stop_bringup_timer();
+    reset_hidp_channels();
+    if (preserve_manual_target) {
+        memcpy(s_target_bda, retry_bda, sizeof(s_target_bda));
+        s_target_found = true;
+        s_target_origin = RAW_TARGET_MANUAL;
+        s_current_target_from_saved = false;
+    }
+    set_scan_availability(s_auto_reconnect_enabled,
+                          s_auto_reconnect_enabled ? "bringup-failed-retry" :
+                                                     "bringup-failed-stop");
+    led_status_set(s_auto_reconnect_enabled ? DS5_LED_STATE_BT_CONNECTING :
+                                              DS5_LED_STATE_BOOT_OK);
+    notify_state();
+    if (s_auto_reconnect_enabled) {
+        schedule_reconnect();
+    }
+}
+
 static void schedule_bringup_retry(void)
 {
     if (s_bringup_timer == NULL || s_have_full_report) {
-        return;
-    }
-    if (s_bringup_attempts >= CONFIG_DS5_BRINGUP_RETRIES) {
-        ESP_LOGW(TAG,
-                 "Raw HIDP bring-up attempts exhausted; still waiting for full report=0x31");
         return;
     }
 
@@ -1692,6 +1793,7 @@ static void handle_input_report(raw_hidp_channel_t *channel, const uint8_t *data
     if (state.is_full_report && !s_have_full_report) {
         s_have_full_report = true;
         stop_bringup_timer();
+        finalize_ready_peer("full-report");
         ESP_LOGI(TAG, "Raw HIDP full report=0x31 received; bring-up complete after %u attempts",
                  (unsigned)s_bringup_attempts);
         notify_state();
@@ -1893,6 +1995,8 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             break;
         }
 
+        bind_target_peer_if_needed(param->open.rem_bda,
+                                   outgoing_open ? "outgoing-open" : "incoming-open");
         channel->fd = param->open.fd;
         channel->handle = param->open.handle;
         channel->tx_mtu = param->open.tx_mtu;
@@ -1926,32 +2030,8 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
                    !s_interrupt.connected) {
             connect_hidp_interrupt();
         } else if (s_control.connected && s_interrupt.connected) {
-            stop_reconnect_timer();
-            save_bda_if_needed(param->open.rem_bda);
-            if (target_origin_allows_blacklist_bypass() &&
-                blacklist_remove(param->open.rem_bda)) {
-                char addr[18];
-                ESP_LOGI(TAG, "Raw HIDP removed %s from blacklist after successful pair; persist deferred",
-                         bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
-            }
-            if (s_saved_bda_dirty || s_blacklist_dirty) {
-                schedule_persist_flush();
-            }
-            if (s_connect_mode != RAW_CONNECT_MODE_AUTO ||
-                s_target_origin == RAW_TARGET_MANUAL ||
-                s_target_origin == RAW_TARGET_DISCOVERY) {
-                char addr[18];
-                ESP_LOGI(TAG, "Raw HIDP normalizing reconnect policy to saved address after successful open for %s",
-                         bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
-            }
-            memcpy(s_target_bda, param->open.rem_bda, sizeof(s_target_bda));
-            s_target_found = true;
-            s_target_origin = RAW_TARGET_SAVED_AUTO;
-            s_connect_mode = RAW_CONNECT_MODE_AUTO;
-            s_current_target_from_saved = false;
-            s_saved_reconnect_failures = 0;
-            set_scan_availability(false, "hid-ready");
-            led_status_set(DS5_LED_STATE_BT_CONNECTED);
+            set_scan_availability(false, "hid-channels-open");
+            led_status_set(DS5_LED_STATE_BT_CONNECTING);
             send_bringup("l2cap-open");
         }
         notify_state();
