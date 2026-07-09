@@ -47,8 +47,6 @@
 
 #define DS5_SEND_FIFO_DEPTH 10
 #define DS5_CMD_QUEUE_DEPTH 12
-#define DS5_SAVED_CONNECT_MAX_ATTEMPTS 5
-#define DS5_SAVED_CONNECT_RETRY_MS 2000
 #define DS5_RSSI_POLL_MS 2000
 
 #ifndef CONFIG_DS5_SCAN_SECONDS
@@ -144,7 +142,6 @@ typedef struct {
 static btstack_packet_callback_registration_t s_hci_cb_reg;
 static btstack_packet_callback_registration_t s_l2cap_cb_reg;
 static btstack_context_callback_registration_t s_cmd_drain_reg;
-static btstack_timer_source_t s_retry_timer;
 static btstack_timer_source_t s_rssi_timer;
 
 static QueueHandle_t s_cmd_queue;
@@ -161,7 +158,6 @@ static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
 static uint16_t s_control_cid;
 static uint16_t s_interrupt_cid;
 static bool s_stack_ready;
-static uint8_t s_saved_connect_attempts;
 
 /* send FIFO for the interrupt channel, drained on CAN_SEND_NOW */
 static send_element_t s_send_fifo[DS5_SEND_FIFO_DEPTH];
@@ -397,6 +393,39 @@ static void start_inquiry(void)
     STATE_SET(DS5_DUAL_BT_STATE_CONNECTING);
 }
 
+static void wait_for_controller_page(const char *reason)
+{
+    if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        return;
+    }
+
+    if (s_have_saved) {
+        bd_addr_copy(s_current_addr, s_saved_addr);
+    } else {
+        memset(s_current_addr, 0, sizeof(s_current_addr));
+    }
+    s_new_pair = false;
+    s_connect_from_saved = s_have_saved;
+    gap_connectable_control(1);
+    gap_discoverable_control(1);
+    led_status_set(DS5_LED_STATE_BT_CONNECTING);
+    ESP_LOGI(TAG, "Waiting for controller page reason=%s saved=%d",
+             reason != NULL ? reason : "auto",
+             s_have_saved ? 1 : 0);
+    STATE_SET(DS5_DUAL_BT_STATE_CONNECTING |
+              (s_have_saved ? (DS5_DUAL_BT_STATE_TARGET_FOUND |
+                               DS5_DUAL_BT_STATE_FROM_SAVED) : 0));
+}
+
+static void start_auto_connect(const char *reason)
+{
+    if (s_have_saved) {
+        wait_for_controller_page(reason);
+    } else {
+        start_inquiry();
+    }
+}
+
 static void create_connection_to(const bd_addr_t addr, bool from_saved)
 {
     bd_addr_copy(s_current_addr, addr);
@@ -410,30 +439,6 @@ static void create_connection_to(const bd_addr_t addr, bool from_saved)
               (from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0));
 }
 
-static void saved_connect_retry_handler(btstack_timer_source_t *ts)
-{
-    (void)ts;
-    if (s_acl_handle != HCI_CON_HANDLE_INVALID || !s_have_saved) {
-        return;
-    }
-    if (s_saved_connect_attempts >= DS5_SAVED_CONNECT_MAX_ATTEMPTS) {
-        ESP_LOGI(TAG, "Saved reconnect gave up, waiting for controller page");
-        return;
-    }
-    s_saved_connect_attempts++;
-    portENTER_CRITICAL(&s_state_mux);
-    s_state.bringup_attempts = s_saved_connect_attempts;
-    portEXIT_CRITICAL(&s_state_mux);
-    create_connection_to(s_saved_addr, true);
-}
-
-static void schedule_saved_connect_retry(void)
-{
-    btstack_run_loop_set_timer(&s_retry_timer, DS5_SAVED_CONNECT_RETRY_MS);
-    btstack_run_loop_set_timer_handler(&s_retry_timer, saved_connect_retry_handler);
-    btstack_run_loop_add_timer(&s_retry_timer);
-}
-
 static void rssi_poll_handler(btstack_timer_source_t *ts)
 {
     if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
@@ -441,6 +446,19 @@ static void rssi_poll_handler(btstack_timer_source_t *ts)
     }
     btstack_run_loop_set_timer(ts, DS5_RSSI_POLL_MS);
     btstack_run_loop_add_timer(ts);
+}
+
+static void open_hid_channels(const char *reason)
+{
+    if (s_acl_handle == HCI_CON_HANDLE_INVALID || s_control_cid != 0) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Open HID L2CAP channels reason=%s addr=%s",
+             reason != NULL ? reason : "?",
+             bd_addr_to_str(s_current_addr));
+    l2cap_create_channel(l2cap_packet_handler, s_current_addr,
+                         PSM_HID_CONTROL, MTU_CONTROL, &s_control_cid);
 }
 
 static void handle_disconnected(uint8_t reason)
@@ -499,14 +517,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         btstack_run_loop_add_timer(&s_rssi_timer);
 
 #if CONFIG_DS5_RAW_HIDP_AUTO_CONNECT
-        if (s_have_saved) {
-            /* Stay connectable so a paging controller wins the race, and
-             * actively try the saved address as well. */
-            s_saved_connect_attempts = 1;
-            create_connection_to(s_saved_addr, true);
-        } else {
-            start_inquiry();
-        }
+        start_auto_connect("boot-auto");
 #endif
         break;
     }
@@ -548,11 +559,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         }
         gap_connectable_control(1);
         gap_discoverable_control(1);
-#if CONFIG_DS5_RAW_HIDP_AUTO_CONNECT
-        if (!s_have_saved) {
-            start_inquiry();
-        }
-#endif
+        wait_for_controller_page("inquiry-complete-no-target");
         break;
 
     case HCI_EVENT_COMMAND_STATUS: {
@@ -564,9 +571,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             s_device_found = false;
             s_new_pair = false;
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
-            if (s_connect_from_saved) {
-                schedule_saved_connect_retry();
-            }
+            wait_for_controller_page("create-rejected");
         }
         if (opcode == HCI_OPCODE_HCI_INQUIRY_CANCEL) {
             s_inquiring = false;
@@ -591,9 +596,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             s_device_found = false;
             s_new_pair = false;
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
-            if (s_connect_from_saved) {
-                schedule_saved_connect_retry();
-            }
+            wait_for_controller_page("acl-failed");
         }
         break;
     }
@@ -655,12 +658,22 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         ESP_LOGI(TAG, "Encryption change status=0x%02X enabled=%u",
                  status, enabled);
         if (status == ERROR_CODE_SUCCESS && enabled && s_new_pair) {
-            ESP_LOGI(TAG, "Open HID L2CAP channels");
-            if (s_control_cid == 0) {
-                l2cap_create_channel(l2cap_packet_handler, s_current_addr,
-                                     PSM_HID_CONTROL, MTU_CONTROL,
-                                     &s_control_cid);
-            }
+            open_hid_channels("encryption-change");
+        }
+        break;
+    }
+
+    case HCI_EVENT_ENCRYPTION_CHANGE_V2: {
+        const uint8_t status =
+            hci_event_encryption_change_v2_get_status(packet);
+        const uint8_t enabled =
+            hci_event_encryption_change_v2_get_encryption_enabled(packet);
+        const uint8_t key_size =
+            hci_event_encryption_change_v2_get_encryption_key_size(packet);
+        ESP_LOGI(TAG, "Encryption change v2 status=0x%02X enabled=%u key_size=%u",
+                 status, enabled, key_size);
+        if (status == ERROR_CODE_SUCCESS && enabled && s_new_pair) {
+            open_hid_channels("encryption-change-v2");
         }
         break;
     }
@@ -674,6 +687,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
                  bd_addr_to_str(addr), (unsigned)cod);
         if ((cod & 0x000F00) == 0x000500) {
             bd_addr_copy(s_current_addr, addr);
+            s_new_pair = false;
             s_connect_from_saved =
                 s_have_saved && bd_addr_cmp(addr, s_saved_addr) == 0;
             gap_inquiry_stop();
@@ -768,7 +782,6 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
         } else if (psm == PSM_HID_INTERRUPT) {
             ESP_LOGI(TAG, "HID Interrupt opened cid=0x%04X", local_cid);
             s_interrupt_cid = local_cid;
-            s_saved_connect_attempts = 0;
             saved_addr_store(s_current_addr);
             led_status_set(DS5_LED_STATE_BT_CONNECTED);
             gap_connectable_control(0);
@@ -848,24 +861,15 @@ static void cmd_execute(const bt_cmd_t *cmd)
         if (cmd->has_bda) {
             create_connection_to(cmd->bda, false);
         } else if (cmd->mode == DS5_DUAL_BT_CONNECT_SAVED_ONLY) {
-            if (s_have_saved) {
-                s_saved_connect_attempts = 1;
-                create_connection_to(s_saved_addr, true);
-            }
+            wait_for_controller_page("saved-only");
         } else if (cmd->mode == DS5_DUAL_BT_CONNECT_SCAN_ONLY) {
             start_inquiry();
         } else { /* AUTO */
-            if (s_have_saved) {
-                s_saved_connect_attempts = 1;
-                create_connection_to(s_saved_addr, true);
-            } else {
-                start_inquiry();
-            }
+            start_auto_connect("auto");
         }
         break;
 
     case BT_CMD_DISCONNECT:
-        btstack_run_loop_remove_timer(&s_retry_timer);
         if (s_inquiring) {
             gap_inquiry_stop();
         }
