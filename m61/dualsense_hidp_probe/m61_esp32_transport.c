@@ -1795,8 +1795,63 @@ void m61_esp32_transport_reset_stats(void)
     memset(&s_transport.stats, 0, sizeof(s_transport.stats));
 }
 
+static const char *bt_flags_to_str(uint32_t flags, char *buf, size_t buf_len)
+{
+    typedef struct {
+        uint32_t bit;
+        const char *name;
+    } bt_flag_name_t;
+
+    static const bt_flag_name_t flag_names[] = {
+        { DS5_DUAL_BT_STATE_READY, "ready" },
+        { DS5_DUAL_BT_STATE_L2CAP_READY, "l2cap" },
+        { DS5_DUAL_BT_STATE_SDP_READY, "sdp" },
+        { DS5_DUAL_BT_STATE_CONTROL_OPEN, "ctl" },
+        { DS5_DUAL_BT_STATE_INTERRUPT_OPEN, "intr" },
+        { DS5_DUAL_BT_STATE_FULL_REPORT, "full" },
+        { DS5_DUAL_BT_STATE_CONNECTING, "connecting" },
+        { DS5_DUAL_BT_STATE_SDP_SEARCHING, "sdp_search" },
+        { DS5_DUAL_BT_STATE_TARGET_FOUND, "target" },
+        { DS5_DUAL_BT_STATE_HAVE_SAVED, "saved" },
+        { DS5_DUAL_BT_STATE_FROM_SAVED, "from_saved" },
+    };
+    size_t used = 0;
+
+    if (buf == NULL || buf_len == 0U) {
+        return "";
+    }
+
+    buf[0] = '\0';
+    if (flags == 0U) {
+        snprintf(buf, buf_len, "-");
+        return buf;
+    }
+
+    for (size_t i = 0; i < sizeof(flag_names) / sizeof(flag_names[0]); i++) {
+        if ((flags & flag_names[i].bit) == 0U) {
+            continue;
+        }
+        int written = snprintf(buf + used,
+                               buf_len - used,
+                               "%s%s",
+                               used == 0U ? "" : "|",
+                               flag_names[i].name);
+        if (written < 0) {
+            break;
+        }
+        if ((size_t)written >= buf_len - used) {
+            used = buf_len - 1U;
+            break;
+        }
+        used += (size_t)written;
+    }
+
+    return buf;
+}
+
 void m61_esp32_transport_print_stats(void)
 {
+    char bt_flags_buf[96];
     uint32_t time_sync_age_ms = s_transport.stats.time_sync_valid ?
         ((local_time_us() - s_transport.stats.last_time_sync_local_us) / 1000U) :
         0U;
@@ -1861,9 +1916,12 @@ void m61_esp32_transport_print_stats(void)
            (unsigned long)s_transport.stats.not_ready,
            (unsigned int)s_transport.stats.last_seq,
            s_transport.stats.last_error);
-    printf("esp32_bt state_rx=%lu flags=0x%08lx seq=%u err=%ld rssi=%d bringup=%u reconnect_fail=%u mtu=%u/%u bda=%02x:%02x:%02x:%02x:%02x:%02x\r\n",
+    printf("esp32_bt state_rx=%lu flags=0x%08lx(%s) seq=%u err=%ld rssi=%d bringup=%u reconnect_fail=%u mtu=%u/%u bda=%02x:%02x:%02x:%02x:%02x:%02x\r\n",
            (unsigned long)s_transport.stats.rx_bt_state,
            (unsigned long)s_transport.stats.peer_bt_flags,
+           bt_flags_to_str(s_transport.stats.peer_bt_flags,
+                           bt_flags_buf,
+                           sizeof(bt_flags_buf)),
            (unsigned int)s_transport.stats.peer_bt_state_seq,
            (long)s_transport.stats.peer_bt_last_error,
            (int)s_transport.stats.peer_bt_rssi,

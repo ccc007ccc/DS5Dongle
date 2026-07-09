@@ -118,6 +118,9 @@ static bool s_have_saved_bda;
 static bool s_target_found;
 static bool s_l2cap_ready;
 static bool s_sdp_ready;
+static bool s_hid_servers_started;
+static bool s_hid_servers_starting;
+static bool s_channel_mapping_uncertain;
 static bool s_connecting;
 static bool s_sdp_searching;
 static bool s_current_target_from_saved;
@@ -127,6 +130,7 @@ static bool s_auto_reconnect_enabled = true;
 static bool s_have_last_state;
 static bool s_have_full_report;
 static uint8_t s_bringup_attempts;
+static uint8_t s_hid_server_start_events;
 static uint8_t s_saved_reconnect_failures;
 static uint16_t s_state_seq;
 static int8_t s_last_rssi;
@@ -146,6 +150,8 @@ static bt_dualsense_raw_hidp_rx_cb_t s_rx_cb;
 static void *s_rx_cb_ctx;
 static bt_dualsense_raw_hidp_state_cb_t s_state_cb;
 static void *s_state_cb_ctx;
+static raw_hidp_channel_t *s_observed_control_channel;
+static raw_hidp_channel_t *s_observed_interrupt_channel;
 
 static raw_hidp_channel_t s_control = {
     .id = RAW_CH_CONTROL,
@@ -169,6 +175,9 @@ static void send_bringup(const char *reason);
 static void notify_state(void);
 static void stop_bringup_timer(void);
 static void schedule_persist_flush(void);
+static void start_hidp_servers(void);
+static void set_scan_availability(bool available, const char *reason);
+static bool ensure_hidp_servers_ready(const char *reason);
 
 static const char *bda_to_str(const esp_bd_addr_t bda, char *out, size_t out_len)
 {
@@ -187,6 +196,74 @@ static bool bda_is_zero(const esp_bd_addr_t bda)
 static bool bda_equal(const esp_bd_addr_t a, const esp_bd_addr_t b)
 {
     return a != NULL && b != NULL && memcmp(a, b, sizeof(esp_bd_addr_t)) == 0;
+}
+
+static const char *channel_role_name(raw_hidp_channel_id_t role)
+{
+    return role == RAW_CH_CONTROL ? "control" : "interrupt";
+}
+
+static void note_channel_role(raw_hidp_channel_t *channel,
+                              raw_hidp_channel_id_t role,
+                              const char *reason)
+{
+    raw_hidp_channel_t **role_slot =
+        role == RAW_CH_CONTROL ? &s_observed_control_channel : &s_observed_interrupt_channel;
+    raw_hidp_channel_t **opposite_slot =
+        role == RAW_CH_CONTROL ? &s_observed_interrupt_channel : &s_observed_control_channel;
+
+    if (channel == NULL) {
+        return;
+    }
+    if (*role_slot == channel) {
+        return;
+    }
+    if (*opposite_slot == channel) {
+        *opposite_slot = NULL;
+    }
+    if (*role_slot != NULL && *role_slot != channel) {
+        ESP_LOGW(TAG, "Raw HIDP remapped observed %s channel from %s to %s reason=%s",
+                 channel_role_name(role),
+                 (*role_slot)->name,
+                 channel->name,
+                 reason != NULL ? reason : "?");
+    } else {
+        ESP_LOGI(TAG, "Raw HIDP observed %s channel on %s reason=%s",
+                 channel_role_name(role),
+                 channel->name,
+                 reason != NULL ? reason : "?");
+    }
+
+    *role_slot = channel;
+    if (s_observed_control_channel != NULL &&
+        s_observed_interrupt_channel != NULL &&
+        s_observed_control_channel != s_observed_interrupt_channel) {
+        s_channel_mapping_uncertain = false;
+    }
+}
+
+static void forget_channel_role(raw_hidp_channel_t *channel)
+{
+    if (channel == NULL) {
+        return;
+    }
+    if (s_observed_control_channel == channel) {
+        s_observed_control_channel = NULL;
+    }
+    if (s_observed_interrupt_channel == channel) {
+        s_observed_interrupt_channel = NULL;
+    }
+}
+
+static raw_hidp_channel_t *preferred_channel_for_role(raw_hidp_channel_id_t role)
+{
+    raw_hidp_channel_t *observed =
+        role == RAW_CH_CONTROL ? s_observed_control_channel : s_observed_interrupt_channel;
+
+    if (observed != NULL && observed->connected) {
+        return observed;
+    }
+    return role == RAW_CH_CONTROL ? &s_control : &s_interrupt;
 }
 
 static bool blacklist_contains(const esp_bd_addr_t bda)
@@ -792,9 +869,12 @@ static void reset_hidp_channels(void)
 
     s_connecting = false;
     s_pending_step = RAW_CONNECT_IDLE;
+    s_channel_mapping_uncertain = false;
     clear_target_selection();
     s_have_last_state = false;
     s_have_full_report = false;
+    s_observed_control_channel = NULL;
+    s_observed_interrupt_channel = NULL;
     s_bringup_attempts = 0;
     dualsense_output_init(&s_output_ctx);
     notify_state();
@@ -832,9 +912,62 @@ static void note_connect_failure(void)
     notify_state();
 }
 
+static void set_scan_mode(bool connectable,
+                          bool discoverable,
+                          const char *reason)
+{
+    esp_err_t err = esp_bt_gap_set_scan_mode(connectable ? ESP_BT_CONNECTABLE :
+                                                           ESP_BT_NON_CONNECTABLE,
+                                             discoverable ? ESP_BT_GENERAL_DISCOVERABLE :
+                                                            ESP_BT_NON_DISCOVERABLE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Raw HIDP set scan mode connectable=%d discoverable=%d reason=%s failed: %s",
+                 connectable ? 1 : 0,
+                 discoverable ? 1 : 0,
+                 reason != NULL ? reason : "?",
+                 esp_err_to_name(err));
+        s_last_error = err;
+        return;
+    }
+
+    ESP_LOGI(TAG, "Raw HIDP scan mode connectable=%d discoverable=%d reason=%s",
+             connectable ? 1 : 0,
+             discoverable ? 1 : 0,
+             reason != NULL ? reason : "?");
+}
+
+static void set_scan_availability(bool available, const char *reason)
+{
+    set_scan_mode(available, available, reason);
+}
+
+static bool ensure_hidp_servers_ready(const char *reason)
+{
+    start_hidp_servers();
+    if (s_hid_servers_started) {
+        return true;
+    }
+
+    if (s_hid_servers_starting) {
+        ESP_LOGI(TAG, "Raw HIDP deferring %s until reconnect servers are ready",
+                 reason != NULL ? reason : "flow");
+    } else {
+        ESP_LOGW(TAG, "Raw HIDP reconnect servers unavailable while starting %s",
+                 reason != NULL ? reason : "flow");
+    }
+    notify_state();
+    return false;
+}
+
+static bool should_active_open_channels(void)
+{
+    return s_target_origin == RAW_TARGET_MANUAL ||
+           s_target_origin == RAW_TARGET_DISCOVERY;
+}
+
 static void maybe_start_flow(void)
 {
-    if (s_auto_reconnect_enabled && s_l2cap_ready && s_sdp_ready) {
+    if (s_auto_reconnect_enabled && s_l2cap_ready) {
         start_connect_flow();
     }
 }
@@ -845,11 +978,15 @@ static void start_discovery(void)
         return;
     }
 
+    if (!ensure_hidp_servers_ready("discovery")) {
+        return;
+    }
     s_target_found = false;
     s_current_target_from_saved = false;
     if (s_target_origin != RAW_TARGET_MANUAL) {
         s_target_origin = RAW_TARGET_NONE;
     }
+    set_scan_availability(true, "discovery");
     led_status_set(DS5_LED_STATE_BT_CONNECTING);
     ESP_LOGI(TAG, "Raw HIDP scanning for DualSense over Classic Bluetooth BR/EDR");
     esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY,
@@ -869,27 +1006,19 @@ static void start_sdp_or_connect(void)
     if (!s_target_found || s_connecting || s_sdp_searching) {
         return;
     }
-
-    esp_bt_uuid_t uuid = ESP_SDP_BUILD_BT_UUID16(DS5_HIDP_SERVICE_UUID);
-    esp_err_t err = esp_sdp_search_record(s_target_bda, uuid);
-    if (err == ESP_OK) {
-        s_sdp_searching = true;
-        ESP_LOGI(TAG, "Raw HIDP SDP search for HID service 0x%04X started",
-                 DS5_HIDP_SERVICE_UUID);
-        notify_state();
-        return;
-    }
-
-    ESP_LOGW(TAG, "Raw HIDP SDP search failed to start: %s; connecting known HID PSMs",
-             esp_err_to_name(err));
-    s_last_error = err;
-    notify_state();
+    char addr[18];
+    ESP_LOGI(TAG, "Raw HIDP opening known HID PSMs for %s",
+             bda_to_str(s_target_bda, addr, sizeof(addr)));
     connect_hidp_control();
 }
 
 static void start_connect_flow(void)
 {
     if (s_connecting || s_control.connected || s_interrupt.connected) {
+        return;
+    }
+
+    if (!ensure_hidp_servers_ready("connect-flow")) {
         return;
     }
 
@@ -933,9 +1062,11 @@ static void start_connect_flow(void)
         s_current_target_from_saved = true;
         s_target_origin = RAW_TARGET_SAVED_AUTO;
         char addr[18];
-        ESP_LOGI(TAG, "Raw HIDP trying saved DualSense address %s by explicit request",
+        ESP_LOGI(TAG, "Raw HIDP waiting for saved DualSense %s to reconnect by explicit request",
                  bda_to_str(s_target_bda, addr, sizeof(addr)));
-        start_sdp_or_connect();
+        set_scan_availability(true, "saved-only-wait");
+        led_status_set(DS5_LED_STATE_BT_CONNECTING);
+        notify_state();
         return;
     }
 
@@ -953,9 +1084,11 @@ static void start_connect_flow(void)
         s_current_target_from_saved = true;
         s_target_origin = RAW_TARGET_SAVED_AUTO;
         char addr[18];
-        ESP_LOGI(TAG, "Raw HIDP trying saved DualSense address %s",
+        ESP_LOGI(TAG, "Raw HIDP waiting for saved DualSense %s to reconnect",
                  bda_to_str(s_target_bda, addr, sizeof(addr)));
-        start_sdp_or_connect();
+        set_scan_availability(true, "saved-auto-wait");
+        led_status_set(DS5_LED_STATE_BT_CONNECTING);
+        notify_state();
         return;
     }
 
@@ -1131,12 +1264,12 @@ int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode)
         }
     }
 
-    if (!s_l2cap_ready || !s_sdp_ready) {
+    if (!s_l2cap_ready) {
         notify_state();
-        return -EAGAIN;
+        return 0;
     }
 
-    if (bda != NULL) {
+    if (should_active_open_channels()) {
         start_sdp_or_connect();
     } else {
         start_connect_flow();
@@ -1151,6 +1284,7 @@ static void close_channel(raw_hidp_channel_t *channel)
     }
 
     close(channel->fd);
+    forget_channel_role(channel);
     channel->fd = -1;
     channel->connected = false;
     channel->handle = 0;
@@ -1171,6 +1305,8 @@ int bt_dualsense_raw_hidp_disconnect(bool allow_reconnect)
     close_channel(&s_interrupt);
     close_channel(&s_control);
     reset_hidp_channels();
+    set_scan_availability(allow_reconnect,
+                          allow_reconnect ? "disconnect-reconnect" : "disconnect-stop");
     led_status_set(allow_reconnect ? DS5_LED_STATE_BT_CONNECTING : DS5_LED_STATE_BOOT_OK);
     if (allow_reconnect) {
         start_connect_flow();
@@ -1202,6 +1338,17 @@ static raw_hidp_channel_t *pending_channel(void)
     }
 }
 
+static raw_hidp_channel_t *incoming_channel(void)
+{
+    if (!s_control.connected) {
+        return &s_control;
+    }
+    if (!s_interrupt.connected) {
+        return &s_interrupt;
+    }
+    return NULL;
+}
+
 static int raw_write(raw_hidp_channel_t *channel, const uint8_t *data, size_t len)
 {
     if (channel == NULL || !channel->connected || channel->fd < 0) {
@@ -1223,30 +1370,25 @@ static int raw_write(raw_hidp_channel_t *channel, const uint8_t *data, size_t le
     return 0;
 }
 
-static int send_control_byte(uint8_t byte)
-{
-    return raw_write(&s_control, &byte, 1);
-}
-
 static int send_get_feature(uint8_t report_id)
 {
     uint8_t packet[] = {
         (uint8_t)(DS5_HIDP_GET_REPORT | DS5_HIDP_REPORT_TYPE_FEATURE),
         report_id,
     };
-    return raw_write(&s_control, packet, sizeof(packet));
-}
 
-static int send_set_report_output(const uint8_t *report, size_t report_len)
-{
-    uint8_t packet[1 + DS5_OUTPUT_REPORT32_BT_LEN];
-    if (report == NULL || report_len > DS5_OUTPUT_REPORT32_BT_LEN) {
-        return -EINVAL;
+    if (s_channel_mapping_uncertain &&
+        s_observed_control_channel == NULL &&
+        s_control.connected &&
+        s_interrupt.connected) {
+        int ctl = raw_write(&s_control, packet, sizeof(packet));
+        int intr = raw_write(&s_interrupt, packet, sizeof(packet));
+        return ctl == 0 || intr == 0 ? 0 : ctl;
     }
 
-    packet[0] = (uint8_t)(DS5_HIDP_SET_REPORT | DS5_HIDP_REPORT_TYPE_OUTPUT);
-    memcpy(packet + 1, report, report_len);
-    return raw_write(&s_control, packet, report_len + 1);
+    return raw_write(preferred_channel_for_role(RAW_CH_CONTROL),
+                     packet,
+                     sizeof(packet));
 }
 
 static int send_set_report_feature(uint8_t report_id, const uint8_t *data, size_t len)
@@ -1262,7 +1404,18 @@ static int send_set_report_feature(uint8_t report_id, const uint8_t *data, size_
     if (len != 0) {
         memcpy(packet + 2, data, len);
     }
-    return raw_write(&s_control, packet, len + 2U);
+    if (s_channel_mapping_uncertain &&
+        s_observed_control_channel == NULL &&
+        s_control.connected &&
+        s_interrupt.connected) {
+        int ctl = raw_write(&s_control, packet, len + 2U);
+        int intr = raw_write(&s_interrupt, packet, len + 2U);
+        return ctl == 0 || intr == 0 ? 0 : ctl;
+    }
+
+    return raw_write(preferred_channel_for_role(RAW_CH_CONTROL),
+                     packet,
+                     len + 2U);
 }
 
 static int send_data_output(const uint8_t *report, size_t report_len)
@@ -1274,7 +1427,19 @@ static int send_data_output(const uint8_t *report, size_t report_len)
 
     packet[0] = DS5_HIDP_DATA_OUTPUT;
     memcpy(packet + 1, report, report_len);
-    return raw_write(&s_interrupt, packet, report_len + 1);
+
+    if (s_channel_mapping_uncertain &&
+        s_observed_interrupt_channel == NULL &&
+        s_control.connected &&
+        s_interrupt.connected) {
+        int ctl = raw_write(&s_control, packet, report_len + 1);
+        int intr = raw_write(&s_interrupt, packet, report_len + 1);
+        return ctl == 0 || intr == 0 ? 0 : ctl;
+    }
+
+    return raw_write(preferred_channel_for_role(RAW_CH_INTERRUPT),
+                     packet,
+                     report_len + 1);
 }
 
 bool bt_dualsense_raw_hidp_ready(void)
@@ -1337,6 +1502,7 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
 
     clear_target_selection();
     s_last_error = first_error;
+    set_scan_availability(false, "forget");
     led_status_set(DS5_LED_STATE_BOOT_OK);
     notify_state();
 
@@ -1389,21 +1555,11 @@ void bt_dualsense_raw_hidp_set_state_callback(bt_dualsense_raw_hidp_state_cb_t c
 
 static void send_output_init_reports(void)
 {
-    uint8_t report31[DS5_OUTPUT_REPORT31_BT_LEN];
     uint8_t report32[DS5_OUTPUT_REPORT32_BT_LEN];
 
-    if (dualsense_output_make_report31(&s_output_ctx, report31, sizeof(report31))) {
-        ESP_LOGI(TAG, "Raw HIDP DS5Dongle report 0x31 DATA/SET_REPORT output attempt");
-        send_data_output(report31, sizeof(report31));
-        send_set_report_output(report31, sizeof(report31));
-    } else {
-        ESP_LOGE(TAG, "Raw HIDP report 0x31 build failed");
-    }
-
     if (dualsense_output_make_report32(&s_output_ctx, report32, sizeof(report32))) {
-        ESP_LOGI(TAG, "Raw HIDP DS5Dongle report 0x32 DATA/SET_REPORT output attempt");
+        ESP_LOGI(TAG, "Raw HIDP DS5Dongle report 0x32 DATA output init");
         send_data_output(report32, sizeof(report32));
-        send_set_report_output(report32, sizeof(report32));
     } else {
         ESP_LOGE(TAG, "Raw HIDP report 0x32 build failed");
     }
@@ -1470,7 +1626,6 @@ static void send_bringup(const char *reason)
              (unsigned)CONFIG_DS5_BRINGUP_RETRIES,
              reason != NULL ? reason : "event");
 
-    send_control_byte(DS5_HIDP_SET_PROTOCOL_REPORT);
     static const uint8_t feature_ids[] = {0x09, 0x20, 0x22, 0x05, 0x70};
     for (size_t i = 0; i < sizeof(feature_ids); i++) {
         ESP_LOGI(TAG, "Raw HIDP requested feature report 0x%02X", feature_ids[i]);
@@ -1481,7 +1636,7 @@ static void send_bringup(const char *reason)
     schedule_bringup_retry();
 }
 
-static void handle_input_report(const uint8_t *data, size_t len)
+static void handle_input_report(raw_hidp_channel_t *channel, const uint8_t *data, size_t len)
 {
     dualsense_state_t state;
     dualsense_parse_result_t parse;
@@ -1499,6 +1654,8 @@ static void handle_input_report(const uint8_t *data, size_t len)
         }
         return;
     }
+
+    note_channel_role(channel, RAW_CH_INTERRUPT, "input-report");
 
     if (state.is_full_report && !s_have_full_report) {
         s_have_full_report = true;
@@ -1544,10 +1701,13 @@ static void rx_task(void *arg)
 
         ESP_LOGI(TAG, "Raw HIDP %s rx len=%d first=0x%02X",
                  channel->name, len, data[0]);
-        if (channel->id == RAW_CH_INTERRUPT) {
-            handle_input_report(data, (size_t)len);
-        } else if (s_rx_cb != NULL && len >= 3 && data[0] == 0xA3) {
-            s_rx_cb(data, (size_t)len, esp_timer_get_time(), s_rx_cb_ctx);
+        if (len >= 3 && data[0] == 0xA3) {
+            note_channel_role(channel, RAW_CH_CONTROL, "feature-report");
+            if (s_rx_cb != NULL) {
+                s_rx_cb(data, (size_t)len, esp_timer_get_time(), s_rx_cb_ctx);
+            }
+        } else {
+            handle_input_report(channel, data, (size_t)len);
         }
     }
 
@@ -1573,6 +1733,37 @@ static void start_rx_task(raw_hidp_channel_t *channel)
     }
 }
 
+static void start_hidp_servers(void)
+{
+    if (s_hid_servers_started || s_hid_servers_starting) {
+        return;
+    }
+
+    esp_err_t ctl_err = esp_bt_l2cap_start_srv(ESP_BT_L2CAP_SEC_AUTHENTICATE,
+                                               DS5_HIDP_PSM_CONTROL);
+    if (ctl_err != ESP_OK) {
+        ESP_LOGE(TAG, "Raw HIDP start control server failed: %s",
+                 esp_err_to_name(ctl_err));
+        s_last_error = ctl_err;
+        return;
+    }
+
+    esp_err_t int_err = esp_bt_l2cap_start_srv(ESP_BT_L2CAP_SEC_AUTHENTICATE,
+                                               DS5_HIDP_PSM_INTERRUPT);
+    if (int_err != ESP_OK) {
+        ESP_LOGE(TAG, "Raw HIDP start interrupt server failed: %s",
+                 esp_err_to_name(int_err));
+        s_last_error = int_err;
+        (void)esp_bt_l2cap_stop_srv(DS5_HIDP_PSM_CONTROL);
+        return;
+    }
+
+    s_hid_servers_starting = true;
+    s_hid_server_start_events = 0;
+    ESP_LOGI(TAG, "Raw HIDP starting HID reconnect servers on PSM 0x%04X/0x%04X",
+             DS5_HIDP_PSM_CONTROL, DS5_HIDP_PSM_INTERRUPT);
+}
+
 static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_t *param)
 {
     switch (event) {
@@ -1585,6 +1776,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
                 s_last_error = err;
             } else {
                 s_l2cap_ready = true;
+                start_hidp_servers();
                 maybe_start_flow();
             }
         } else {
@@ -1607,7 +1799,9 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         break;
 
     case ESP_BT_L2CAP_OPEN_EVT: {
-        raw_hidp_channel_t *channel = pending_channel();
+        raw_hidp_channel_t *requested_channel = pending_channel();
+        raw_hidp_channel_t *channel = requested_channel;
+        bool outgoing_open = requested_channel != NULL;
         bool blocked_blacklisted = should_block_blacklisted_peer(param->open.rem_bda);
         ESP_LOGI(TAG,
                  "Raw HIDP L2CAP open status=%d handle=0x%" PRIX32 " fd=%d mtu=%" PRId32,
@@ -1615,6 +1809,10 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
                  param->open.handle,
                  param->open.fd,
                  param->open.tx_mtu);
+
+        if (!outgoing_open && param->open.status == ESP_BT_L2CAP_SUCCESS) {
+            channel = incoming_channel();
+        }
 
         if (blocked_blacklisted) {
             char addr[18];
@@ -1628,7 +1826,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             break;
         }
 
-        if (param->open.status != ESP_BT_L2CAP_SUCCESS || channel == NULL) {
+        if (param->open.status != ESP_BT_L2CAP_SUCCESS) {
             s_last_error = param->open.status;
             note_connect_failure();
             s_connecting = false;
@@ -1637,19 +1835,49 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             schedule_reconnect();
             break;
         }
+        if (channel == NULL) {
+            if (param->open.fd >= 0) {
+                close(param->open.fd);
+            }
+            s_last_error = -EALREADY;
+            ESP_LOGW(TAG, "Raw HIDP unexpected extra L2CAP channel open handle=0x%" PRIX32,
+                     param->open.handle);
+            notify_state();
+            break;
+        }
 
         channel->fd = param->open.fd;
         channel->handle = param->open.handle;
         channel->tx_mtu = param->open.tx_mtu;
         channel->connected = true;
+        if (outgoing_open) {
+            note_channel_role(channel, channel->id, "outgoing-open");
+        } else {
+            s_channel_mapping_uncertain = true;
+        }
         start_rx_task(channel);
-        ESP_LOGI(TAG, "Raw HIDP %s connected: fd=%d tx_mtu=%" PRId32,
-                 channel->name, channel->fd, channel->tx_mtu);
+        ESP_LOGI(TAG, "Raw HIDP %s connected via %s open: fd=%d tx_mtu=%" PRId32,
+                 channel->name,
+                 outgoing_open ? "outgoing" : "incoming",
+                 channel->fd,
+                 channel->tx_mtu);
         s_last_error = 0;
 
         s_pending_step = RAW_CONNECT_IDLE;
         s_connecting = false;
-        if (channel->id == RAW_CH_CONTROL) {
+        if (!outgoing_open &&
+            channel->id == RAW_CH_CONTROL &&
+            s_current_target_from_saved &&
+            s_target_origin == RAW_TARGET_SAVED_AUTO &&
+            !s_interrupt.connected) {
+            char addr[18];
+            ESP_LOGI(TAG, "Raw HIDP saved reconnect accepted first incoming channel from %s; actively opening interrupt PSM",
+                     bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
+            connect_hidp_interrupt();
+        } else if (outgoing_open &&
+                   channel->id == RAW_CH_CONTROL &&
+                   should_active_open_channels() &&
+                   !s_interrupt.connected) {
             connect_hidp_interrupt();
         } else if (s_control.connected && s_interrupt.connected) {
             save_bda_if_needed(param->open.rem_bda);
@@ -1675,6 +1903,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             s_connect_mode = RAW_CONNECT_MODE_AUTO;
             s_current_target_from_saved = false;
             s_saved_reconnect_failures = 0;
+            set_scan_availability(false, "hid-ready");
             led_status_set(DS5_LED_STATE_BT_CONNECTED);
             send_bringup("l2cap-open");
         }
@@ -1693,9 +1922,12 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
                  param->close.async ? 1 : 0,
                  channel != NULL ? channel->name : "?");
         if (channel != NULL) {
+            forget_channel_role(channel);
             channel->connected = false;
             channel->fd = -1;
             channel->handle = 0;
+            s_have_full_report = false;
+            s_channel_mapping_uncertain = false;
         }
         s_last_error = param->close.status;
         if (failed_pending_connect) {
@@ -1704,6 +1936,7 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
             s_pending_step = RAW_CONNECT_IDLE;
         }
         stop_bringup_timer();
+        set_scan_availability(s_auto_reconnect_enabled, "l2cap-close");
         led_status_set(DS5_LED_STATE_BT_CONNECTING);
         notify_state();
         schedule_reconnect();
@@ -1715,7 +1948,36 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         break;
 
     case ESP_BT_L2CAP_START_EVT:
+        ESP_LOGI(TAG, "Raw HIDP L2CAP server start status=%d handle=0x%" PRIX32 " sec_id=%u",
+                 param->start.status,
+                 param->start.handle,
+                 (unsigned)param->start.sec_id);
+        if (param->start.status != ESP_BT_L2CAP_SUCCESS) {
+            s_hid_servers_started = false;
+            s_hid_servers_starting = false;
+            s_hid_server_start_events = 0;
+            s_last_error = param->start.status;
+            (void)esp_bt_l2cap_stop_all_srv();
+            notify_state();
+            schedule_reconnect();
+            break;
+        }
+        if (s_hid_servers_starting && s_hid_server_start_events < UINT8_MAX) {
+            s_hid_server_start_events++;
+        }
+        if (s_hid_servers_starting && s_hid_server_start_events >= 2U) {
+            s_hid_servers_started = true;
+            s_hid_servers_starting = false;
+            ESP_LOGI(TAG, "Raw HIDP listening for incoming HID reconnect on PSM 0x%04X/0x%04X",
+                     DS5_HIDP_PSM_CONTROL, DS5_HIDP_PSM_INTERRUPT);
+            maybe_start_flow();
+        }
+        break;
+
     case ESP_BT_L2CAP_SRV_STOP_EVT:
+        ESP_LOGI(TAG, "Raw HIDP L2CAP server stop status=%d psm=0x%02X",
+                 param->srv_stop.status,
+                 (unsigned)param->srv_stop.psm);
         break;
 
     default:
@@ -2004,8 +2266,10 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
     memset(pin_code, 0, sizeof(pin_code));
     memcpy(pin_code, "0000", 4);
     ESP_ERROR_CHECK(esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code));
-    ESP_ERROR_CHECK(esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE,
-                                             ESP_BT_NON_DISCOVERABLE));
+    // Match upstream reconnect behavior: stay connectable and discoverable as
+    // soon as GAP is ready so a bonded controller can find and page us during
+    // early boot, before higher layers start probing state.
+    set_scan_availability(true, "startup");
 
     load_saved_bda();
     load_blacklist();

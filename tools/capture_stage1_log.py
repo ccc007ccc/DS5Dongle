@@ -28,9 +28,16 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--reset", action="store_true", help="pulse EN/RST through RTS before capture")
     args = parser.parse_args(argv)
 
-    with serial.Serial(args.port, baudrate=args.baud, timeout=0.2, rtscts=False, dsrdtr=False) as ser:
-        ser.setDTR(False)
-        ser.setRTS(False)
+    ser = serial.Serial()
+    ser.port = args.port
+    ser.baudrate = args.baud
+    ser.timeout = 0.2
+    ser.rtscts = False
+    ser.dsrdtr = False
+    ser.dtr = False
+    ser.rts = False
+
+    with ser:
         if args.reset:
             hard_reset(ser)
         ser.reset_input_buffer()
