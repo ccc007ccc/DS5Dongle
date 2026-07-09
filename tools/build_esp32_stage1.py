@@ -49,16 +49,6 @@ def tool_path_entries(idf_tools_path: Path, py_env: Path) -> list[str]:
     return [str(path) for path in entries if path.is_dir()]
 
 
-def apply_hidp_l2cap_patch(idf_path: Path) -> int:
-    patcher = ROOT / "tools" / "patch_esp_idf_hidp_l2cap.py"
-    if not patcher.is_file():
-        print(f"missing ESP-IDF HIDP L2CAP patcher: {patcher}", file=sys.stderr)
-        return 1
-    cmd = [sys.executable, str(patcher), "--idf-path", str(idf_path)]
-    print("running:", " ".join(cmd), flush=True)
-    return subprocess.run(cmd, cwd=ROOT).returncode
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--idf-path", type=Path, default=DEFAULT_IDF_PATH)
@@ -110,10 +100,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.backend in ("raw-hidp", "dual-chip"):
-        patch_result = apply_hidp_l2cap_patch(args.idf_path)
-        if patch_result != 0:
-            return patch_result
-
         backend_defaults = (
             ROOT / "sdkconfig.raw_hidp.defaults"
             if args.backend == "raw-hidp"

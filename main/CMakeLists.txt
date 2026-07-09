@@ -1,8 +1,7 @@
 idf_component_register(
     SRCS
         "app_main.c"
-        "bt_dualsense_host.c"
-        "bt_dualsense_raw_hidp.c"
+        "bt_ds5_btstack.c"
         "dual_chip_spi_proto.c"
         "dualsense_output.c"
         "dualsense_parser.c"
@@ -11,7 +10,7 @@ idf_component_register(
     INCLUDE_DIRS
         "."
     REQUIRES
-        bt
+        btstack
         esp_driver_gpio
         esp_driver_spi
         esp_timer

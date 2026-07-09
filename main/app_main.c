@@ -1,4 +1,3 @@
-#include "bt_dualsense_host.h"
 #include "bt_dualsense_raw_hidp.h"
 #include "esp32_dual_chip_spi.h"
 #include "led_status.h"
@@ -9,7 +8,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
-static const char *TAG = "ds5_stage1";
+static const char *TAG = "ds5_main";
 
 static void init_nvs(void)
 {
@@ -23,20 +22,13 @@ static void init_nvs(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Stage 1 firmware: ESP32 Classic Bluetooth host for DualSense");
-    ESP_LOGI(TAG, "Scope guard: BL618 USB and ESP32 UART forwarding are intentionally not built in this stage");
+    ESP_LOGI(TAG, "DS5Dongle ESP32: BTstack DualSense host + SPI coprocessor");
 
     ESP_ERROR_CHECK(led_status_init());
     led_status_set(DS5_LED_STATE_BOOT_OK);
 
     init_nvs();
-#if CONFIG_DS5_BT_BACKEND_RAW_HIDP || CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR
-    ESP_LOGI(TAG, "Bluetooth backend: raw Classic L2CAP HIDP");
     ESP_ERROR_CHECK(bt_dualsense_raw_hidp_start());
-#else
-    ESP_LOGI(TAG, "Bluetooth backend: ESP-IDF HID Host API");
-    ESP_ERROR_CHECK(bt_dualsense_host_start());
-#endif
     ESP_ERROR_CHECK(esp32_dual_chip_spi_start());
 
     while (true) {

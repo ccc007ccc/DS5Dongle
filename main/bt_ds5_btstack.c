@@ -1,0 +1,1089 @@
+/*
+ * bt_ds5_btstack.c — DualSense Classic Bluetooth host on BTstack (ESP32 VHCI).
+ *
+ * Port of the reference implementation awalol/DS5Dongle src/bt.cpp (Pico W +
+ * BTstack) to the ESP32 dual-chip firmware. Implements the existing
+ * bt_dualsense_raw_hidp.h API so the SPI coprocessor bridge keeps working.
+ *
+ * Threading: everything Bluetooth runs on the BTstack FreeRTOS run-loop task.
+ * Public API calls coming from SPI tasks are marshalled through a command
+ * queue drained via btstack_run_loop_execute_on_main_thread().
+ */
+
+#include "bt_dualsense_raw_hidp.h"
+
+#include "sdkconfig.h"
+
+#include <errno.h>
+#include <string.h>
+
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "nvs.h"
+
+#include "btstack_config.h"
+#include "btstack_event.h"
+#include "btstack_run_loop.h"
+#include "btstack_port_esp32.h"
+#include "classic/sdp_server.h"
+#include "gap.h"
+#include "hci.h"
+#include "l2cap.h"
+
+#include "dual_chip_spi_proto.h"
+#include "led_status.h"
+
+#define MTU_CONTROL 672
+#define MTU_INTERRUPT 672
+
+#define DS5_HIDP_DATA_INPUT 0xA1
+#define DS5_HIDP_DATA_OUTPUT 0xA2
+#define DS5_HIDP_DATA_FEATURE 0xA3
+#define DS5_HIDP_GET_REPORT_FEATURE 0x43
+#define DS5_HIDP_SET_REPORT_FEATURE 0x53
+
+#define DS5_SEND_FIFO_DEPTH 10
+#define DS5_CMD_QUEUE_DEPTH 12
+#define DS5_SAVED_CONNECT_MAX_ATTEMPTS 5
+#define DS5_SAVED_CONNECT_RETRY_MS 2000
+#define DS5_RSSI_POLL_MS 2000
+
+#ifndef CONFIG_DS5_SCAN_SECONDS
+#define CONFIG_DS5_SCAN_SECONDS 30
+#endif
+
+#ifndef CONFIG_DS5_RAW_HIDP_AUTO_CONNECT
+#define CONFIG_DS5_RAW_HIDP_AUTO_CONNECT 0
+#endif
+
+static const char *TAG = "ds5_bt";
+
+static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
+                                 uint8_t *packet, uint16_t size);
+
+/* ---------------------------------------------------------------- CRC32 --
+ * Matches awalol/DS5Dongle src/utils.h: standard reflected CRC-32
+ * (poly 0xEDB88320). The seeds are the CRC state after hashing the single
+ * HIDP prefix byte (0xA2 for output reports, 0x53 for SET_REPORT feature).
+ */
+#define DS5_CRC_SEED_OUTPUT 0xEADA2D49UL  /* seed equivalent to prefix 0xA2 */
+#define DS5_CRC_SEED_FEATURE 0x2060EFC3UL /* seed equivalent to prefix 0x53 */
+
+static uint32_t s_crc_table[256];
+
+static void crc32_table_init(void)
+{
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int bit = 0; bit < 8; bit++) {
+            c = (c >> 1) ^ (0xEDB88320UL & (0UL - (c & 1UL)));
+        }
+        s_crc_table[i] = c;
+    }
+}
+
+static uint32_t crc32_seeded(const uint8_t *data, size_t len, uint32_t seed)
+{
+    uint32_t crc = ~seed;
+    while (len--) {
+        crc = (crc >> 8) ^ s_crc_table[(crc ^ *data++) & 0xFF];
+    }
+    return ~crc;
+}
+
+/* CRC over the report bytes (after the 0xA2 prefix); stored little-endian in
+ * the last 4 bytes of the report, exactly like fill_output_report_checksum. */
+static void fill_output_report_checksum(uint8_t *report, size_t len)
+{
+    uint32_t crc = crc32_seeded(report, len - 4, DS5_CRC_SEED_OUTPUT);
+    report[len - 4] = (uint8_t)(crc >> 0);
+    report[len - 3] = (uint8_t)(crc >> 8);
+    report[len - 2] = (uint8_t)(crc >> 16);
+    report[len - 1] = (uint8_t)(crc >> 24);
+}
+
+static void fill_feature_report_checksum(uint8_t *data, size_t len)
+{
+    uint32_t crc = crc32_seeded(data, len - 4, DS5_CRC_SEED_FEATURE);
+    data[len - 4] = (uint8_t)(crc >> 0);
+    data[len - 3] = (uint8_t)(crc >> 8);
+    data[len - 2] = (uint8_t)(crc >> 16);
+    data[len - 1] = (uint8_t)(crc >> 24);
+}
+
+/* ------------------------------------------------------------- BT state -- */
+
+typedef struct {
+    size_t len;
+    uint8_t data[MTU_INTERRUPT + 1];
+} send_element_t;
+
+typedef enum {
+    BT_CMD_CONNECT = 1,
+    BT_CMD_DISCONNECT,
+    BT_CMD_FORGET,
+    BT_CMD_SEND_REPORT,
+    BT_CMD_FEATURE_GET,
+    BT_CMD_FEATURE_SET,
+} bt_cmd_kind_t;
+
+typedef struct {
+    uint8_t kind;
+    uint8_t mode;      /* CONNECT: DS5_DUAL_BT_CONNECT_*  FORGET: flags */
+    bool flag;         /* DISCONNECT: allow_reconnect */
+    bool has_bda;
+    uint8_t bda[6];
+    uint16_t len;      /* SEND/FEATURE_SET payload length */
+    uint8_t report_id; /* FEATURE_GET / FEATURE_SET */
+    uint8_t data[MTU_INTERRUPT];
+} bt_cmd_t;
+
+static btstack_packet_callback_registration_t s_hci_cb_reg;
+static btstack_packet_callback_registration_t s_l2cap_cb_reg;
+static btstack_context_callback_registration_t s_cmd_drain_reg;
+static btstack_timer_source_t s_retry_timer;
+static btstack_timer_source_t s_rssi_timer;
+
+static QueueHandle_t s_cmd_queue;
+static volatile bool s_cmd_drain_pending;
+
+static bd_addr_t s_current_addr;
+static bd_addr_t s_saved_addr;
+static bool s_have_saved;
+static bool s_device_found;
+static bool s_new_pair; /* we initiated: create L2CAP channels ourselves */
+static bool s_inquiring;
+static bool s_connect_from_saved;
+static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
+static uint16_t s_control_cid;
+static uint16_t s_interrupt_cid;
+static bool s_stack_ready;
+static uint8_t s_saved_connect_attempts;
+
+/* send FIFO for the interrupt channel, drained on CAN_SEND_NOW */
+static send_element_t s_send_fifo[DS5_SEND_FIFO_DEPTH];
+static uint8_t s_send_head;
+static uint8_t s_send_count;
+
+/* state snapshot shared with SPI tasks */
+static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
+static bt_dualsense_raw_hidp_state_t s_state;
+
+static bt_dualsense_raw_hidp_rx_cb_t s_rx_cb;
+static void *s_rx_cb_ctx;
+static bt_dualsense_raw_hidp_state_cb_t s_state_cb;
+static void *s_state_cb_ctx;
+
+void bt_dualsense_raw_hidp_note_tx(const uint8_t *data, size_t len, int status);
+
+/* ------------------------------------------------------------ NVS store -- */
+
+#define DS5_NVS_NAMESPACE "ds5bt"
+#define DS5_NVS_KEY_ADDR "saved_bda"
+
+static void saved_addr_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(DS5_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    size_t len = sizeof(s_saved_addr);
+    if (nvs_get_blob(h, DS5_NVS_KEY_ADDR, s_saved_addr, &len) == ESP_OK &&
+        len == sizeof(s_saved_addr)) {
+        s_have_saved = true;
+        ESP_LOGI(TAG, "Saved controller: %s", bd_addr_to_str(s_saved_addr));
+    }
+    nvs_close(h);
+}
+
+static void saved_addr_store(const bd_addr_t addr)
+{
+    if (s_have_saved && bd_addr_cmp(addr, s_saved_addr) == 0) {
+        return;
+    }
+    nvs_handle_t h;
+    if (nvs_open(DS5_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGE(TAG, "NVS open failed, controller address not saved");
+        return;
+    }
+    if (nvs_set_blob(h, DS5_NVS_KEY_ADDR, addr, sizeof(bd_addr_t)) == ESP_OK) {
+        nvs_commit(h);
+        bd_addr_copy(s_saved_addr, addr);
+        s_have_saved = true;
+        ESP_LOGI(TAG, "Controller address saved: %s", bd_addr_to_str(addr));
+    }
+    nvs_close(h);
+}
+
+static void saved_addr_erase(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(DS5_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, DS5_NVS_KEY_ADDR);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    s_have_saved = false;
+    memset(s_saved_addr, 0, sizeof(s_saved_addr));
+    ESP_LOGI(TAG, "Saved controller address erased");
+}
+
+/* -------------------------------------------------------- state reports -- */
+
+static void state_publish_locked_fields(uint32_t set, uint32_t clear, int32_t err)
+{
+    bt_dualsense_raw_hidp_state_t snapshot;
+
+    portENTER_CRITICAL(&s_state_mux);
+    s_state.flags = (s_state.flags | set) & ~clear;
+    if (s_have_saved) {
+        s_state.flags |= DS5_DUAL_BT_STATE_HAVE_SAVED;
+    } else {
+        s_state.flags &= ~DS5_DUAL_BT_STATE_HAVE_SAVED;
+    }
+    if (err != 0) {
+        s_state.last_error = err;
+    }
+    s_state.control_mtu = s_control_cid ? MTU_CONTROL : 0;
+    s_state.interrupt_mtu = s_interrupt_cid ? MTU_INTERRUPT : 0;
+    memcpy(s_state.bda, s_current_addr, sizeof(s_state.bda));
+    s_state.state_seq++;
+    snapshot = s_state;
+    portEXIT_CRITICAL(&s_state_mux);
+
+    if (s_state_cb != NULL) {
+        s_state_cb(&snapshot, esp_timer_get_time(), s_state_cb_ctx);
+    }
+}
+
+#define STATE_SET(bits) state_publish_locked_fields((bits), 0, 0)
+#define STATE_CLEAR(bits) state_publish_locked_fields(0, (bits), 0)
+
+/* ------------------------------------------------------------- TX paths -- */
+
+static bool send_fifo_push(const uint8_t *data, size_t len)
+{
+    if (s_send_count >= DS5_SEND_FIFO_DEPTH || len > sizeof(s_send_fifo[0].data)) {
+        return false;
+    }
+    send_element_t *slot =
+        &s_send_fifo[(s_send_head + s_send_count) % DS5_SEND_FIFO_DEPTH];
+    memcpy(slot->data, data, len);
+    slot->len = len;
+    s_send_count++;
+    return true;
+}
+
+static bool send_fifo_pop(send_element_t *out)
+{
+    if (s_send_count == 0) {
+        return false;
+    }
+    *out = s_send_fifo[s_send_head];
+    s_send_head = (s_send_head + 1) % DS5_SEND_FIFO_DEPTH;
+    s_send_count--;
+    return true;
+}
+
+static void send_fifo_clear(void)
+{
+    s_send_head = 0;
+    s_send_count = 0;
+}
+
+/* bt_write() from the reference: 0xA2 prefix + report + CRC32 in the last
+ * four bytes of the report, queued for CAN_SEND_NOW on the interrupt cid. */
+static int bt_write_report(const uint8_t *report, size_t len)
+{
+    if (s_interrupt_cid == 0) {
+        return -ENOTCONN;
+    }
+    if (len < 5 || len + 1 > sizeof(s_send_fifo[0].data)) {
+        return -EINVAL;
+    }
+
+    uint8_t packet[MTU_INTERRUPT + 1];
+    packet[0] = DS5_HIDP_DATA_OUTPUT;
+    memcpy(packet + 1, report, len);
+    fill_output_report_checksum(packet + 1, len);
+
+    if (!send_fifo_push(packet, len + 1)) {
+        ESP_LOGW(TAG, "send FIFO full, output report dropped");
+        return -ENOBUFS;
+    }
+    if (s_send_count == 1) {
+        l2cap_request_can_send_now_event(s_interrupt_cid);
+    }
+    return 0;
+}
+
+static int bt_feature_get(uint8_t report_id)
+{
+    if (s_control_cid == 0) {
+        return -ENOTCONN;
+    }
+    uint8_t frame[2] = { DS5_HIDP_GET_REPORT_FEATURE, report_id };
+    uint8_t status = l2cap_send(s_control_cid, frame, sizeof(frame));
+    return status == ERROR_CODE_SUCCESS ? 0 : -EIO;
+}
+
+static int bt_feature_set(uint8_t report_id, const uint8_t *data, size_t len)
+{
+    if (s_control_cid == 0) {
+        return -ENOTCONN;
+    }
+    if (len < 4 || len + 2 > MTU_CONTROL) {
+        return -EINVAL;
+    }
+    uint8_t frame[MTU_CONTROL];
+    frame[0] = DS5_HIDP_SET_REPORT_FEATURE;
+    frame[1] = report_id;
+    memcpy(frame + 2, data, len);
+    fill_feature_report_checksum(frame + 1, len + 1);
+    uint8_t status = l2cap_send(s_control_cid, frame, len + 2);
+    return status == ERROR_CODE_SUCCESS ? 0 : -EIO;
+}
+
+/* init_feature() from the reference: prefetch calibration/version/pairing
+ * feature reports so the USB side can answer host GET_FEATURE quickly, and
+ * probe 0x70 to detect a DualSense Edge. Responses (0xA3 ...) flow to the
+ * M61 through the normal control-channel RX path. */
+static void init_feature_prefetch(void)
+{
+    static const uint8_t ids[] = { 0x09, 0x20, 0x22, 0x05, 0x70 };
+    for (size_t i = 0; i < sizeof(ids); i++) {
+        (void)bt_feature_get(ids[i]);
+    }
+}
+
+/* update_state() from the reference: enable the lightbar right after the
+ * HID channels open (FadeOut animation, bright, DS5Dongle gold). */
+static void send_connect_led_state(void)
+{
+    uint8_t pkt[142] = {0};
+    pkt[0] = 0x32;
+    pkt[1] = 0x10;
+    pkt[2] = 0x90;
+    pkt[3] = 0x3f;
+    /* SetStateData at offset 4 (see reference utils.h):
+     * byte1 bit2 AllowLedColor, byte38 bits0-1 brightness/fade-allow,
+     * byte41 LightFadeAnimation=FadeOut, byte42 LightBrightness=Bright,
+     * bytes 44..46 RGB. */
+    pkt[4 + 1] = 0x04;
+    pkt[4 + 38] = 0x03;
+    pkt[4 + 41] = 2;
+    pkt[4 + 42] = 0;
+    pkt[4 + 44] = 0xFF;
+    pkt[4 + 45] = 0xD7;
+    pkt[4 + 46] = 0x00;
+    (void)bt_write_report(pkt, sizeof(pkt));
+}
+
+/* --------------------------------------------------- connect state flow -- */
+
+static void start_inquiry(void)
+{
+    if (s_inquiring || s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        return;
+    }
+    ESP_LOGI(TAG, "Start inquiry (%us)", (unsigned)CONFIG_DS5_SCAN_SECONDS);
+    s_device_found = false;
+    gap_inquiry_start(CONFIG_DS5_SCAN_SECONDS);
+    s_inquiring = true;
+    led_status_set(DS5_LED_STATE_BT_CONNECTING);
+    STATE_SET(DS5_DUAL_BT_STATE_CONNECTING);
+}
+
+static void create_connection_to(const bd_addr_t addr, bool from_saved)
+{
+    bd_addr_copy(s_current_addr, addr);
+    s_new_pair = true; /* we initiate → we create the L2CAP channels */
+    s_connect_from_saved = from_saved;
+    ESP_LOGI(TAG, "Connecting to %s%s", bd_addr_to_str(addr),
+             from_saved ? " (saved)" : "");
+    hci_send_cmd(&hci_create_connection, addr,
+                 hci_usable_acl_packet_types(), 0, 0, 0, 1);
+    STATE_SET(DS5_DUAL_BT_STATE_CONNECTING |
+              (from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0));
+}
+
+static void saved_connect_retry_handler(btstack_timer_source_t *ts)
+{
+    (void)ts;
+    if (s_acl_handle != HCI_CON_HANDLE_INVALID || !s_have_saved) {
+        return;
+    }
+    if (s_saved_connect_attempts >= DS5_SAVED_CONNECT_MAX_ATTEMPTS) {
+        ESP_LOGI(TAG, "Saved reconnect gave up, waiting for controller page");
+        return;
+    }
+    s_saved_connect_attempts++;
+    portENTER_CRITICAL(&s_state_mux);
+    s_state.bringup_attempts = s_saved_connect_attempts;
+    portEXIT_CRITICAL(&s_state_mux);
+    create_connection_to(s_saved_addr, true);
+}
+
+static void schedule_saved_connect_retry(void)
+{
+    btstack_run_loop_set_timer(&s_retry_timer, DS5_SAVED_CONNECT_RETRY_MS);
+    btstack_run_loop_set_timer_handler(&s_retry_timer, saved_connect_retry_handler);
+    btstack_run_loop_add_timer(&s_retry_timer);
+}
+
+static void rssi_poll_handler(btstack_timer_source_t *ts)
+{
+    if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        gap_read_rssi(s_acl_handle);
+    }
+    btstack_run_loop_set_timer(ts, DS5_RSSI_POLL_MS);
+    btstack_run_loop_add_timer(ts);
+}
+
+static void handle_disconnected(uint8_t reason)
+{
+    ESP_LOGI(TAG, "Disconnected reason=0x%02X", reason);
+    s_device_found = false;
+    s_new_pair = false;
+    s_acl_handle = HCI_CON_HANDLE_INVALID;
+    s_control_cid = 0;
+    s_interrupt_cid = 0;
+    send_fifo_clear();
+    gap_connectable_control(1);
+    gap_discoverable_control(1);
+    led_status_set(DS5_LED_STATE_BT_CONNECTING);
+    portENTER_CRITICAL(&s_state_mux);
+    s_state.rssi = 0;
+    portEXIT_CRITICAL(&s_state_mux);
+    state_publish_locked_fields(0,
+                                DS5_DUAL_BT_STATE_CONTROL_OPEN |
+                                DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
+                                DS5_DUAL_BT_STATE_FULL_REPORT |
+                                DS5_DUAL_BT_STATE_CONNECTING |
+                                DS5_DUAL_BT_STATE_TARGET_FOUND |
+                                DS5_DUAL_BT_STATE_FROM_SAVED,
+                                0);
+}
+
+/* -------------------------------------------------------- HCI handler ---- */
+
+static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
+                               uint8_t *packet, uint16_t size)
+{
+    (void)channel;
+    (void)size;
+    if (packet_type != HCI_EVENT_PACKET) {
+        return;
+    }
+
+    const uint8_t event_type = hci_event_packet_get_type(packet);
+    switch (event_type) {
+    case BTSTACK_EVENT_STATE: {
+        const uint8_t state = btstack_event_state_get_state(packet);
+        if (state != HCI_STATE_WORKING) {
+            break;
+        }
+        bd_addr_t local;
+        gap_local_bd_addr(local);
+        ESP_LOGI(TAG, "BTstack up at %s", bd_addr_to_str(local));
+        s_stack_ready = true;
+        STATE_SET(DS5_DUAL_BT_STATE_READY |
+                  DS5_DUAL_BT_STATE_L2CAP_READY |
+                  DS5_DUAL_BT_STATE_SDP_READY);
+
+        btstack_run_loop_set_timer(&s_rssi_timer, DS5_RSSI_POLL_MS);
+        btstack_run_loop_set_timer_handler(&s_rssi_timer, rssi_poll_handler);
+        btstack_run_loop_add_timer(&s_rssi_timer);
+
+#if CONFIG_DS5_RAW_HIDP_AUTO_CONNECT
+        if (s_have_saved) {
+            /* Stay connectable so a paging controller wins the race, and
+             * actively try the saved address as well. */
+            s_saved_connect_attempts = 1;
+            create_connection_to(s_saved_addr, true);
+        } else {
+            start_inquiry();
+        }
+#endif
+        break;
+    }
+
+    case HCI_EVENT_INQUIRY_RESULT:
+    case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:
+    case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE: {
+        bd_addr_t addr;
+        uint32_t cod;
+        if (event_type == HCI_EVENT_INQUIRY_RESULT) {
+            cod = hci_event_inquiry_result_get_class_of_device(packet);
+            hci_event_inquiry_result_get_bd_addr(packet, addr);
+        } else if (event_type == HCI_EVENT_INQUIRY_RESULT_WITH_RSSI) {
+            cod = hci_event_inquiry_result_with_rssi_get_class_of_device(packet);
+            hci_event_inquiry_result_with_rssi_get_bd_addr(packet, addr);
+        } else {
+            cod = hci_event_extended_inquiry_response_get_class_of_device(packet);
+            hci_event_extended_inquiry_response_get_bd_addr(packet, addr);
+        }
+        /* Major device class Peripheral, gamepad-ish (CoD 0x002508) */
+        if ((cod & 0x000F00) == 0x000500) {
+            ESP_LOGI(TAG, "Gamepad found: %s (CoD 0x%06X)",
+                     bd_addr_to_str(addr), (unsigned)cod);
+            bd_addr_copy(s_current_addr, addr);
+            s_device_found = true;
+            STATE_SET(DS5_DUAL_BT_STATE_TARGET_FOUND);
+            gap_inquiry_stop();
+        }
+        break;
+    }
+
+    case GAP_EVENT_INQUIRY_COMPLETE:
+    case HCI_EVENT_INQUIRY_COMPLETE:
+        ESP_LOGI(TAG, "Inquiry complete");
+        s_inquiring = false;
+        if (s_device_found) {
+            create_connection_to(s_current_addr, false);
+            break;
+        }
+        gap_connectable_control(1);
+        gap_discoverable_control(1);
+#if CONFIG_DS5_RAW_HIDP_AUTO_CONNECT
+        if (!s_have_saved) {
+            start_inquiry();
+        }
+#endif
+        break;
+
+    case HCI_EVENT_COMMAND_STATUS: {
+        const uint8_t status = hci_event_command_status_get_status(packet);
+        const uint16_t opcode = hci_event_command_status_get_command_opcode(packet);
+        if (opcode == HCI_OPCODE_HCI_CREATE_CONNECTION &&
+            status != ERROR_CODE_SUCCESS) {
+            ESP_LOGW(TAG, "Create connection rejected status=0x%02X", status);
+            s_device_found = false;
+            s_new_pair = false;
+            state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
+            if (s_connect_from_saved) {
+                schedule_saved_connect_retry();
+            }
+        }
+        if (opcode == HCI_OPCODE_HCI_INQUIRY_CANCEL) {
+            s_inquiring = false;
+        }
+        break;
+    }
+
+    case HCI_EVENT_CONNECTION_COMPLETE: {
+        const uint8_t status = hci_event_connection_complete_get_status(packet);
+        if (status == ERROR_CODE_SUCCESS) {
+            s_acl_handle =
+                hci_event_connection_complete_get_connection_handle(packet);
+            hci_event_connection_complete_get_bd_addr(packet, s_current_addr);
+            ESP_LOGI(TAG, "ACL connected %s handle=0x%04X",
+                     bd_addr_to_str(s_current_addr), s_acl_handle);
+            portENTER_CRITICAL(&s_state_mux);
+            s_state.rssi = 0;
+            portEXIT_CRITICAL(&s_state_mux);
+            hci_send_cmd(&hci_authentication_requested, s_acl_handle);
+        } else {
+            ESP_LOGW(TAG, "ACL connect failed status=0x%02X", status);
+            s_device_found = false;
+            s_new_pair = false;
+            state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
+            if (s_connect_from_saved) {
+                schedule_saved_connect_retry();
+            }
+        }
+        break;
+    }
+
+    case HCI_EVENT_LINK_KEY_REQUEST: {
+        bd_addr_t addr;
+        hci_event_link_key_request_get_bd_addr(packet, addr);
+        link_key_t link_key;
+        link_key_type_t type;
+        if (gap_get_link_key_for_bd_addr(addr, link_key, &type)) {
+            ESP_LOGI(TAG, "Link key reply for %s (type=%u)",
+                     bd_addr_to_str(addr), (unsigned)type);
+            hci_send_cmd(&hci_link_key_request_reply, addr, link_key);
+        } else {
+            ESP_LOGI(TAG, "No link key for %s, force re-pair",
+                     bd_addr_to_str(addr));
+            hci_send_cmd(&hci_link_key_request_negative_reply, addr);
+        }
+        break;
+    }
+
+    case HCI_EVENT_USER_CONFIRMATION_REQUEST: {
+        bd_addr_t addr;
+        hci_event_user_confirmation_request_get_bd_addr(packet, addr);
+        ESP_LOGI(TAG, "SSP user confirmation from %s: accept",
+                 bd_addr_to_str(addr));
+        hci_send_cmd(&hci_user_confirmation_request_reply, addr);
+        break;
+    }
+
+    case HCI_EVENT_PIN_CODE_REQUEST: {
+        bd_addr_t addr;
+        hci_event_pin_code_request_get_bd_addr(packet, addr);
+        ESP_LOGI(TAG, "Legacy PIN request from %s: reply 0000",
+                 bd_addr_to_str(addr));
+        gap_pin_code_response(addr, "0000");
+        break;
+    }
+
+    case HCI_EVENT_AUTHENTICATION_COMPLETE: {
+        const uint8_t status =
+            hci_event_authentication_complete_get_status(packet);
+        const hci_con_handle_t handle =
+            hci_event_authentication_complete_get_connection_handle(packet);
+        ESP_LOGI(TAG, "Authentication complete status=0x%02X", status);
+        if (status != ERROR_CODE_SUCCESS) {
+            gap_drop_link_key_for_bd_addr(s_current_addr);
+            state_publish_locked_fields(0, 0, -status);
+        } else {
+            hci_send_cmd(&hci_set_connection_encryption, handle, 1);
+        }
+        break;
+    }
+
+    case HCI_EVENT_ENCRYPTION_CHANGE: {
+        const uint8_t status = hci_event_encryption_change_get_status(packet);
+        const uint8_t enabled =
+            hci_event_encryption_change_get_encryption_enabled(packet);
+        ESP_LOGI(TAG, "Encryption change status=0x%02X enabled=%u",
+                 status, enabled);
+        if (status == ERROR_CODE_SUCCESS && enabled && s_new_pair) {
+            ESP_LOGI(TAG, "Open HID L2CAP channels");
+            if (s_control_cid == 0) {
+                l2cap_create_channel(l2cap_packet_handler, s_current_addr,
+                                     PSM_HID_CONTROL, MTU_CONTROL,
+                                     &s_control_cid);
+            }
+        }
+        break;
+    }
+
+    case HCI_EVENT_CONNECTION_REQUEST: {
+        bd_addr_t addr;
+        hci_event_connection_request_get_bd_addr(packet, addr);
+        const uint32_t cod =
+            hci_event_connection_request_get_class_of_device(packet);
+        ESP_LOGI(TAG, "Incoming ACL from %s cod=0x%06X",
+                 bd_addr_to_str(addr), (unsigned)cod);
+        if ((cod & 0x000F00) == 0x000500) {
+            bd_addr_copy(s_current_addr, addr);
+            s_connect_from_saved =
+                s_have_saved && bd_addr_cmp(addr, s_saved_addr) == 0;
+            gap_inquiry_stop();
+            hci_send_cmd(&hci_accept_connection_request, addr, 0x01);
+            STATE_SET(DS5_DUAL_BT_STATE_CONNECTING |
+                      (s_connect_from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0));
+        }
+        break;
+    }
+
+    case HCI_EVENT_DISCONNECTION_COMPLETE:
+        handle_disconnected(
+            hci_event_disconnection_complete_get_reason(packet));
+        break;
+
+    case GAP_EVENT_RSSI_MEASUREMENT: {
+        const hci_con_handle_t handle =
+            gap_event_rssi_measurement_get_con_handle(packet);
+        if (handle == s_acl_handle) {
+            portENTER_CRITICAL(&s_state_mux);
+            s_state.rssi =
+                (int8_t)gap_event_rssi_measurement_get_rssi(packet);
+            portEXIT_CRITICAL(&s_state_mux);
+        }
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+/* ------------------------------------------------------ L2CAP handler ---- */
+
+static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
+                                 uint8_t *packet, uint16_t size)
+{
+    if (packet_type == L2CAP_DATA_PACKET) {
+        if (channel == s_interrupt_cid) {
+            if (size > 15 && packet[0] == DS5_HIDP_DATA_INPUT &&
+                packet[1] == 0x31) {
+                portENTER_CRITICAL(&s_state_mux);
+                bool first = !(s_state.flags & DS5_DUAL_BT_STATE_FULL_REPORT);
+                portEXIT_CRITICAL(&s_state_mux);
+                if (first) {
+                    STATE_SET(DS5_DUAL_BT_STATE_FULL_REPORT);
+                }
+            }
+            if (s_rx_cb != NULL) {
+                s_rx_cb(packet, size, esp_timer_get_time(), s_rx_cb_ctx);
+            }
+        } else if (channel == s_control_cid) {
+            if (s_rx_cb != NULL) {
+                s_rx_cb(packet, size, esp_timer_get_time(), s_rx_cb_ctx);
+            }
+        }
+        return;
+    }
+    if (packet_type != HCI_EVENT_PACKET) {
+        return;
+    }
+
+    switch (hci_event_packet_get_type(packet)) {
+    case L2CAP_EVENT_CHANNEL_OPENED: {
+        const uint8_t status = l2cap_event_channel_opened_get_status(packet);
+        const uint16_t local_cid =
+            l2cap_event_channel_opened_get_local_cid(packet);
+        const uint16_t psm = l2cap_event_channel_opened_get_psm(packet);
+        if (status != ERROR_CODE_SUCCESS) {
+            ESP_LOGW(TAG, "L2CAP open failed psm=0x%04X status=0x%02X",
+                     psm, status);
+            s_control_cid = 0;
+            s_interrupt_cid = 0;
+            s_device_found = false;
+            state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING,
+                                        -status);
+            if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+                hci_send_cmd(&hci_disconnect, s_acl_handle, 0x13);
+            }
+            break;
+        }
+        if (psm == PSM_HID_CONTROL) {
+            ESP_LOGI(TAG, "HID Control opened cid=0x%04X", local_cid);
+            s_control_cid = local_cid;
+            STATE_SET(DS5_DUAL_BT_STATE_CONTROL_OPEN);
+            /* our outgoing pairing path opens interrupt after control */
+            if (s_new_pair && s_interrupt_cid == 0) {
+                l2cap_create_channel(l2cap_packet_handler, s_current_addr,
+                                     PSM_HID_INTERRUPT, MTU_INTERRUPT,
+                                     &s_interrupt_cid);
+            }
+        } else if (psm == PSM_HID_INTERRUPT) {
+            ESP_LOGI(TAG, "HID Interrupt opened cid=0x%04X", local_cid);
+            s_interrupt_cid = local_cid;
+            s_saved_connect_attempts = 0;
+            saved_addr_store(s_current_addr);
+            led_status_set(DS5_LED_STATE_BT_CONNECTED);
+            gap_connectable_control(0);
+            gap_discoverable_control(0);
+            state_publish_locked_fields(
+                DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
+                    (s_connect_from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0),
+                DS5_DUAL_BT_STATE_CONNECTING, 0);
+            init_feature_prefetch();
+            send_connect_led_state();
+        }
+        break;
+    }
+
+    case L2CAP_EVENT_INCOMING_CONNECTION: {
+        const uint16_t local_cid =
+            l2cap_event_incoming_connection_get_local_cid(packet);
+        const uint16_t psm = l2cap_event_incoming_connection_get_psm(packet);
+        ESP_LOGI(TAG, "L2CAP incoming psm=0x%04X cid=0x%04X", psm, local_cid);
+        l2cap_accept_connection(local_cid);
+        break;
+    }
+
+    case L2CAP_EVENT_CHANNEL_CLOSED: {
+        const uint16_t local_cid =
+            l2cap_event_channel_closed_get_local_cid(packet);
+        if (local_cid == s_control_cid) {
+            s_control_cid = 0;
+            STATE_CLEAR(DS5_DUAL_BT_STATE_CONTROL_OPEN);
+        } else if (local_cid == s_interrupt_cid) {
+            s_interrupt_cid = 0;
+            send_fifo_clear();
+            STATE_CLEAR(DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
+                        DS5_DUAL_BT_STATE_FULL_REPORT);
+        }
+        if (s_control_cid == 0 && s_interrupt_cid == 0 &&
+            s_acl_handle != HCI_CON_HANDLE_INVALID) {
+            hci_send_cmd(&hci_disconnect, s_acl_handle, 0x13);
+        }
+        break;
+    }
+
+    case L2CAP_EVENT_CAN_SEND_NOW: {
+        send_element_t element;
+        if (send_fifo_pop(&element)) {
+            uint8_t status =
+                l2cap_send(s_interrupt_cid, element.data, element.len);
+            bt_dualsense_raw_hidp_note_tx(element.data, element.len,
+                                          status == ERROR_CODE_SUCCESS
+                                              ? 0 : -EIO);
+            if (status != ERROR_CODE_SUCCESS) {
+                ESP_LOGW(TAG, "l2cap_send failed status=0x%02X", status);
+            }
+        }
+        if (s_send_count > 0 && s_interrupt_cid != 0) {
+            l2cap_request_can_send_now_event(s_interrupt_cid);
+        }
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+/* ------------------------------------------- command queue (cross-task) -- */
+
+static void cmd_execute(const bt_cmd_t *cmd)
+{
+    switch (cmd->kind) {
+    case BT_CMD_CONNECT:
+        if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+            break;
+        }
+        gap_connectable_control(1);
+        gap_discoverable_control(1);
+        if (cmd->has_bda) {
+            create_connection_to(cmd->bda, false);
+        } else if (cmd->mode == DS5_DUAL_BT_CONNECT_SAVED_ONLY) {
+            if (s_have_saved) {
+                s_saved_connect_attempts = 1;
+                create_connection_to(s_saved_addr, true);
+            }
+        } else if (cmd->mode == DS5_DUAL_BT_CONNECT_SCAN_ONLY) {
+            start_inquiry();
+        } else { /* AUTO */
+            if (s_have_saved) {
+                s_saved_connect_attempts = 1;
+                create_connection_to(s_saved_addr, true);
+            } else {
+                start_inquiry();
+            }
+        }
+        break;
+
+    case BT_CMD_DISCONNECT:
+        btstack_run_loop_remove_timer(&s_retry_timer);
+        if (s_inquiring) {
+            gap_inquiry_stop();
+        }
+        if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+            hci_send_cmd(&hci_disconnect, s_acl_handle, 0x13);
+        }
+        if (!cmd->flag) {
+            /* stay invisible until the next explicit connect request */
+            gap_connectable_control(0);
+            gap_discoverable_control(0);
+        }
+        break;
+
+    case BT_CMD_FORGET:
+        if (cmd->mode & DS5_DUAL_FORGET_BONDS) {
+            gap_delete_all_link_keys();
+            ESP_LOGI(TAG, "All link keys deleted");
+        }
+        if (cmd->mode & DS5_DUAL_FORGET_SAVED_ADDR) {
+            saved_addr_erase();
+        }
+        state_publish_locked_fields(0, 0, 0);
+        break;
+
+    case BT_CMD_SEND_REPORT: {
+        int err = bt_write_report(cmd->data, cmd->len);
+        if (err != 0) {
+            state_publish_locked_fields(0, 0, err);
+        }
+        break;
+    }
+
+    case BT_CMD_FEATURE_GET:
+        (void)bt_feature_get(cmd->report_id);
+        break;
+
+    case BT_CMD_FEATURE_SET:
+        (void)bt_feature_set(cmd->report_id, cmd->data, cmd->len);
+        break;
+
+    default:
+        break;
+    }
+}
+
+static void cmd_drain(void *context)
+{
+    (void)context;
+    s_cmd_drain_pending = false;
+    bt_cmd_t cmd;
+    while (xQueueReceive(s_cmd_queue, &cmd, 0) == pdPASS) {
+        cmd_execute(&cmd);
+    }
+}
+
+static int cmd_submit(const bt_cmd_t *cmd)
+{
+    if (s_cmd_queue == NULL || !s_stack_ready) {
+        return -EAGAIN;
+    }
+    if (xQueueSend(s_cmd_queue, cmd, 0) != pdPASS) {
+        return -ENOBUFS;
+    }
+    if (!s_cmd_drain_pending) {
+        s_cmd_drain_pending = true;
+        btstack_run_loop_execute_on_main_thread(&s_cmd_drain_reg);
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------ public API -- */
+
+static void btstack_task(void *arg)
+{
+    (void)arg;
+    btstack_run_loop_execute(); /* never returns */
+}
+
+esp_err_t bt_dualsense_raw_hidp_start(void)
+{
+    crc32_table_init();
+    saved_addr_load();
+
+    s_cmd_queue = xQueueCreate(DS5_CMD_QUEUE_DEPTH, sizeof(bt_cmd_t));
+    if (s_cmd_queue == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    s_cmd_drain_reg.callback = cmd_drain;
+
+    if (btstack_init() != ERROR_CODE_SUCCESS) {
+        return ESP_FAIL;
+    }
+
+    /* L2CAP + SDP: registering the HID services is what makes controller
+     * initiated reconnects work (reference: bt_l2cap_init). */
+    s_l2cap_cb_reg.callback = l2cap_packet_handler;
+    l2cap_add_event_handler(&s_l2cap_cb_reg);
+    sdp_init();
+    l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL,
+                           MTU_CONTROL, LEVEL_2);
+    l2cap_register_service(l2cap_packet_handler, PSM_HID_INTERRUPT,
+                           MTU_INTERRUPT, LEVEL_2);
+    l2cap_init();
+
+    gap_ssp_set_enable(1);
+    gap_secure_connections_enable(true);
+    gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO);
+    gap_ssp_set_authentication_requirement(
+        SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_GENERAL_BONDING);
+    gap_set_page_scan_activity(0x0012, 0x0012); /* 11.25 ms interlaced */
+    gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
+    gap_set_local_name("DS5Dongle");
+    gap_set_class_of_device(0x000508);
+    gap_connectable_control(1);
+    gap_discoverable_control(1);
+
+    s_hci_cb_reg.callback = hci_packet_handler;
+    hci_add_event_handler(&s_hci_cb_reg);
+
+    hci_power_control(HCI_POWER_ON);
+
+    if (xTaskCreatePinnedToCore(btstack_task, "btstack", 6144, NULL,
+                                configMAX_PRIORITIES - 5, NULL, 0) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    led_status_set(DS5_LED_STATE_BT_CONNECTING);
+    ESP_LOGI(TAG, "BTstack DualSense host started (saved=%d)", s_have_saved);
+    return ESP_OK;
+}
+
+bool bt_dualsense_raw_hidp_ready(void)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    bool ready = (s_state.flags & DS5_DUAL_BT_STATE_INTERRUPT_OPEN) != 0;
+    portEXIT_CRITICAL(&s_state_mux);
+    return ready;
+}
+
+void bt_dualsense_raw_hidp_get_state(bt_dualsense_raw_hidp_state_t *state)
+{
+    if (state == NULL) {
+        return;
+    }
+    portENTER_CRITICAL(&s_state_mux);
+    *state = s_state;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
+int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode)
+{
+    bt_cmd_t cmd = { .kind = BT_CMD_CONNECT, .mode = mode };
+    if (bda != NULL && len >= 6) {
+        cmd.has_bda = true;
+        memcpy(cmd.bda, bda, 6);
+    }
+    return cmd_submit(&cmd);
+}
+
+int bt_dualsense_raw_hidp_disconnect(bool allow_reconnect)
+{
+    bt_cmd_t cmd = { .kind = BT_CMD_DISCONNECT, .flag = allow_reconnect };
+    return cmd_submit(&cmd);
+}
+
+int bt_dualsense_raw_hidp_forget(uint8_t flags)
+{
+    bt_cmd_t cmd = { .kind = BT_CMD_FORGET, .mode = flags };
+    return cmd_submit(&cmd);
+}
+
+int bt_dualsense_raw_hidp_send_report(const uint8_t *report,
+                                      size_t report_len,
+                                      bool realtime)
+{
+    (void)realtime;
+    if (report == NULL || report_len == 0 ||
+        report_len > sizeof(((bt_cmd_t *)0)->data)) {
+        return -EINVAL;
+    }
+    if (!bt_dualsense_raw_hidp_ready()) {
+        return -ENOTCONN;
+    }
+    bt_cmd_t cmd = { .kind = BT_CMD_SEND_REPORT, .len = (uint16_t)report_len };
+    memcpy(cmd.data, report, report_len);
+    return cmd_submit(&cmd);
+}
+
+int bt_dualsense_raw_hidp_get_feature(uint8_t report_id)
+{
+    bt_cmd_t cmd = { .kind = BT_CMD_FEATURE_GET, .report_id = report_id };
+    return cmd_submit(&cmd);
+}
+
+int bt_dualsense_raw_hidp_set_feature(uint8_t report_id,
+                                      const uint8_t *data,
+                                      size_t len)
+{
+    if (data == NULL || len == 0 || len > sizeof(((bt_cmd_t *)0)->data)) {
+        return -EINVAL;
+    }
+    bt_cmd_t cmd = { .kind = BT_CMD_FEATURE_SET,
+                     .report_id = report_id,
+                     .len = (uint16_t)len };
+    memcpy(cmd.data, data, len);
+    return cmd_submit(&cmd);
+}
+
+void bt_dualsense_raw_hidp_set_rx_callback(bt_dualsense_raw_hidp_rx_cb_t cb,
+                                           void *ctx)
+{
+    s_rx_cb = cb;
+    s_rx_cb_ctx = ctx;
+}
+
+void bt_dualsense_raw_hidp_set_state_callback(
+    bt_dualsense_raw_hidp_state_cb_t cb, void *ctx)
+{
+    s_state_cb = cb;
+    s_state_cb_ctx = ctx;
+}

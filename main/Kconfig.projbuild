@@ -1,23 +1,5 @@
 menu "DS5 DualSense Bridge"
 
-    choice DS5_BT_BACKEND
-        prompt "Stage-1 Bluetooth backend"
-        default DS5_BT_BACKEND_HIDH
-        help
-            Select how ESP32 connects to the real DualSense during stage 1.
-            The ESP-IDF HID Host backend is the default because it is the
-            first partially validated path. Raw HIDP opens Classic L2CAP HID
-            Control/Interrupt PSMs directly and is intended for diagnosing or
-            bypassing HID Host limitations when full 0x31 reports do not appear.
-
-        config DS5_BT_BACKEND_HIDH
-            bool "ESP-IDF HID Host API"
-
-        config DS5_BT_BACKEND_RAW_HIDP
-            bool "Raw Classic L2CAP HIDP probe"
-            select BT_L2CAP_ENABLED
-    endchoice
-
     config DS5_SCAN_SECONDS
         int "Classic Bluetooth inquiry duration, seconds"
         range 2 61
@@ -66,15 +48,12 @@ menu "DS5 DualSense Bridge"
             attempts while the controller is still sending only short reports.
 
     config DS5_RAW_HIDP_AUTO_CONNECT
-        bool "Auto-connect raw HIDP backend at startup"
-        default y if DS5_DUAL_CHIP_SPI_COPROCESSOR
-        default n
-        depends on DS5_BT_BACKEND_RAW_HIDP || DS5_DUAL_CHIP_SPI_COPROCESSOR
+        bool "Auto-connect to DualSense at startup"
+        default y
         help
-            Start the raw HIDP saved-address reconnect or discovery flow after
-            the ESP32 Bluetooth stack is initialized. The dual-chip coprocessor
-            enables this by default so M61 does not need to issue a connect
-            command after every ESP32 reboot.
+            Start the saved-address reconnect or inquiry flow right after the
+            Bluetooth stack is initialized, so M61 does not need to issue a
+            connect command after every ESP32 reboot.
 
     config DS5_LED_GREEN_GPIO
         int "Green status LED GPIO (-1 disables)"
@@ -119,7 +98,6 @@ menu "DS5 DualSense Bridge"
     config DS5_DUAL_CHIP_SPI_COPROCESSOR
         bool "Run ESP32 as M61 SPI Bluetooth coprocessor"
         default n
-        select BT_L2CAP_ENABLED
         help
             Enables the dual-chip queue boundary: ESP32 receives complete
             DualSense BT output reports from M61 over the SPI protocol and only
