@@ -1743,6 +1743,23 @@ static void schedule_bringup_retry(void)
         (uint64_t)CONFIG_DS5_BRINGUP_RETRY_MS * 1000ULL));
 }
 
+static void maybe_start_hidp_bringup(const char *reason)
+{
+    if (!s_control.connected || !s_interrupt.connected || s_have_full_report) {
+        return;
+    }
+
+    set_scan_availability(false, "hid-channels-open");
+    led_status_set(DS5_LED_STATE_BT_CONNECTING);
+    ESP_LOGI(TAG,
+             "Raw HIDP starting DualSense bring-up reason=%s ctl_fd=%d int_fd=%d attempts=%u",
+             reason != NULL ? reason : "event",
+             s_control.fd,
+             s_interrupt.fd,
+             (unsigned)s_bringup_attempts);
+    send_bringup(reason);
+}
+
 static void send_bringup(const char *reason)
 {
     if (!s_control.connected || !s_interrupt.connected || s_have_full_report) {
@@ -2029,11 +2046,10 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
                    should_active_open_channels() &&
                    !s_interrupt.connected) {
             connect_hidp_interrupt();
-        } else if (s_control.connected && s_interrupt.connected) {
-            set_scan_availability(false, "hid-channels-open");
-            led_status_set(DS5_LED_STATE_BT_CONNECTING);
-            send_bringup("l2cap-open");
         }
+        maybe_start_hidp_bringup(channel->id == RAW_CH_INTERRUPT ?
+                                 "interrupt-open" :
+                                 "l2cap-open");
         notify_state();
         break;
     }

@@ -691,11 +691,13 @@ static void handle_rx_time_sync(const uint8_t *payload, size_t payload_len)
     s_transport.stats.last_time_sync_rtt_us = rtt_us;
     s_transport.stats.last_time_sync_local_us = now_us;
     s_transport.stats.esp_time_offset_us = offset_us;
-    note_event(M61_ESP32_EVENT_TIME_SYNC_RX,
-               0,
-               0,
-               rtt_us,
-               (uint32_t)offset_us);
+    if (event_log_interesting_counter(s_transport.stats.rx_time_sync)) {
+        note_event(M61_ESP32_EVENT_TIME_SYNC_RX,
+                   0,
+                   0,
+                   rtt_us,
+                   (uint32_t)offset_us);
+    }
 }
 
 static void handle_rx_bt_state(const uint8_t *payload, size_t payload_len)
