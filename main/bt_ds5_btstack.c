@@ -528,21 +528,15 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         break;
     }
 
-    case HCI_EVENT_INQUIRY_RESULT:
-    case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:
-    case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE: {
+    /* BTstack consumes the raw HCI inquiry events when gap_inquiry_start()
+     * is used and re-emits them as GAP_EVENT_INQUIRY_RESULT (it also forwards
+     * the raw event). Handle only the GAP variants so each result/complete is
+     * processed exactly once. */
+    case GAP_EVENT_INQUIRY_RESULT: {
         bd_addr_t addr;
-        uint32_t cod;
-        if (event_type == HCI_EVENT_INQUIRY_RESULT) {
-            cod = hci_event_inquiry_result_get_class_of_device(packet);
-            hci_event_inquiry_result_get_bd_addr(packet, addr);
-        } else if (event_type == HCI_EVENT_INQUIRY_RESULT_WITH_RSSI) {
-            cod = hci_event_inquiry_result_with_rssi_get_class_of_device(packet);
-            hci_event_inquiry_result_with_rssi_get_bd_addr(packet, addr);
-        } else {
-            cod = hci_event_extended_inquiry_response_get_class_of_device(packet);
-            hci_event_extended_inquiry_response_get_bd_addr(packet, addr);
-        }
+        gap_event_inquiry_result_get_bd_addr(packet, addr);
+        const uint32_t cod =
+            gap_event_inquiry_result_get_class_of_device(packet);
         /* Major device class Peripheral, gamepad-ish (CoD 0x002508) */
         if ((cod & 0x000F00) == 0x000500) {
             ESP_LOGI(TAG, "Gamepad found: %s (CoD 0x%06X)",
@@ -556,10 +550,10 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
     }
 
     case GAP_EVENT_INQUIRY_COMPLETE:
-    case HCI_EVENT_INQUIRY_COMPLETE:
         ESP_LOGI(TAG, "Inquiry complete");
         s_inquiring = false;
         if (s_device_found) {
+            s_device_found = false;
             create_connection_to(s_current_addr, false);
             break;
         }
@@ -958,25 +952,21 @@ static int cmd_submit(const bt_cmd_t *cmd)
 
 /* ------------------------------------------------------------ public API -- */
 
+/* All BTstack setup MUST run on the same task that later executes the run
+ * loop: btstack_run_loop_freertos_init() captures the current task handle
+ * for its wake-up notifications, so initializing from app_main and running
+ * the loop from another task leaves the run loop deaf to VHCI events (it
+ * would only wake on timer expiry — seconds of HCI latency, dead inquiry,
+ * timed-out L2CAP setup). This was the primary "connects but never opens
+ * HID channels" failure. */
 static void btstack_task(void *arg)
 {
     (void)arg;
-    btstack_run_loop_execute(); /* never returns */
-}
-
-esp_err_t bt_dualsense_raw_hidp_start(void)
-{
-    crc32_table_init();
-    saved_addr_load();
-
-    s_cmd_queue = xQueueCreate(DS5_CMD_QUEUE_DEPTH, sizeof(bt_cmd_t));
-    if (s_cmd_queue == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    s_cmd_drain_reg.callback = cmd_drain;
 
     if (btstack_init() != ERROR_CODE_SUCCESS) {
-        return ESP_FAIL;
+        ESP_LOGE(TAG, "btstack_init failed");
+        vTaskDelete(NULL);
+        return;
     }
 
     /* L2CAP + SDP: registering the HID services is what makes controller
@@ -1007,13 +997,28 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
 
     hci_power_control(HCI_POWER_ON);
 
+    led_status_set(DS5_LED_STATE_BT_CONNECTING);
+    ESP_LOGI(TAG, "BTstack DualSense host started (saved=%d)", s_have_saved);
+
+    btstack_run_loop_execute(); /* never returns */
+}
+
+esp_err_t bt_dualsense_raw_hidp_start(void)
+{
+    crc32_table_init();
+    saved_addr_load();
+
+    s_cmd_queue = xQueueCreate(DS5_CMD_QUEUE_DEPTH, sizeof(bt_cmd_t));
+    if (s_cmd_queue == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    s_cmd_drain_reg.callback = cmd_drain;
+
     if (xTaskCreatePinnedToCore(btstack_task, "btstack", 6144, NULL,
                                 configMAX_PRIORITIES - 5, NULL, 0) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
 
-    led_status_set(DS5_LED_STATE_BT_CONNECTING);
-    ESP_LOGI(TAG, "BTstack DualSense host started (saved=%d)", s_have_saved);
     return ESP_OK;
 }
 

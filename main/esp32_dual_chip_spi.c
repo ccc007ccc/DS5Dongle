@@ -1191,11 +1191,11 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
         if (header.length < 1U) {
             status = -EINVAL;
         } else if (payload[0] == DS5_DUAL_WIRE_TEST_START) {
-            led_status_set(DS5_LED_STATE_WIRE_TESTING);
+            led_status_set_transient(DS5_LED_STATE_WIRE_TESTING, 10000);
         } else if (payload[0] == DS5_DUAL_WIRE_TEST_PASS) {
-            led_status_set(DS5_LED_STATE_WIRE_TEST_PASS);
+            led_status_set_transient(DS5_LED_STATE_WIRE_TEST_PASS, 3000);
         } else if (payload[0] == DS5_DUAL_WIRE_TEST_FAIL) {
-            led_status_set(DS5_LED_STATE_WIRE_TEST_FAIL);
+            led_status_set_transient(DS5_LED_STATE_WIRE_TEST_FAIL, 10000);
         } else {
             status = -EINVAL;
         }

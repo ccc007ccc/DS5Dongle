@@ -17,6 +17,9 @@ typedef enum {
 
 esp_err_t led_status_init(void);
 void led_status_set(ds5_led_state_t state);
+/* Show `state` for `timeout_ms`, then fall back to the last led_status_set()
+ * state. Used for wire-test results so they don't mask the BT status forever. */
+void led_status_set_transient(ds5_led_state_t state, uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

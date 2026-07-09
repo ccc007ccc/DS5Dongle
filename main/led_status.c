@@ -35,6 +35,9 @@
 static const char *TAG = "ds5_led";
 
 static volatile ds5_led_state_t s_led_state = DS5_LED_STATE_BOOT_OK;
+static volatile ds5_led_state_t s_led_override_state;
+static volatile TickType_t s_led_override_until;
+static volatile bool s_led_override_active;
 static bool s_led_task_started;
 
 static bool gpio_enabled(int gpio)
@@ -127,6 +130,13 @@ static void led_status_task(void *arg)
     bool blink_on = true;
     while (true) {
         ds5_led_state_t state = s_led_state;
+        if (s_led_override_active) {
+            if ((int32_t)(xTaskGetTickCount() - s_led_override_until) >= 0) {
+                s_led_override_active = false;
+            } else {
+                state = s_led_override_state;
+            }
+        }
         apply_led_state(state, blink_on);
         if (state == DS5_LED_STATE_BT_CONNECTING ||
             state == DS5_LED_STATE_WIRE_TESTING ||
@@ -184,5 +194,14 @@ esp_err_t led_status_init(void)
 void led_status_set(ds5_led_state_t state)
 {
     s_led_state = state;
+    s_led_override_active = false;
+    apply_led_state(state, true);
+}
+
+void led_status_set_transient(ds5_led_state_t state, uint32_t timeout_ms)
+{
+    s_led_override_state = state;
+    s_led_override_until = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    s_led_override_active = true;
     apply_led_state(state, true);
 }
