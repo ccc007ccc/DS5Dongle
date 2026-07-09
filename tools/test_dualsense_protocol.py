@@ -1054,6 +1054,9 @@ def test_c_source_contract() -> None:
         "bridge_config_rssi",
         "m61_esp32_transport_get_stats(&stats)",
         "stats.peer_bt_rssi",
+        "USB_RECONNECT_DELAY_MS 150U",
+        "schedule_usb_reconnect",
+        "m61_usb_gamepad_reinit();",
         "CONFIG_M61_DS5_BRIDGE_VERSION_STRING",
     ]
     for snippet in m61_audio_snippets:

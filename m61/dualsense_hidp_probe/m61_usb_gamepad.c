@@ -73,6 +73,9 @@
 #define AUDIO_OPUS_ENCODER_STATE_MAX 49152U
 #define AUDIO_OPUS_DECODER_STATE_MAX 24576U
 #define AUDIO_CODEC_DIAG_PERIOD_MS 1000U
+#define USB_RECONNECT_DELAY_MS 150U
+#define USB_RECONNECT_TASK_STACK_WORDS 1024
+#define USB_RECONNECT_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 #define AUDIO_CODEC_ERR_STATE_TOO_SMALL -1001
 #define HAPTICS_DOWNSAMPLE_FACTOR 16
 #define HAPTICS_RESAMPLE_MODE_WDL_EQUIV 2
@@ -429,9 +432,12 @@ static volatile uint16_t mic_pcm_ring_tail;
 static volatile uint16_t mic_pcm_ring_count;
 static StaticTask_t audio_codec_task_tcb;
 static StackType_t audio_codec_task_stack[AUDIO_CODEC_TASK_STACK_WORDS] __attribute__((aligned(16)));
+static StaticTask_t usb_reconnect_task_tcb;
+static StackType_t usb_reconnect_task_stack[USB_RECONNECT_TASK_STACK_WORDS] __attribute__((aligned(16)));
 static uint32_t audio_opus_encoder_state[(AUDIO_OPUS_ENCODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static TaskHandle_t audio_codec_task_handle;
+static TaskHandle_t usb_reconnect_task_handle;
 static m61_usb_gamepad_host_report_t pending_host_report;
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
@@ -1199,6 +1205,37 @@ static bool is_bridge_config_report(uint8_t report_id)
            report_id == 0xF8 || report_id == 0xF9;
 }
 
+static void usb_reconnect_task(void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(pdMS_TO_TICKS(USB_RECONNECT_DELAY_MS));
+    (void)m61_usb_gamepad_reinit();
+    usb_reconnect_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static void schedule_usb_reconnect(void)
+{
+    if (usb_reconnect_task_handle != NULL) {
+        printf("[Config] bridge config USB reconnect already pending\r\n");
+        return;
+    }
+
+    usb_reconnect_task_handle = xTaskCreateStatic(usb_reconnect_task,
+                                                  "usb_reconn",
+                                                  USB_RECONNECT_TASK_STACK_WORDS,
+                                                  NULL,
+                                                  USB_RECONNECT_TASK_PRIORITY,
+                                                  usb_reconnect_task_stack,
+                                                  &usb_reconnect_task_tcb);
+    if (usb_reconnect_task_handle == NULL) {
+        printf("[Config] bridge config USB reconnect task create failed\r\n");
+    } else {
+        printf("[Config] bridge config USB reconnect scheduled\r\n");
+    }
+}
+
 static int8_t bridge_config_rssi(void)
 {
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
@@ -1303,7 +1340,7 @@ static bool set_bridge_config_report(uint8_t report_id, const uint8_t *report, u
             (void)m61_ds5_bridge_config_save();
             break;
         case 0x03:
-            printf("[Config] bridge config USB reconnect request ignored; use ds5 usb-reinit\r\n");
+            schedule_usb_reconnect();
             break;
         default:
             printf("[Config] unknown bridge config command 0x%02x\r\n", payload[0]);

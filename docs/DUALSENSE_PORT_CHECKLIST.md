@@ -127,7 +127,7 @@
 | 音量/静音控制 | USB Audio control + `SetStateData` | UAC mute/volume 回调已记录并转 `SetStateData`；`lock_volume` 可屏蔽 host 音量/静音 allow bits | 部分 | 实机验证 Windows 音量/mute 与手柄状态联动 |
 | Feature GET | Host GET_REPORT -> BT feature get -> cache | 已有转发/cache | 部分 | 验证 calibration/firmware/hardware info |
 | Feature SET | Host SET_REPORT feature -> BT control with CRC | 已有雏形 | 部分 | 验证 `0x80`、Edge profile 相关不会误处理 |
-| ds5-bridge 配置 | Vendor feature `0xF6-0xF9` | 已实现 `Config_body` 兼容结构、`0xF7` 读取配置、`0xF6` 内存更新/保存、`0xF8` 版本、`0xF9` RSSI/音频 gating；默认值走 M61 defconfig 并可用 EasyFlash 保存 | 部分 | 配置 UI 实测读写；USB reconnect/wake/PS shortcut/polling 描述符相关项暂未改变枚举形态 |
+| ds5-bridge 配置 | Vendor feature `0xF6-0xF9` | 已实现 `Config_body` 兼容结构、`0xF7` 读取配置、`0xF6` 内存更新/保存/延迟 USB reconnect、`0xF8` 版本、`0xF9` RSSI/音频 gating；默认值走 M61 defconfig 并可用 EasyFlash 保存 | 部分 | 配置 UI 实测读写；wake/PS shortcut/polling 描述符相关项暂未改变枚举形态 |
 | 输出状态合并 | 上游 `state_mgr` 维护最新状态 | 当前保持 USB `0x02` raw 透传到 BT `0x31`，并叠加 ds5-bridge 配置 patch；状态缓存用于诊断和低频 audio control | 部分 | 实机验证 LED/rumble/trigger 后再评估是否需要完整 `state_mgr` |
 | DSX 高频 output | DSX/Steam 可能高频刷新 LED/rumble/trigger | 已新增 USB `0x02` 最新态合并、20ms 蓝牙转发限速、每轮 host/feature report 处理上限，并新增 `usb_ds5_last`/`bt_state`/`hidp_usb_output` 诊断 | 部分 | 刷写 SHA `C3586805...` 后用户确认 DSX 功能可用；串口 shell 在 DSX 高负载下仍可能无回包，继续优化调度/诊断 |
 
