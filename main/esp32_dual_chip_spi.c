@@ -297,6 +297,34 @@ static uint8_t response_queue_index(uint8_t offset)
                      CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH);
 }
 
+static bool response_items_match_replace_key(const dual_chip_response_item_t *queued,
+                                             const dual_chip_response_item_t *incoming)
+{
+    if (queued == NULL || incoming == NULL) {
+        return false;
+    }
+    if (queued->type != incoming->type ||
+        (queued->flags & DS5_DUAL_FLAG_ACK) != 0 ||
+        (incoming->flags & DS5_DUAL_FLAG_ACK) != 0) {
+        return false;
+    }
+
+    switch (incoming->type) {
+    case DS5_DUAL_MSG_BT_RX_FEATURE_REPORT: {
+        uint16_t queued_payload_len = load_u16_le(queued->frame + 14);
+        uint16_t incoming_payload_len = load_u16_le(incoming->frame + 14);
+
+        if (queued_payload_len < 1U || incoming_payload_len < 1U) {
+            return false;
+        }
+        return queued->frame[DS5_DUAL_SPI_HEADER_LEN] ==
+               incoming->frame[DS5_DUAL_SPI_HEADER_LEN];
+    }
+    default:
+        return true;
+    }
+}
+
 static void response_queue_drop_tail_locked(void)
 {
     if (s_response_count == 0) {
@@ -316,8 +344,7 @@ static bool response_queue_replace_matching_locked(const dual_chip_response_item
     for (uint8_t i = 0; i < s_response_count; i++) {
         uint8_t idx = response_queue_index(i);
 
-        if (s_response_queue[idx].type == item->type &&
-            (s_response_queue[idx].flags & DS5_DUAL_FLAG_ACK) == 0) {
+        if (response_items_match_replace_key(&s_response_queue[idx], item)) {
             s_response_queue[idx] = *item;
             s_stats.spi_queue_drops++;
             return true;
@@ -955,6 +982,10 @@ static void set_pending_ack(const ds5_dual_spi_header_t *request, int32_t status
 {
     (void)request;
     (void)status;
+}
+
+static void set_pending_hello(void)
+{
 }
 
 static void set_pending_flow_credit(void)

@@ -137,7 +137,7 @@ menu "DS5 DualSense Bridge"
     config DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH
         int "Dual-chip ESP32 response queue depth"
         range 2 8
-        default 4
+        default 8
         depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
         help
             Number of ESP32-to-M61 response frames queued while waiting for
