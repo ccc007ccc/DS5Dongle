@@ -25,3 +25,5 @@ sdkconfig.dual_chip.devkit_vspi.old
 .idea/
 .cache/
 __pycache__/
+m61/dualsense_hidp_probe/defconfig.active
+m61/dualsense_hidp_probe/build/

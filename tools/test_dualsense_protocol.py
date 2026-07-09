@@ -29,7 +29,7 @@ FIRMWARE_MANIFEST = ROOT / "tools" / "firmware_manifest.py"
 CHECK_DUAL_CHIP_LOG = ROOT / "tools" / "check_dual_chip_log.py"
 DUAL_PROTO = ROOT / "main" / "dual_chip_spi_proto.c"
 ESP32_DUAL_SPI = ROOT / "main" / "esp32_dual_chip_spi.c"
-ESP32_RAW_HIDP = ROOT / "main" / "bt_dualsense_raw_hidp.c"
+ESP32_RAW_HIDP = ROOT / "main" / "bt_ds5_btstack.c"
 ESP32_LED_STATUS = ROOT / "main" / "led_status.h"
 ESP32_DUAL_DEFAULTS = ROOT / "sdkconfig.dual_chip.defaults"
 ESP32_DUAL_LEFT_DEFAULTS = ROOT / "sdkconfig.dual_chip.devkit_left.defaults"
@@ -1169,39 +1169,36 @@ def test_c_source_contract() -> None:
         "bt_dualsense_raw_hidp_connect",
         "bt_dualsense_raw_hidp_disconnect",
         "DS5_RAW_HIDP_AUTO_CONNECT",
-        "Raw HIDP auto-connect enabled at startup",
-        "clear_target_selection();",
-        "Raw HIDP ignoring SDP completion without active target",
-        "Raw HIDP staged DualSense address %s for deferred persist",
-        "hidp_channels_connected() && s_have_full_report",
-        "bind_target_peer_if_needed",
-        "finalize_ready_peer(\"full-report\")",
-        "Raw HIDP bring-up failed after %u attempts reason=%s",
-        "Raw HIDP queueing DualSense bring-up reason=%s",
-        "Raw HIDP removed %s from blacklist after validated DualSense report; persist deferred",
-        "Raw HIDP resuming explicit target %s after stack ready",
-        "Raw HIDP preserving manual target %s across reconnect timer",
-        "Raw HIDP preserving explicit target %s over generic auto request",
-        "Raw HIDP control connect requested using scan-only discovery",
-        "Raw HIDP control connect requested using saved address only",
-        "Raw HIDP explicit scan requested; ignoring saved address",
-        "Raw HIDP opening known HID PSMs for %s",
-        "Raw HIDP waiting for saved DualSense %s to reconnect by explicit request",
-        "Raw HIDP waiting for saved DualSense %s to reconnect",
-        "DS5_RAW_SAVED_RECONNECT_WAIT_US",
-        "schedule_saved_reconnect_wait(\"saved-incomplete-hidp\")",
-        "waiting for peer to open the remaining HID PSM",
-        "close_channel(&s_interrupt);",
-        "Raw HIDP listening for incoming HID reconnect on PSM 0x%04X/0x%04X",
-        "Raw HIDP generic auto request deferred to existing explicit target",
-        "Raw HIDP normalizing reconnect policy to saved address after validated report for %s reason=%s",
+        "PSM_HID_CONTROL",
+        "PSM_HID_INTERRUPT",
+        "MTU_CONTROL 672",
+        "DS5_CRC_SEED_OUTPUT 0xEADA2D49",
+        "DS5_CRC_SEED_FEATURE 0x2060EFC3",
+        "fill_output_report_checksum(packet + 1, len)",
+        "fill_feature_report_checksum(frame + 1, len + 1)",
+        "gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO)",
+        "gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED)",
+        "l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL",
+        "hci_send_cmd(&hci_create_connection, addr,",
+        "hci_send_cmd(&hci_link_key_request_reply, addr, link_key)",
+        "hci_send_cmd(&hci_link_key_request_negative_reply, addr)",
+        "hci_send_cmd(&hci_user_confirmation_request_reply, addr)",
+        "hci_send_cmd(&hci_set_connection_encryption, handle, 1)",
+        "hci_send_cmd(&hci_accept_connection_request, addr, 0x01)",
+        "(cod & 0x000F00) == 0x000500",
+        "saved_addr_store(s_current_addr)",
+        "DS5_NVS_KEY_ADDR",
+        "init_feature_prefetch",
+        "send_connect_led_state",
+        "l2cap_request_can_send_now_event(s_interrupt_cid)",
+        "btstack_run_loop_execute_on_main_thread(&s_cmd_drain_reg)",
+        "DS5_DUAL_BT_STATE_FULL_REPORT",
         "DS5_DUAL_MSG_BT_CONNECT",
         "DS5_DUAL_BT_CONNECT_SCAN_ONLY",
         "DS5_DUAL_BT_CONNECT_SAVED_ONLY",
         "DS5_DUAL_CAP_BT_CONNECT_MODES",
         "DS5_DUAL_MSG_BT_DISCONNECT",
         "DS5_DUAL_MSG_BT_FORGET",
-        "uint8_t packet[1 + DS5_OUTPUT_BT_MAX_LEN]",
         "DS5_DUAL_MSG_WIRE_TEST",
         "DS5_DUAL_WIRE_TEST_PASS",
         "m61_esp32_transport_connect",
@@ -1234,8 +1231,7 @@ def test_c_source_contract() -> None:
         "(void)xQueueSendToFront(s_tx_queue, &dropped, 0);",
         "set_pending_ack_fields(item.ack_seq, item.type, item.channel, err);",
         "set_pending_ack_fields(item.ack_seq, item.type, item.channel, -ETIMEDOUT);",
-        "bool allow_reconnect = s_auto_reconnect_enabled;",
-        "led_status_set(allow_reconnect ? DS5_LED_STATE_BT_CONNECTING :",
+        "bool allow_reconnect = header.length > 0 && payload[0] != 0;",
         "CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH",
         "response_queue_push_front_locked(&item)",
         "response_queue_push_back_locked(&item, replace_existing)",
@@ -1270,31 +1266,14 @@ def test_c_source_contract() -> None:
     )
     for snippet in dual_chip_snippets:
         assert snippet in combined_dual_chip_source, f"missing dual-chip snippet: {snippet}"
-    esp32_blacklist_snippets = [
-        "DS5_NVS_BLACKLIST_KEY",
-        "DS5_BLACKLIST_MAX",
-        "blacklist_contains",
-        "blacklist_bonded_devices",
-        "persist_blacklist",
-        "load_blacklist",
-        "target_origin_allows_blacklist_bypass",
-        "RAW_TARGET_SAVED_AUTO",
-        "RAW_TARGET_DISCOVERY",
-        "RAW_TARGET_MANUAL",
-        "saved DualSense %s is blacklisted; scanning for explicit re-pair",
-        "should_block_blacklisted_peer",
-        "should_reject_unexpected_peer",
-        "save_bda_if_needed(s_target_bda);",
-        "Raw HIDP rejected SSP confirmation from blacklisted",
-        "Raw HIDP rejected blacklisted incoming L2CAP open",
-        "Raw HIDP rejected unexpected L2CAP open",
-        "Raw HIDP rejected PIN request from unexpected",
-        "Raw HIDP rejected SSP confirmation from unexpected",
-        "Raw HIDP unexpected peer %s authenticated while targeting %s; dropping bond",
-        "from blacklist after validated DualSense report",
+    esp32_forget_snippets = [
+        "DS5_DUAL_FORGET_BONDS",
+        "gap_delete_all_link_keys()",
+        "DS5_DUAL_FORGET_SAVED_ADDR",
+        "saved_addr_erase()",
     ]
-    for snippet in esp32_blacklist_snippets:
-        assert snippet in esp32_raw_hidp_source, f"missing ESP32 blacklist snippet: {snippet}"
+    for snippet in esp32_forget_snippets:
+        assert snippet in esp32_raw_hidp_source, f"missing ESP32 forget snippet: {snippet}"
 
     wiring_snippets = [
         "CONFIG_M61_ESP32_SPI_SCLK_PIN =13",

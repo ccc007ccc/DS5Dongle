@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Repository-level checks for the current M61 DualSense USB adapter standard."""
+"""Repository-level checks for the dual-chip DS5Dongle layout.
+
+ESP32 (BTstack Classic host) + M61/BL618 (USB composite) joined by the
+SPI frame protocol. Verifies required files exist and key invariants hold.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +28,9 @@ def require_file(path: str, failures: list[str]) -> None:
 
 
 def require_contains(path: str, needles: list[str], failures: list[str]) -> None:
+    if not (ROOT / path).is_file():
+        failures.append(f"missing required file: {path}")
+        return
     text = read_text(path)
     for needle in needles:
         require(needle in text, f"{path} must contain: {needle}", failures)
@@ -34,332 +41,98 @@ def main() -> int:
 
     required_files = [
         "README.md",
-        "docs/PROJECT_STANDARD.md",
-        "docs/IMPLEMENTATION_STATUS.md",
+        "docs/REBUILD_PLAN.md",
+        "docs/DUAL_CHIP_WIRING.md",
         "docs/DUALSENSE_REPORT_31.md",
-        "docs/M61_BLUETOOTH_CAPABILITY.md",
         "docs/M61_NATIVE_USB_WIRING.md",
-        "docs/WAKEUP_RUNBOOK.md",
+        # ESP32 side
+        "main/app_main.c",
+        "main/bt_ds5_btstack.c",
+        "main/bt_dualsense_raw_hidp.h",
+        "main/dual_chip_spi_proto.c",
+        "main/dual_chip_spi_proto.h",
+        "main/esp32_dual_chip_spi.c",
+        "main/dualsense_parser.c",
+        "main/dualsense_output.c",
+        "components/btstack/CMakeLists.txt",
+        "components/btstack/include/btstack_config.h",
+        "components/btstack/port/btstack_port_esp32.c",
+        "sdkconfig.dual_chip.defaults",
+        "sdkconfig.dual_chip.devkit_left.defaults",
+        # M61 side
         "m61/dualsense_hidp_probe/CMakeLists.txt",
         "m61/dualsense_hidp_probe/Makefile",
-        "m61/dualsense_hidp_probe/build.sh",
         "m61/dualsense_hidp_probe/defconfig",
-        "m61/dualsense_hidp_probe/flash_prog_cfg.ini",
+        "m61/dualsense_hidp_probe/defconfig.dual_chip",
         "m61/dualsense_hidp_probe/main.c",
         "m61/dualsense_hidp_probe/m61_usb_gamepad.c",
-        "m61/dualsense_hidp_probe/m61_usb_gamepad.h",
-        "m61/dualsense_hidp_probe/usb_config.h",
-        "main/dualsense_parser.c",
-        "main/dualsense_parser.h",
-        "main/dualsense_output.c",
-        "main/dualsense_output.h",
-        "tools/flash_m61_firmware.py",
-        "tools/capture_m61_hidp_log.py",
-        "tools/check_m61_hidp_log.py",
-        "tools/check_m61_usb_windows.py",
-        "tools/ds5_windows_test_app.py",
-        "tools/validate_m61_hidp_hardware.py",
-        "tools/validate_m61_usb_hardware.py",
-        "tools/test_m61_hidp_log_checker.py",
+        "m61/dualsense_hidp_probe/m61_esp32_transport.c",
+        "m61/dualsense_hidp_probe/m61_ds5_bridge_config.c",
+        # tooling
+        "tools/build_esp32_stage1.py",
+        "tools/build_m61.sh",
         "tools/run_offline_checks.py",
     ]
     for path in required_files:
         require_file(path, failures)
 
+    # bluedroid legacy must stay gone
     forbidden_paths = [
-        ".gitmodules",
-        "pico_sdk_import.cmake",
-        "README.CN.md",
-        "boards",
-        "cmake",
-        "lib",
-        "src",
+        "main/bt_dualsense_host.c",
+        "main/bt_dualsense_raw_hidp.c",
+        "tools/patch_esp_idf_hidp_l2cap.py",
     ]
     for path in forbidden_paths:
-        require(not (ROOT / path).exists(), f"legacy Pico path must not exist: {path}", failures)
+        require(not (ROOT / path).exists(),
+                f"legacy bluedroid path must not exist: {path}", failures)
 
     require_contains(
-        "CMakeLists.txt",
+        "sdkconfig.dual_chip.defaults",
         [
-            "fallback",
-            "m61/dualsense_hidp_probe",
-            "project(ds5_dualsense_bridge_esp32)",
+            "CONFIG_BT_CONTROLLER_ONLY=y",
+            "CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y",
+            "CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR=y",
         ],
         failures,
     )
     require_contains(
-            "docs/PROJECT_STANDARD.md",
+        "main/bt_ds5_btstack.c",
         [
-            "DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC",
-            "ESP32 双芯片方案仍保留为 fallback",
-            "BL618 的 `USB_DP`/`USB_DM`",
-            "只接 CH340",
-            "GPIO12",
-            "GPIO14",
-            "GPIO15",
-            "usb_gamepad configured=1",
-            "tools/check_m61_usb_windows.py",
-            "tools/validate_m61_usb_hardware.py",
-            "docs/M61_NATIVE_USB_WIRING.md",
+            "PSM_HID_CONTROL",
+            "PSM_HID_INTERRUPT",
+            "DS5_CRC_SEED_OUTPUT 0xEADA2D49",
+            "DS5_CRC_SEED_FEATURE 0x2060EFC3",
+            "gap_delete_all_link_keys",
+        ],
+        failures,
+    )
+    require_contains(
+        "m61/dualsense_hidp_probe/defconfig.dual_chip",
+        [
+            "CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT =y",
+            "CONFIG_M61_ESP32_SPI_ENABLE =y",
         ],
         failures,
     )
     require_contains(
         "README.md",
         [
-            "M61 DualSense USB Adapter",
-            "M61 直接通过 Classic Bluetooth HIDP",
-            "DualSense USB composite",
-            "板载 CH340 串口不会因为固件变成手柄",
-            "不能直接接 Ai-M61 模组 `VCC`",
-            "docs/M61_NATIVE_USB_WIRING.md",
-            "--allow-connected-stream",
-            "--usb-status",
-            "tools\\check_m61_usb_windows.py",
-            "tools\\validate_m61_usb_hardware.py",
+            "DS5Dongle",
+            "awalol/DS5Dongle",
+            "components/btstack",
+            "tools/build_m61.sh",
         ],
         failures,
     )
-    require_contains(
-        "docs/DUALSENSE_REPORT_31.md",
-        [
-            "共享",
-            "M61",
-            "report=0x31 mode=full",
-            "report=0x01 mode=basic",
-        ],
-        failures,
-    )
-    require(
-        "最终阶段 1" not in read_text("docs/DUALSENSE_REPORT_31.md"),
-        "docs/DUALSENSE_REPORT_31.md must not contain stale phrase: 最终阶段 1",
-        failures,
-    )
-    require_contains(
-            "docs/REQUIREMENTS_AUDIT.md",
-        [
-            "M61-first",
-            "M61 USB DualSense composite",
-            "BL618 原生 `USB_DP/USB_DM`",
-            "ESP32 双芯片方案作为 fallback",
-        ],
-        failures,
-    )
-    require_contains(
-            "docs/SPEC_ALIGNMENT.md",
-        [
-            "规格演进和当前对齐",
-            "M61 是当前默认主线",
-            "原先“必须先 ESP32，BL618 只做 USB”的阶段门槛被后续 M61-only 指令覆盖",
-            "CH340 串口口不能通过固件变成手柄",
-        ],
-        failures,
-    )
-    require_contains(
-        "docs/WAKEUP_RUNBOOK.md",
-        [
-            "M61-only 是默认主线",
-            "USB 线绿色 D+  -> M61 USB_DP",
-            "CH340 口只提供串口/刷写",
-            "python tools\\check_m61_usb_windows.py",
-            "usb_gamepad ready=<0|1> configured=<0|1>",
-            "ds5 log quiet",
-        ],
-        failures,
-    )
-    require_contains(
-        "docs/M61_BLUETOOTH_CAPABILITY.md",
-        [
-            "M61-only 路线已经从“可行性探针”推进为当前主线",
-            "USB DualSense 复合设备状态",
-            "VID/PID：`054C:0CE6`",
-            "configured=1",
-        ],
-        failures,
-    )
-    require_contains(
-        "docs/M61_NATIVE_USB_WIRING.md",
-        [
-            "USB_DP` | D+",
-            "USB_DM` | D-",
-            "VID_054C&PID_0CE6",
-            "VID_0000&PID_0002",
-            "不要把 USB 5V 直接接 Ai-M61 模组 `VCC`",
-            "python tools\\validate_m61_usb_hardware.py -p COM5",
-        ],
-        failures,
-    )
-    require_contains(
-        "docs/STAGE1_VALIDATION.md",
-        [
-            "ESP32 fallback stage-1 validation",
-            "只用于 ESP32 fallback 路线",
-            "该路线不会替代 M61 原生 USB",
-        ],
-        failures,
-    )
-    require_contains(
-        "docs/M61_DEBUG_BRIDGE.md",
-        [
-            "M61 ESP32 fallback 调试桥",
-            "M61 ESP32 调试桥只用于刷写/复位 ESP32",
-            "当前 M61 HIDP+USB 固件在 `m61/dualsense_hidp_probe`",
-        ],
-        failures,
-    )
-    require_contains(
-        "m61/dualsense_hidp_probe/defconfig",
-        [
-            "CONFIG_BTBLECONTROLLER_LIB =ble1m2s1bredr1",
-            "CONFIG_BT_BREDR =y",
-            "CONFIG_CHERRYUSB_DEVICE =y",
-            "CONFIG_CHERRYUSB_DEVICE_HID =y",
-            "CONFIG_M61_STATUS_LED_RED_PIN =12",
-            "CONFIG_M61_STATUS_LED_GREEN_PIN =14",
-            "CONFIG_M61_STATUS_LED_BLUE_PIN =15",
-            "CONFIG_M61_USB_GAMEPAD_ENABLE =y",
-        ],
-        failures,
-    )
-    require_contains(
-        "m61/dualsense_hidp_probe/CMakeLists.txt",
-        [
-            "m61_usb_gamepad.c",
-            "../../main/dualsense_output.c",
-            "../../main/dualsense_parser.c",
-        ],
-        failures,
-    )
-    require_contains(
-        "m61/dualsense_hidp_probe/main.c",
-        [
-            '#include "m61_usb_gamepad.h"',
-            "bt_conn_create_br",
-            "bt_l2cap_chan_connect",
-            "HIDP_PSM_CONTROL 0x0011",
-            "HIDP_PSM_INTERRUPT 0x0013",
-            "dualsense_parse_report",
-            "m61_usb_gamepad_send_state",
-            "usb_gamepad ready=",
-            "hidp_reports parsed=",
-            "M61 HIDP full report path is alive",
-            "m61 led",
-            "ds5 reboot-isp",
-            "ds5 log",
-        ],
-        failures,
-    )
-    require_contains(
-            "m61/dualsense_hidp_probe/m61_usb_gamepad.c",
-        [
-            "usbd_audio_init_intf",
-            "usbd_hid_init_intf",
-            "DualSense Wireless Controller",
-            "AUDIO_IN_EP 0x82",
-            "HID_DUALSENSE_REPORT_DESC_SIZE",
-            "AUDIO_OUT_PACKET_SIZE",
-            "HID_IN_EP 0x84",
-            "m61_usb_gamepad_send_state",
-            "usbd_ep_start_write",
-            "usbd_hid_get_report",
-        ],
-        failures,
-    )
-    require_contains(
-        "m61/dualsense_hidp_probe/usb_config.h",
-        [
-            "CONFIG_USBDEV_MAX_BUS",
-            "CONFIG_USBHOST_MAX_ENDPOINTS",
-            "CONFIG_USB_MUSB_EP_NUM",
-            "CONFIG_USB_HS",
-        ],
-        failures,
-    )
-    require_contains(
-        "tools/check_m61_hidp_log.py",
-        [
-            "--allow-connected-stream",
-            "connected_stream",
-            "--require-full-report",
-            "--require-input-activity",
-        ],
-        failures,
-    )
-    require_contains(
-        "tools/check_m61_usb_windows.py",
-        [
-            "VID_054C",
-            "PID_0CE6",
-            "VID_1A86",
-            "PID_7523",
-            "--self-test",
-            "USB_DP -> USB D+",
-        ],
-        failures,
-    )
-    require_contains(
-        "tools/ds5_windows_test_app.py",
-        [
-            "tkinter",
-            "HidD_GetHidGuid",
-            "SetupDiGetClassDevsW",
-            "VID = 0x054C",
-            "PID = 0x0CE6",
-            "DS5_OUTPUT_REPORT_ID = 0x02",
-            "--smoke-test",
-        ],
-        failures,
-    )
-    require_contains(
-        "tools/validate_m61_hidp_hardware.py",
-        [
-            "--allow-connected-stream",
-            "capture_m61_hidp_log.main",
-            "check_m61_hidp_log.main",
-        ],
-        failures,
-    )
-    require_contains(
-        "tools/validate_m61_usb_hardware.py",
-        [
-            "check_m61_usb_windows",
-            "capture_m61_hidp_log.main",
-            "audit_requirements.audit_usb_status",
-            "--usb-status",
-            "--no-stdout",
-            "configured=1",
-            "sent=42",
-        ],
-        failures,
-    )
-
-    for path in ROOT.rglob("*.ino"):
-        failures.append(f"MCU firmware must not use Arduino .ino file: {path.relative_to(ROOT)}")
-
-    forbidden_doc_phrases = [
-        "阶段 1 主线仍是 ESP32",
-        "在阶段 1 通过前，不实现正式",
-        "最终产品里的 M61/BL618 USB HID Device 固件要等阶段 1",
-        "M61-only HIDP 探针没有实机证明 `report=0x31 mode=full` 前，不能取消 ESP32 主线",
-        "阶段 1 满足后，才能开始正式实现",
-        "它不实现最终 USB HID 输出",
-        "最终阶段 1",
-    ]
-    for path in sorted((ROOT / "docs").glob("*.md")):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for phrase in forbidden_doc_phrases:
-            if phrase in text:
-                failures.append(f"{path.relative_to(ROOT)} contains stale project-standard phrase: {phrase}")
 
     if failures:
-        print("Project verification failed:")
+        print("project structure check failed:")
         for failure in failures:
             print(f"  - {failure}")
         return 1
-
-    print("Project verification passed.")
+    print("project structure check passed.")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

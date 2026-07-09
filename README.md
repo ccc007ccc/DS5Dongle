@@ -1,148 +1,84 @@
-# M61 DualSense USB Adapter
+# DS5Dongle(双芯片版)
 
-这个 fork 已改成我们的 Ai-M61/BL616/BL618 DualSense 转 USB 项目。当前主线是 **M61 直接通过 Classic Bluetooth HIDP 连接 DualSense，再通过原生 USB Device 枚举成 DualSense 复合 USB 设备**。ESP32 相关代码保留为历史 fallback，不再是默认推进方向。
+把 DualSense(PS5 手柄)通过经典蓝牙桥接为 PC 上的原生 DualSense USB 设备。
+双芯片架构:
 
-## 当前状态
-
-- M61 Classic Bluetooth HIDP 已实机打通：可以连接 DualSense，并持续收到 `report=0x31 mode=full` 输入报文。
-- M61 状态灯已接入：默认绿灯，蓝牙连接中蓝灯闪烁，连接成功蓝灯常亮，红灯默认关闭。
-- M61 固件已加入 DualSense USB composite device：`VID_054C&PID_0CE6`，产品字符串 `DualSense Wireless Controller`，包含 Audio Control、Audio OUT、Audio IN 和 HID interface。
-- 已实测 Windows 能枚举 `USB Composite Device`、`HID-compliant game controller`、DualSense 扬声器和麦克风。电脑必须接到 BL618/M61 原生 `USB_DP/USB_DM`，板载 CH340 串口不会因为固件变成手柄。
-- 当前 USB Audio 只完成枚举和静音/drain 占位，HD haptics、扬声器、3.5mm、麦克风还未桥接到蓝牙 `0x36`。
-
-## 重要硬件结论
-
-Ai-M61-32S 模组本身有原生 USB2.0 引脚：
-
-- `USB_DP`
-- `USB_DM`
-
-但很多 Ai-M61-32S-Kit 板子的 Type-C/USB 口主要接板载 CH340，用来做串口和刷写。如果你的电脑只看到 `COM5` 这类 CH340 串口，而没有新的 HID 设备，说明当前线缆接到的是串口桥，不是 BL618 原生 USB Device。
-
-要让电脑看到手柄，需要满足其中一种：
-
-- 板子的这个 USB 口确实接到了 BL618 原生 USB D+/D-。
-- 或者从模块/开发板上的 `USB_DP`、`USB_DM`、`GND` 接到一个 USB 插头/转接板，再插电脑。
-
-不要把 CH340 的 USB D+/D- 和 BL618 的 USB_DP/DM 硬并在一起。
-如果板子已经由 CH340 口供电，原生 USB 数据线先只接 D+/D-/GND，不接第二路 5V。
-如果要用原生 USB 线同时供电，5V 必须接开发板的 `5V/VBUS/VIN` 供电入口或经过稳压后供电，不能直接接 Ai-M61 模组 `VCC`，规格书里的 `VCC` 是 3.3V。
-
-详细接线和排障见 [docs/M61_NATIVE_USB_WIRING.md](docs/M61_NATIVE_USB_WIRING.md)。
-
-## M61 构建
-
-在 Windows PowerShell 中：
-
-```powershell
-wsl bash /mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh
+```
+DualSense ⇄(经典蓝牙 HIDP 0x11/0x13)⇄ ESP32 ⇄(SPI 私有帧协议)⇄ M61/BL618 ⇄(原生 USB)⇄ PC
 ```
 
-产物：
+- **ESP32**:蓝牙侧。运行 [BTstack](https://github.com/bluekitchen/btstack)
+  (裁剪版内置于 `components/btstack`,VHCI 直连内置 controller,无需 patch ESP-IDF)。
+  蓝牙状态机 1:1 移植自参考项目 [awalol/DS5Dongle](https://github.com/awalol/DS5Dongle)
+  (Pico W 单芯片实现)的 `src/bt.cpp`。
+- **M61(Ai-M61-32S / BL618)**:USB 侧。CherryUSB 枚举为 `VID_054C&PID_0CE6`
+  DualSense 复合设备(HID + USB Audio),bl_mcu_sdk 构建。
+- 两芯片间为自定义 SPI 帧协议(`main/dual_chip_spi_proto.h`,M61 为 SPI master)。
 
-```text
-m61/dualsense_hidp_probe/build/build_out/m61_dualsense_hidp_probe_bl616.bin
+## 目录结构
+
+| 路径 | 内容 |
+|------|------|
+| `main/` | ESP32 固件:`bt_ds5_btstack.c`(蓝牙状态机)、`esp32_dual_chip_spi.c`(SPI 从机桥)、`dual_chip_spi_proto.*`(帧协议) |
+| `components/btstack/` | 裁剪版 BTstack(仅经典蓝牙 host + VHCI port + NVS link key) |
+| `m61/dualsense_hidp_probe/` | M61/BL618 固件(USB 复合设备 + SPI master + 私有配置协议) |
+| `tools/` | 构建/烧录/日志检查脚本 |
+| `docs/` | 现行文档;`docs/archive/` 为历史资料(不可尽信) |
+
+## 蓝牙行为(与参考项目一致)
+
+- **首次配对**:手柄按住 PS+Create 进入配对模式 → ESP32 inquiry 扫描
+  (按 CoD 手柄类别 `0x000500` 掩码过滤)→ 创建 ACL → SSP 认证/加密 →
+  主动打开 L2CAP HID Control(PSM 0x11)与 Interrupt(PSM 0x13),MTU 672。
+- **回连**:手柄单按 PS 主动 page 回连,ESP32 按已注册的 L2CAP service 接受;
+  link key 由 BTstack 持久化在 NVS。开机时若有保存地址也会主动尝试连接。
+- **地址保存**:连接成功后手柄地址写入 NVS(`ds5bt/saved_bda`),
+  供状态上报与开机直连;`BT_FORGET` 命令可清除绑定与地址。
+- 输出报文:`0xA2` 前缀 + CRC32(seed 同参考 `utils.h`);
+  Feature:`0x43`(GET)/`0x53 + CRC32`(SET);
+  连接建立后预取 0x09/0x20/0x22/0x05 并用 0x70 探测 DualSense Edge。
+
+## 私有配置协议(USB HID Feature Report,与参考项目字节兼容)
+
+| Report | 方向 | 含义 |
+|--------|------|------|
+| `0xF7` | GET | 返回 `Config_body`(触觉增益、轮询率、控制器模式等) |
+| `0xF8` | GET | 固件版本字符串 |
+| `0xF9` | GET | 字节0:蓝牙 RSSI;字节1:音频通路状态(bit7 有效标志) |
+| `0xF6` | SET | 子命令 `0x01` 更新内存配置 / `0x02` 写入 flash / `0x03` USB 重枚举 |
+
+## 构建
+
+ESP32(Windows,ESP-IDF v5.3.2 位于 `C:\tmp\esp-idf-v5.3.2`):
+
+```
+python tools/build_esp32_stage1.py --backend dual-chip --pin-profile devkit-left
 ```
 
-## M61 刷写
+产物 `build_dual_chip_devkit_left/ds5_dualsense_bridge_esp32.bin`。
 
-如果当前 M61 固件已经支持 `ds5 reboot-isp`：
+M61(WSL,T-Head 工具链 `/opt/toolchain_gcc_t-head_linux`):
 
-```powershell
-python tools\flash_m61_firmware.py --app hidp-probe -p COM5 -b 115200 --reboot-isp
+```
+bash tools/build_m61.sh dual     # 双芯片 SPI 配置(defconfig.dual_chip)
+bash tools/build_m61.sh single   # 单芯片蓝牙直连配置(defconfig)
 ```
 
-如果自动进入下载失败，手动进入 M61 UART 下载模式：
+产物 `m61/dualsense_hidp_probe/build/build_out/m61_dualsense_hidp_probe_bl616.bin`。
 
-```text
-按住 M61 BOOT
-按一下 RESET/RST 并松开
-松开 BOOT
-```
+## 接线与 LED
 
-然后刷：
+引脚见 `docs/DUAL_CHIP_WIRING.md`(M61 IO13/11/10/20 ↔ ESP32 GPIO27/26/25/33,
+READY IO16↔GPIO32,IRQ IO17↔GPIO13);M61 原生 USB 注意事项见
+`docs/M61_NATIVE_USB_WIRING.md`(电脑必须接 BL618 原生 `USB_DP/USB_DM`,
+板载 CH340 口只是串口)。
 
-```powershell
-python tools\flash_m61_firmware.py --app hidp-probe -p COM5 -b 115200 --manual-hint
-```
+- ESP32 蓝灯:闪烁=扫描/连接中,常亮=手柄已连接。
+- M61 RGB:绿=待机,蓝闪=连接中,蓝常亮=已连接。
+- M61 收到完整 0x31 输入报文后才挂载 USB(电脑此时才枚举出手柄)。
 
-刷写工具的 `--reset` 目前不一定能让板子回到 normal boot。如果刷完串口只回 `OK`，说明还停在 UART 下载口；让 `GPIO2/BOOT` 保持低电平，按一下 `RESET/RST` 正常启动。
+## 文档
 
-## 运行验证
-
-先确认 Windows 是否看到了 M61 原生 DualSense 复合 USB 设备，而不是只看到 CH340 串口：
-
-```powershell
-python tools\check_m61_usb_windows.py
-```
-
-接好 BL618 原生 USB 后，可以直接跑 USB 硬件 gate：
-
-```powershell
-python tools\validate_m61_usb_hardware.py -p COM5
-```
-
-启动后先看串口状态：
-
-```powershell
-python tools\probe_m61_serial.py -p COM5 -b 115200 --dump
-```
-
-如果要验证连续 HIDP 报文：
-
-```powershell
-python tools\capture_m61_hidp_log.py -p COM5 -o m61_hidp.log --duration 20 --command "ds5 status"
-python tools\check_m61_hidp_log.py m61_hidp.log --min-reports 20 --require-full-report --allow-connected-stream
-```
-
-如果手柄已经连接、串口被报文刷屏、只想读 USB 状态：
-
-```powershell
-python tools\capture_m61_hidp_log.py -p COM5 -o m61_usb_status.log --duration 3 --usb-status
-```
-
-`--usb-status` 会先发送 `ds5 log quiet`，再发送 `ds5 status`。
-
-`ds5 status` 会打印：
-
-```text
-usb_gamepad ready=<0|1> configured=<0|1> busy=<0|1> sent=<n> dropped=<n>
-usb_audio open=<n> close=<n> out_open=<0|1> in_open=<0|1> ...
-hidp_reports parsed=<n> full=<n> mic_audio=<n> log=<normal|quiet>
-```
-
-含义：
-
-- `configured=1`：电脑已经完成 USB 复合设备配置。
-- `sent>0` 或持续增长：M61 正在把 DualSense 输入送到 USB HID endpoint。
-- `dropped` 增长且 `configured=0`：蓝牙输入正常，但 USB 端没有被电脑枚举。
-
-Windows 桌面测试程序：
-
-```powershell
-python tools\ds5_windows_test_app.py
-```
-
-这个工具会枚举 `VID_054C&PID_0CE6`，读取 HID input report `0x01`，显示摇杆、按键、触摸板、IMU、电量等字段，并可发送 USB output report `0x02` 测试 LED、普通震动和自适应扳机字段。
-
-## 当前源码入口
-
-- `m61/dualsense_hidp_probe/main.c`：Classic BT HIDP 连接、配对、SDP、L2CAP、输入解析、自动重连、状态灯。
-- `m61/dualsense_hidp_probe/m61_usb_gamepad.c`：CherryUSB DualSense 复合 USB 描述符、Audio 占位和 HID 输入/输出报文。
-- `main/dualsense_parser.c`：DualSense 0x31/0x01 输入报文解析。
-- `main/dualsense_output.c`：DualSense 蓝牙 output/feature 初始化报文构造。
-- `tools/check_m61_usb_windows.py`：Windows 侧 USB 枚举检查，区分 DualSense 复合设备与 CH340 串口。
-- `tools/ds5_windows_test_app.py`：Windows Tkinter 桌面测试工具，直接用 Windows HID API 读写 DualSense HID interface。
-- `tools/validate_m61_usb_hardware.py`：组合 Windows 枚举和 `ds5 status` 的 M61 原生 USB 硬件 gate。
-
-## 离线检查
-
-```powershell
-python tools\run_offline_checks.py
-```
-
-构建 M61 固件：
-
-```powershell
-python tools\run_offline_checks.py --include-m61-build
-```
+- `docs/REBUILD_PLAN.md` — 本次重建的方案与验收标准
+- `docs/DUALSENSE_REPORT_31.md` — DualSense 0x31 报文结构参考
+- `docs/archive/` — 旧阶段文档,仅供考古,内容与现状可能不符
