@@ -154,6 +154,7 @@ static bool s_device_found;
 static bool s_new_pair; /* we initiated: create L2CAP channels ourselves */
 static bool s_inquiring;
 static bool s_connect_from_saved;
+static bool s_inquiry_after_disconnect;
 static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
 static uint16_t s_control_cid;
 static uint16_t s_interrupt_cid;
@@ -464,6 +465,8 @@ static void open_hid_channels(const char *reason)
 static void handle_disconnected(uint8_t reason)
 {
     ESP_LOGI(TAG, "Disconnected reason=0x%02X", reason);
+    const bool start_scan = s_inquiry_after_disconnect;
+    s_inquiry_after_disconnect = false;
     s_device_found = false;
     s_new_pair = false;
     s_acl_handle = HCI_CON_HANDLE_INVALID;
@@ -484,6 +487,9 @@ static void handle_disconnected(uint8_t reason)
                                 DS5_DUAL_BT_STATE_TARGET_FOUND |
                                 DS5_DUAL_BT_STATE_FROM_SAVED,
                                 0);
+    if (start_scan) {
+        start_inquiry();
+    }
 }
 
 /* -------------------------------------------------------- HCI handler ---- */
@@ -644,7 +650,14 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         ESP_LOGI(TAG, "Authentication complete status=0x%02X", status);
         if (status != ERROR_CODE_SUCCESS) {
             gap_drop_link_key_for_bd_addr(s_current_addr);
+            s_device_found = false;
+            s_new_pair = false;
+            s_inquiry_after_disconnect = true;
             state_publish_locked_fields(0, 0, -status);
+            if (handle != HCI_CON_HANDLE_INVALID) {
+                hci_send_cmd(&hci_disconnect, handle,
+                             ERROR_CODE_AUTHENTICATION_FAILURE);
+            }
         } else {
             hci_send_cmd(&hci_set_connection_encryption, handle, 1);
         }
