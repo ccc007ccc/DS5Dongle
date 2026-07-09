@@ -1,5 +1,20 @@
 # DS5Dongle 双芯片方案重建计划(2026-07-09)
 
+> **状态更新(2026-07-09 晚)**:阶段 1~5 已完成并逐阶段提交。
+> BTstack 移植后首测不通的根因已定位并修复:
+> 1. BTstack 初始化与 run loop 分属两个任务,FreeRTOS run loop 的唤醒
+>    通知发给了错误任务(`btstack_run_loop_freertos_init` 捕获当前任务句柄),
+>    栈只能靠定时器苟活 → inquiry 无结果、PS 回连后 L2CAP 建立超时。
+>    现已把全部初始化移入 btstack 任务内(与官方 esp32 port 约定一致)。
+> 2. inquiry 完成事件被原始 HCI 事件与 GAP 合成事件各处理一次,
+>    导致重复 `hci_create_connection`;现只处理 GAP 事件。
+> 3. M61 误把 `BT_STATE_READY` 当作链路可用,盲发输出报文;
+>    现以 `INTERRUPT_OPEN` 为准。
+> 4. wire-test 的 LED 覆盖永不恢复(ESP 蓝灯/ M61 绿灯常亮之谜);
+>    现改为瞬态显示后回落到蓝牙状态。
+> 5. 在 MSYS 环境下 `idf.py` 因 `MSYSTEM` 变量静默跳过构建(返回 0),
+>    构建必须在 cmd/PowerShell 进行。
+
 ## 背景与结论
 
 当前 `m61-esp32-dual-chip` 分支的 ESP32 蓝牙实现基于 bluedroid 的 `esp_bt_l2cap_*`

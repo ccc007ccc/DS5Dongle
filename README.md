@@ -74,8 +74,30 @@ READY IO16↔GPIO32,IRQ IO17↔GPIO13);M61 原生 USB 注意事项见
 板载 CH340 口只是串口)。
 
 - ESP32 蓝灯:闪烁=扫描/连接中,常亮=手柄已连接。
-- M61 RGB:绿=待机,蓝闪=连接中,蓝常亮=已连接。
+  开机 M61 自检(wire-test)期间会短暂闪烁,通过后显示 3 秒结果再回到蓝牙状态。
+- M61 RGB:绿=待机(SPI 尚未握手),蓝闪=等待手柄(ESP32 已就绪),蓝常亮=手柄已连接。
+  开机 wire-test 通过显示 3 秒绿色后回到自动状态;失败保持红色(检查接线)。
 - M61 收到完整 0x31 输入报文后才挂载 USB(电脑此时才枚举出手柄)。
+
+## 排障
+
+1. **扫描配对**:手柄按住 PS+Create 至灯条快速双闪 → ESP32 串口应出现
+   `Gamepad found` → `ACL connected` → `Authentication complete status=0x00` →
+   `HID Control/Interrupt opened`。
+2. **PS 单按回连**:串口应出现 `Incoming ACL` → `Link key reply` →
+   `HID Interrupt opened`;若出现 `No link key ... force re-pair`,
+   说明 NVS 中无该手柄绑定,需重新进入配对模式。
+3. **无 USB 设备**:确认 M61 串口出现
+   `DualSense full report seen via ESP32; starting USB composite device`;
+   若无,先看 ESP32 是否已 `HID Interrupt opened`,再看 SPI 是否有
+   `SPI rx valid` / `BT_RX_INPUT` 流量。
+4. **持续 `HIDP tx from SPI failed err=-128`**:表示蓝牙 interrupt 通道未打开,
+   M61 在旧固件上会盲发输出报文;两侧都刷新到本分支固件后不应再出现。
+
+> 构建注意:在 MSYS/Git-Bash 环境直接调用 `idf.py` 会因 `MSYSTEM`
+> 环境变量被 idf.py **静默跳过构建**(只打印警告并返回 0)。请在
+> cmd/PowerShell 中构建,或先 `set MSYSTEM=`。`tools/build_esp32_stage1.py`
+> 需在 cmd 下运行。
 
 ## 文档
 
