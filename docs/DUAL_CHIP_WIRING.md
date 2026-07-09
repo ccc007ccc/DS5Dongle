@@ -35,7 +35,8 @@ python tools\build_esp32_stage1.py --backend dual-chip --pin-profile devkit-left
 
 This uses `sdkconfig.dual_chip.devkit_left.defaults`.
 The dual-chip ESP32 firmware also enables raw HIDP auto-connect, so after boot
-it tries the saved DualSense address first and then falls back to scanning.
+it waits for the saved, bonded DualSense to reconnect first, then falls back to
+scanning after repeated saved-reconnect timeouts.
 
 The older `devkit-vspi` profile uses the right-side VSPI pins
 `GPIO18/GPIO23/GPIO19/GPIO5` plus `GPIO22/GPIO21`. Keep it only as a backup if

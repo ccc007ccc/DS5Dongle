@@ -71,6 +71,7 @@
 #define DS5_RAW_RX_TASK_STACK 4096
 #define DS5_RAW_RX_BUFFER_LEN 768
 #define DS5_RAW_RECONNECT_DELAY_US (2 * 1000 * 1000)
+#define DS5_RAW_SAVED_RECONNECT_WAIT_US (5 * 1000 * 1000)
 #define DS5_RAW_PERSIST_SETTLE_US (5 * 1000 * 1000)
 #define DS5_RAW_MAX_SAVED_RECONNECT_FAILURES 3
 #define DS5_BLACKLIST_MAX 8
@@ -169,11 +170,14 @@ static raw_hidp_channel_t s_interrupt = {
 
 static void start_connect_flow(void);
 static void start_discovery(void);
+static void close_channel(raw_hidp_channel_t *channel);
 static void connect_hidp_control(void);
 static void connect_hidp_interrupt(void);
 static void send_bringup(const char *reason);
 static void notify_state(void);
 static void stop_bringup_timer(void);
+static void stop_reconnect_timer(void);
+static void schedule_reconnect_delay(uint64_t delay_us, const char *reason);
 static void schedule_persist_flush(void);
 static void start_hidp_servers(void);
 static void set_scan_availability(bool available, const char *reason);
@@ -855,6 +859,9 @@ static void save_bda_if_needed(const esp_bd_addr_t bda)
 
 static void reset_hidp_channels(void)
 {
+    close_channel(&s_interrupt);
+    close_channel(&s_control);
+
     s_control.connected = false;
     s_control.fd = -1;
     s_control.handle = 0;
@@ -880,7 +887,14 @@ static void reset_hidp_channels(void)
     notify_state();
 }
 
-static void schedule_reconnect(void)
+static void stop_reconnect_timer(void)
+{
+    if (s_reconnect_timer != NULL) {
+        esp_timer_stop(s_reconnect_timer);
+    }
+}
+
+static void schedule_reconnect_delay(uint64_t delay_us, const char *reason)
 {
     if (s_reconnect_timer == NULL || !s_auto_reconnect_enabled) {
         if (!s_auto_reconnect_enabled) {
@@ -890,11 +904,22 @@ static void schedule_reconnect(void)
         return;
     }
 
-    esp_timer_stop(s_reconnect_timer);
+    stop_reconnect_timer();
     led_status_set(DS5_LED_STATE_BT_CONNECTING);
-    ESP_LOGI(TAG, "Raw HIDP scheduling reconnect in %u ms",
-             (unsigned)(DS5_RAW_RECONNECT_DELAY_US / 1000));
-    ESP_ERROR_CHECK(esp_timer_start_once(s_reconnect_timer, DS5_RAW_RECONNECT_DELAY_US));
+    ESP_LOGI(TAG, "Raw HIDP scheduling reconnect in %u ms reason=%s",
+             (unsigned)(delay_us / 1000),
+             reason != NULL ? reason : "?");
+    ESP_ERROR_CHECK(esp_timer_start_once(s_reconnect_timer, delay_us));
+}
+
+static void schedule_reconnect(void)
+{
+    schedule_reconnect_delay(DS5_RAW_RECONNECT_DELAY_US, "retry");
+}
+
+static void schedule_saved_reconnect_wait(const char *reason)
+{
+    schedule_reconnect_delay(DS5_RAW_SAVED_RECONNECT_WAIT_US, reason);
 }
 
 static void note_connect_failure(void)
@@ -1067,6 +1092,7 @@ static void start_connect_flow(void)
         set_scan_availability(true, "saved-only-wait");
         led_status_set(DS5_LED_STATE_BT_CONNECTING);
         notify_state();
+        schedule_saved_reconnect_wait("saved-only-wait");
         return;
     }
 
@@ -1089,6 +1115,7 @@ static void start_connect_flow(void)
         set_scan_availability(true, "saved-auto-wait");
         led_status_set(DS5_LED_STATE_BT_CONNECTING);
         notify_state();
+        schedule_saved_reconnect_wait("saved-auto-wait");
         return;
     }
 
@@ -1110,6 +1137,9 @@ static void reconnect_timer_cb(void *arg)
 
     if (preserve_manual_target) {
         memcpy(retry_bda, s_target_bda, sizeof(retry_bda));
+    }
+    if (s_current_target_from_saved && !bt_dualsense_raw_hidp_ready()) {
+        note_connect_failure();
     }
 
     reset_hidp_channels();
@@ -1221,9 +1251,7 @@ int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode)
     }
 
     s_auto_reconnect_enabled = true;
-    if (s_reconnect_timer != NULL) {
-        esp_timer_stop(s_reconnect_timer);
-    }
+    stop_reconnect_timer();
 
     if (bda != NULL) {
         memcpy(s_target_bda, bda, sizeof(esp_bd_addr_t));
@@ -1279,7 +1307,7 @@ int bt_dualsense_raw_hidp_connect(const uint8_t *bda, size_t len, uint8_t mode)
 
 static void close_channel(raw_hidp_channel_t *channel)
 {
-    if (channel == NULL || !channel->connected || channel->fd < 0) {
+    if (channel == NULL || channel->fd < 0) {
         return;
     }
 
@@ -1295,9 +1323,7 @@ int bt_dualsense_raw_hidp_disconnect(bool allow_reconnect)
 {
     s_auto_reconnect_enabled = allow_reconnect;
     s_connect_mode = RAW_CONNECT_MODE_AUTO;
-    if (s_reconnect_timer != NULL) {
-        esp_timer_stop(s_reconnect_timer);
-    }
+    stop_reconnect_timer();
     stop_bringup_timer();
     clear_target_selection();
     esp_bt_gap_cancel_discovery();
@@ -1460,9 +1486,7 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags)
 
     s_auto_reconnect_enabled = false;
     s_connect_mode = RAW_CONNECT_MODE_AUTO;
-    if (s_reconnect_timer != NULL) {
-        esp_timer_stop(s_reconnect_timer);
-    }
+    stop_reconnect_timer();
     stop_bringup_timer();
     if (s_persist_timer != NULL) {
         esp_timer_stop(s_persist_timer);
@@ -1866,20 +1890,20 @@ static void l2cap_callback(esp_bt_l2cap_cb_event_t event, esp_bt_l2cap_cb_param_
         s_pending_step = RAW_CONNECT_IDLE;
         s_connecting = false;
         if (!outgoing_open &&
-            channel->id == RAW_CH_CONTROL &&
             s_current_target_from_saved &&
             s_target_origin == RAW_TARGET_SAVED_AUTO &&
-            !s_interrupt.connected) {
+            !(s_control.connected && s_interrupt.connected)) {
             char addr[18];
-            ESP_LOGI(TAG, "Raw HIDP saved reconnect accepted first incoming channel from %s; actively opening interrupt PSM",
+            ESP_LOGI(TAG, "Raw HIDP saved reconnect accepted incoming channel from %s; waiting for peer to open the remaining HID PSM",
                      bda_to_str(param->open.rem_bda, addr, sizeof(addr)));
-            connect_hidp_interrupt();
+            schedule_saved_reconnect_wait("saved-incomplete-hidp");
         } else if (outgoing_open &&
                    channel->id == RAW_CH_CONTROL &&
                    should_active_open_channels() &&
                    !s_interrupt.connected) {
             connect_hidp_interrupt();
         } else if (s_control.connected && s_interrupt.connected) {
+            stop_reconnect_timer();
             save_bda_if_needed(param->open.rem_bda);
             if (target_origin_allows_blacklist_bypass() &&
                 blacklist_remove(param->open.rem_bda)) {
