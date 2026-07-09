@@ -563,9 +563,11 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             create_connection_to(s_current_addr, false);
             break;
         }
-        gap_connectable_control(1);
-        gap_discoverable_control(1);
-        wait_for_controller_page("inquiry-complete-no-target");
+        if (s_have_saved) {
+            wait_for_controller_page("inquiry-complete-no-target");
+        } else {
+            start_inquiry();
+        }
         break;
 
     case HCI_EVENT_COMMAND_STATUS: {
@@ -650,6 +652,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         ESP_LOGI(TAG, "Authentication complete status=0x%02X", status);
         if (status != ERROR_CODE_SUCCESS) {
             gap_drop_link_key_for_bd_addr(s_current_addr);
+            saved_addr_erase();
             s_device_found = false;
             s_new_pair = false;
             s_inquiry_after_disconnect = true;
