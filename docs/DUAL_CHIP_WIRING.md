@@ -79,6 +79,21 @@ esp32_spi ready=1 ... hello_rx=1 ... tsync_rx=1 ... sync=1 ...
 esp32_peer_stats role=2 ver=1 ...
 ```
 
+M61 keeps a small in-RAM ESP32 transport event ring. Use it immediately after a
+failed bring-up or wire test:
+
+```text
+ds5 esp32-log
+ds5 esp32-log clear
+```
+
+The log is RAM-backed, so it survives missed serial capture but not a full M61
+reset. It records HELLO/TIME_SYNC/BT_STATE/FLOW_CREDIT changes, negative ACKs,
+transport errors, BT-not-ready drops, recovery attempts, and wire-test start/end.
+In dual-chip mode, M61 treats ESP32 SPI readiness and ESP32 Bluetooth readiness
+as separate gates; output/audio reports are held until ESP32 reports raw HIDP
+ready through `BT_STATE` or `FLOW_CREDIT`.
+
 To capture the M61 console and check the link in one command:
 
 ```powershell

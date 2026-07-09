@@ -119,6 +119,7 @@ typedef void (*m61_esp32_transport_feature_cb_t)(uint8_t report_id,
 
 void m61_esp32_transport_init(void);
 bool m61_esp32_transport_ready(void);
+bool m61_esp32_transport_bt_ready(void);
 void m61_esp32_transport_set_input_callback(m61_esp32_transport_input_cb_t cb,
                                             void *ctx);
 void m61_esp32_transport_set_feature_callback(m61_esp32_transport_feature_cb_t cb,
@@ -138,6 +139,7 @@ int m61_esp32_transport_request_stats(void);
 void m61_esp32_transport_get_stats(m61_esp32_transport_stats_t *stats);
 void m61_esp32_transport_reset_stats(void);
 void m61_esp32_transport_print_stats(void);
+void m61_esp32_transport_print_events(bool clear_after_print);
 
 #ifdef __cplusplus
 }

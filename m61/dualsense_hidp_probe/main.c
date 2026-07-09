@@ -348,7 +348,7 @@ static bool tick_due(TickType_t now, TickType_t due)
 static bool ds5_bt_transport_ready(void)
 {
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
-    return m61_esp32_transport_ready();
+    return m61_esp32_transport_bt_ready();
 #else
     return hid_interrupt.connected;
 #endif
@@ -2593,6 +2593,7 @@ static void print_help(void)
     printf("  ds5 autoconnect\r\n");
     printf("  ds5 connect <aa:bb:cc:dd:ee:ff|last>\r\n");
     printf("  ds5 esp32-wire-test\r\n");
+    printf("  ds5 esp32-log [clear]\r\n");
     printf("  ds5 security\r\n");
     printf("  ds5 sdp\r\n");
     printf("  ds5 hidp\r\n");
@@ -2894,6 +2895,22 @@ int cmd_ds5(int argc, char **argv)
                err,
                err == 0 ? "green" : "red");
         return err;
+#else
+        printf("dual-chip transport is disabled in this firmware\r\n");
+        return -ENOTSUP;
+#endif
+    }
+
+    if (strcmp(argv[1], "esp32-log") == 0) {
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+        bool clear = argc >= 3 && strcmp(argv[2], "clear") == 0;
+
+        if (argc >= 3 && !clear) {
+            printf("usage: ds5 esp32-log [clear]\r\n");
+            return -EINVAL;
+        }
+        m61_esp32_transport_print_events(clear);
+        return 0;
 #else
         printf("dual-chip transport is disabled in this firmware\r\n");
         return -ENOTSUP;

@@ -96,11 +96,35 @@
     (DS5_DUAL_SPI_HEADER_LEN + DS5_DUAL_SPI_MAX_PAYLOAD)
 #define M61_ESP32_WIRE_TEST_READY_WAIT_MS 10000U
 #define M61_ESP32_SPI_READY_WAIT_MS 20U
+#define M61_ESP32_EVENT_LOG_DEPTH 64U
 
 enum {
     M61_ESP32_RECOVERY_REASON_TX = 1,
     M61_ESP32_RECOVERY_REASON_TIME_SYNC = 2,
 };
+
+typedef enum {
+    M61_ESP32_EVENT_INIT = 1,
+    M61_ESP32_EVENT_HELLO_RX,
+    M61_ESP32_EVENT_TIME_SYNC_RX,
+    M61_ESP32_EVENT_BT_STATE_RX,
+    M61_ESP32_EVENT_FLOW_CREDIT_RX,
+    M61_ESP32_EVENT_ACK_ERROR,
+    M61_ESP32_EVENT_TX_ERROR,
+    M61_ESP32_EVENT_RECOVERY,
+    M61_ESP32_EVENT_WIRE_TEST,
+    M61_ESP32_EVENT_RX_REJECT,
+    M61_ESP32_EVENT_BT_NOT_READY,
+} m61_esp32_event_type_t;
+
+typedef struct {
+    uint32_t time_us;
+    uint8_t type;
+    uint8_t data0;
+    int16_t err;
+    uint32_t data1;
+    uint32_t data2;
+} m61_esp32_event_t;
 
 typedef struct {
     uint16_t seq_ctrl;
@@ -126,6 +150,8 @@ typedef struct {
 static m61_esp32_transport_state_t s_transport;
 static uint8_t s_spi_tx_frame[M61_ESP32_SPI_TRANSACTION_LEN];
 static uint8_t s_spi_rx_frame[M61_ESP32_SPI_TRANSACTION_LEN];
+static m61_esp32_event_t s_event_log[M61_ESP32_EVENT_LOG_DEPTH];
+static uint32_t s_event_seq;
 static uint32_t s_diag_tx_log_count;
 static uint32_t s_diag_exchange_log_count;
 static uint32_t s_diag_rx_reject_count;
@@ -158,6 +184,58 @@ static bool spi_pins_configured(void)
 static uint32_t local_time_us(void)
 {
     return (uint32_t)bflb_mtimer_get_time_us();
+}
+
+static bool event_log_interesting_counter(uint32_t value)
+{
+    return value < 8U || (value & (value - 1U)) == 0U;
+}
+
+static void note_event(m61_esp32_event_type_t type,
+                       uint8_t data0,
+                       int err,
+                       uint32_t data1,
+                       uint32_t data2)
+{
+    uint32_t seq = s_event_seq++;
+    m61_esp32_event_t *event = &s_event_log[seq % M61_ESP32_EVENT_LOG_DEPTH];
+
+    event->time_us = local_time_us();
+    event->type = (uint8_t)type;
+    event->data0 = data0;
+    event->err = (int16_t)err;
+    event->data1 = data1;
+    event->data2 = data2;
+}
+
+static const char *event_name(uint8_t type)
+{
+    switch ((m61_esp32_event_type_t)type) {
+    case M61_ESP32_EVENT_INIT:
+        return "init";
+    case M61_ESP32_EVENT_HELLO_RX:
+        return "hello_rx";
+    case M61_ESP32_EVENT_TIME_SYNC_RX:
+        return "time_sync_rx";
+    case M61_ESP32_EVENT_BT_STATE_RX:
+        return "bt_state_rx";
+    case M61_ESP32_EVENT_FLOW_CREDIT_RX:
+        return "flow_credit_rx";
+    case M61_ESP32_EVENT_ACK_ERROR:
+        return "ack_error";
+    case M61_ESP32_EVENT_TX_ERROR:
+        return "tx_error";
+    case M61_ESP32_EVENT_RECOVERY:
+        return "recovery";
+    case M61_ESP32_EVENT_WIRE_TEST:
+        return "wire_test";
+    case M61_ESP32_EVENT_RX_REJECT:
+        return "rx_reject";
+    case M61_ESP32_EVENT_BT_NOT_READY:
+        return "bt_not_ready";
+    default:
+        return "unknown";
+    }
 }
 
 static uint16_t diag_load_u16_le(const uint8_t *src)
@@ -228,6 +306,12 @@ static void diag_log_rx_reject(const char *reason, const uint8_t *frame, size_t 
 {
     uint32_t count = ++s_diag_rx_reject_count;
     char prefix[48];
+
+    note_event(M61_ESP32_EVENT_RX_REJECT,
+               frame != NULL && frame_len > 3U ? frame[3] : 0U,
+               0,
+               count,
+               frame_len);
 
     if (count > 12U && (count % 64U) != 0U) {
         return;
@@ -301,6 +385,7 @@ static void perform_recovery(uint8_t reason)
     s_transport.stats.last_recovery_reason = reason;
     s_transport.stats.last_recovery_local_us = now_us;
     s_transport.stats.recovery_consecutive_errors = 0;
+    note_event(M61_ESP32_EVENT_RECOVERY, reason, 0, now_us, s_transport.stats.recovery_attempts);
 
     if (s_transport.gpio == NULL || !reset_pin_configured()) {
         s_transport.stats.recovery_skipped_no_reset++;
@@ -508,6 +593,14 @@ static int require_peer_link_ready(void)
 
     s_transport.stats.not_ready++;
     s_transport.stats.last_error = -ENOTCONN;
+    if (event_log_interesting_counter(s_transport.stats.not_ready)) {
+        note_event(M61_ESP32_EVENT_BT_NOT_READY,
+                   0,
+                   -ENOTCONN,
+                   s_transport.stats.rx_hello,
+                   ((uint32_t)s_transport.stats.peer_role << 8) |
+                       s_transport.stats.peer_protocol_version);
+    }
     return -ENOTCONN;
 }
 
@@ -565,6 +658,11 @@ static void handle_rx_hello(const uint8_t *payload, size_t payload_len)
     s_transport.stats.peer_spi_mtu = hello.spi_mtu;
     s_transport.stats.peer_tx_queue_depth = hello.tx_queue_depth;
     s_transport.stats.peer_capabilities = hello.capabilities;
+    note_event(M61_ESP32_EVENT_HELLO_RX,
+               hello.role,
+               0,
+               ((uint32_t)hello.protocol_version << 16) | hello.spi_mtu,
+               hello.capabilities);
 }
 
 static void handle_rx_time_sync(const uint8_t *payload, size_t payload_len)
@@ -593,6 +691,11 @@ static void handle_rx_time_sync(const uint8_t *payload, size_t payload_len)
     s_transport.stats.last_time_sync_rtt_us = rtt_us;
     s_transport.stats.last_time_sync_local_us = now_us;
     s_transport.stats.esp_time_offset_us = offset_us;
+    note_event(M61_ESP32_EVENT_TIME_SYNC_RX,
+               0,
+               0,
+               rtt_us,
+               (uint32_t)offset_us);
 }
 
 static void handle_rx_bt_state(const uint8_t *payload, size_t payload_len)
@@ -614,6 +717,11 @@ static void handle_rx_bt_state(const uint8_t *payload, size_t payload_len)
     s_transport.stats.peer_bt_interrupt_mtu = state.interrupt_mtu;
     memcpy(s_transport.stats.peer_bt_bda, state.bda, sizeof(state.bda));
     s_transport.stats.peer_bt_state_seq = state.state_seq;
+    note_event(M61_ESP32_EVENT_BT_STATE_RX,
+               state.reconnect_failures,
+               state.last_error,
+               state.flags,
+               ((uint32_t)state.control_mtu << 16) | state.interrupt_mtu);
 }
 
 static void handle_rx_stats(const uint8_t *payload, size_t payload_len)
@@ -681,6 +789,13 @@ static void process_rx_frame(const uint8_t *frame, size_t frame_len)
             s_transport.stats.last_ack_seq = ack.seq;
             s_transport.stats.last_ack_type = ack.type;
             s_transport.stats.last_ack_status = ack.status;
+            if (ack.status < 0) {
+                note_event(M61_ESP32_EVENT_ACK_ERROR,
+                           ack.type,
+                           ack.status,
+                           ack.seq,
+                           s_transport.stats.rx_ack);
+            }
         } else {
             s_transport.stats.frame_errors++;
         }
@@ -722,6 +837,12 @@ static void process_rx_frame(const uint8_t *frame, size_t frame_len)
         ds5_dual_flow_credit_t credit;
 
         if (ds5_dual_flow_credit_decode(payload, header.length, &credit)) {
+            uint8_t prev_free = s_transport.stats.last_credit_free;
+            uint8_t prev_depth = s_transport.stats.last_credit_depth;
+            uint8_t prev_ready = s_transport.stats.last_credit_bt_ready;
+            uint32_t prev_errors = s_transport.stats.peer_hidp_tx_errors;
+            int prev_last_err = s_transport.stats.peer_hidp_last_err;
+
             s_transport.stats.rx_flow_credit++;
             s_transport.stats.last_credit_free = credit.tx_queue_free;
             s_transport.stats.last_credit_depth = credit.tx_queue_depth;
@@ -729,6 +850,18 @@ static void process_rx_frame(const uint8_t *frame, size_t frame_len)
             s_transport.stats.peer_queue_drops = credit.spi_queue_drops;
             s_transport.stats.peer_hidp_tx_errors = credit.hidp_tx_errors;
             s_transport.stats.peer_hidp_last_err = credit.hidp_last_err;
+            if (s_transport.stats.rx_flow_credit == 1U ||
+                prev_ready != s_transport.stats.last_credit_bt_ready ||
+                prev_free != s_transport.stats.last_credit_free ||
+                prev_depth != s_transport.stats.last_credit_depth ||
+                prev_errors != s_transport.stats.peer_hidp_tx_errors ||
+                prev_last_err != s_transport.stats.peer_hidp_last_err) {
+                note_event(M61_ESP32_EVENT_FLOW_CREDIT_RX,
+                           credit.bt_ready ? 1U : 0U,
+                           credit.hidp_last_err,
+                           ((uint32_t)credit.tx_queue_depth << 8) | credit.tx_queue_free,
+                           credit.hidp_tx_errors);
+            }
         } else {
             s_transport.stats.frame_errors++;
         }
@@ -1017,6 +1150,7 @@ static int send_payload(uint8_t type,
                CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT :
                0U)) :
         1U;
+    bool ack_failure = false;
     bool peer_ack_status_error = false;
     int err;
 
@@ -1028,6 +1162,13 @@ static int send_payload(uint8_t type,
     if (!s_transport.ready) {
         s_transport.stats.not_ready++;
         s_transport.stats.last_error = -ENOTCONN;
+        if (event_log_interesting_counter(s_transport.stats.not_ready)) {
+            note_event(M61_ESP32_EVENT_TX_ERROR,
+                       type,
+                       -ENOTCONN,
+                       flags,
+                       payload_len);
+        }
         return -ENOTCONN;
     }
     if (s_transport.stats.rx_flow_credit > 0 &&
@@ -1035,6 +1176,13 @@ static int send_payload(uint8_t type,
         if (!s_transport.stats.last_credit_bt_ready) {
             s_transport.stats.not_ready++;
             s_transport.stats.last_error = -ENOTCONN;
+            if (event_log_interesting_counter(s_transport.stats.not_ready)) {
+                note_event(M61_ESP32_EVENT_BT_NOT_READY,
+                           type,
+                           -ENOTCONN,
+                           s_transport.stats.peer_bt_flags,
+                           s_transport.stats.rx_flow_credit);
+            }
             return -ENOTCONN;
         }
         if (s_transport.stats.last_credit_free == 0) {
@@ -1103,6 +1251,7 @@ static int send_payload(uint8_t type,
             break;
         }
         err = ack_result;
+        ack_failure = true;
         peer_ack_status_error = got_peer_ack;
         if (attempt + 1U < max_attempts &&
             ack_result_should_retry(ack_result)) {
@@ -1117,6 +1266,11 @@ static int send_payload(uint8_t type,
     }
     if (err < 0) {
         s_transport.stats.last_error = err;
+        note_event(ack_failure ? M61_ESP32_EVENT_ACK_ERROR : M61_ESP32_EVENT_TX_ERROR,
+                   type,
+                   err,
+                   ((uint32_t)seq << 16) | flags,
+                   payload_len);
         if (!peer_ack_status_error) {
             mark_transport_error(err, M61_ESP32_RECOVERY_REASON_TX);
         }
@@ -1240,6 +1394,11 @@ void m61_esp32_transport_init(void)
     if (s_transport.ready) {
         start_bringup_task();
     }
+    note_event(M61_ESP32_EVENT_INIT,
+               s_transport.ready ? 1U : 0U,
+               err,
+               CONFIG_M61_ESP32_SPI_FREQ_HZ,
+               (uint32_t)CONFIG_M61_ESP32_SPI_CS_PIN);
     printf("M61 ESP32 dual-chip SPI transport %s enable=%u pins=%d/%d/%d/%d ready_pin=%d irq_pin=%d reset_pin=%d rx_poll=%u tsync_ms=%d recov_threshold=%d recov_cooldown_ms=%d err=%d hello=%lu time_sync=%lu sync_fail=%lu sync_valid=%u rtt_us=%lu offset_us=%ld peer_role=%u peer_ver=%u peer_mtu=%u peer_caps=0x%08lx\r\n",
            s_transport.ready ? "ready" : "not ready",
            CONFIG_M61_ESP32_SPI_ENABLE ? 1U : 0U,
@@ -1270,6 +1429,18 @@ void m61_esp32_transport_init(void)
 bool m61_esp32_transport_ready(void)
 {
     return s_transport.ready;
+}
+
+bool m61_esp32_transport_bt_ready(void)
+{
+    if (!s_transport.ready || !peer_link_ready()) {
+        return false;
+    }
+    if ((s_transport.stats.peer_bt_flags & DS5_DUAL_BT_STATE_READY) != 0U) {
+        return true;
+    }
+    return s_transport.stats.rx_flow_credit > 0 &&
+           s_transport.stats.last_credit_bt_ready != 0U;
 }
 
 void m61_esp32_transport_set_input_callback(m61_esp32_transport_input_cb_t cb,
@@ -1307,12 +1478,25 @@ int m61_esp32_transport_send_bt_report(const uint8_t *report,
     if (err < 0) {
         return err;
     }
-
     if (ds5_dual_spi_report_is_audio_rt(report, report_len)) {
         type = DS5_DUAL_MSG_BT_TX_AUDIO_RT;
         channel = DS5_DUAL_CHANNEL_AUDIO;
         priority = DS5_DUAL_PRIORITY_RT;
         flags = DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK;
+    }
+    if (!m61_esp32_transport_bt_ready()) {
+        s_transport.stats.not_ready++;
+        s_transport.stats.last_error = -ENOTCONN;
+        if (event_log_interesting_counter(s_transport.stats.not_ready)) {
+            note_event(M61_ESP32_EVENT_BT_NOT_READY,
+                       type,
+                       -ENOTCONN,
+                       s_transport.stats.peer_bt_flags,
+                       ((uint32_t)s_transport.stats.last_credit_bt_ready << 24) |
+                           ((uint32_t)s_transport.stats.last_credit_depth << 8) |
+                           s_transport.stats.last_credit_free);
+        }
+        return -ENOTCONN;
     }
 
     err = send_payload(type, flags, channel, priority, deadline_tick, report, report_len);
@@ -1613,9 +1797,19 @@ int m61_esp32_transport_wire_test(void)
            CONFIG_M61_ESP32_SPI_CS_PIN,
            CONFIG_M61_ESP32_READY_PIN,
            CONFIG_M61_ESP32_IRQ_PIN);
+    note_event(M61_ESP32_EVENT_WIRE_TEST,
+               DS5_DUAL_WIRE_TEST_START,
+               0,
+               s_transport.ready ? 1U : 0U,
+               s_transport.stats.rx_hello);
 
     if (!s_transport.ready) {
         print_wire_test_check("transport_ready", false, "err", s_transport.stats.last_error);
+        note_event(M61_ESP32_EVENT_WIRE_TEST,
+                   DS5_DUAL_WIRE_TEST_FAIL,
+                   -ENOTCONN,
+                   0,
+                   s_transport.stats.last_error);
         return -ENOTCONN;
     }
 
@@ -1735,6 +1929,13 @@ int m61_esp32_transport_wire_test(void)
            irq_seen ? 1U : 0U,
            (unsigned int)s_transport.stats.peer_role,
            (unsigned int)s_transport.stats.peer_stats_role);
+    note_event(M61_ESP32_EVENT_WIRE_TEST,
+               all_ok ? DS5_DUAL_WIRE_TEST_PASS : DS5_DUAL_WIRE_TEST_FAIL,
+               all_ok ? 0 : -EIO,
+               ((uint32_t)s_transport.stats.rx_ack << 16) |
+                   ((uint32_t)s_transport.stats.rx_time_sync & 0xFFFFU),
+               ((uint32_t)s_transport.stats.rx_stats << 16) |
+                   (uint32_t)s_transport.stats.peer_role);
 
     return all_ok ? 0 : -EIO;
 }
@@ -1968,4 +2169,40 @@ void m61_esp32_transport_print_stats(void)
            (unsigned long)s_transport.stats.peer_stats_flow_credit_tx,
            (unsigned long)s_transport.stats.peer_stats_bt_connect_rx,
            (unsigned long)s_transport.stats.peer_stats_bt_disconnect_rx);
+}
+
+void m61_esp32_transport_print_events(bool clear_after_print)
+{
+    uint32_t total = s_event_seq;
+    uint32_t start = total > M61_ESP32_EVENT_LOG_DEPTH ?
+        total - M61_ESP32_EVENT_LOG_DEPTH :
+        0U;
+
+    printf("esp32_event_log count=%lu total=%lu clear_after=%u\r\n",
+           (unsigned long)(total - start),
+           (unsigned long)total,
+           clear_after_print ? 1U : 0U);
+    for (uint32_t seq = start; seq < total; seq++) {
+        const m61_esp32_event_t *event =
+            &s_event_log[seq % M61_ESP32_EVENT_LOG_DEPTH];
+
+        if (event->type == 0U) {
+            continue;
+        }
+        printf("esp32_event seq=%lu t_us=%lu name=%s type=%u d0=%u err=%d d1=%lu d2=%lu\r\n",
+               (unsigned long)seq,
+               (unsigned long)event->time_us,
+               event_name(event->type),
+               (unsigned int)event->type,
+               (unsigned int)event->data0,
+               (int)event->err,
+               (unsigned long)event->data1,
+               (unsigned long)event->data2);
+    }
+
+    if (clear_after_print) {
+        memset(s_event_log, 0, sizeof(s_event_log));
+        s_event_seq = 0;
+        printf("esp32_event_log cleared\r\n");
+    }
 }
