@@ -71,6 +71,7 @@
 #define DS5_RAW_RX_TASK_STACK 4096
 #define DS5_RAW_BRINGUP_TASK_STACK 4096
 #define DS5_RAW_RX_BUFFER_LEN 768
+#define DS5_RAW_BRINGUP_SETTLE_MS 200
 #define DS5_RAW_RECONNECT_DELAY_US (2 * 1000 * 1000)
 #define DS5_RAW_SAVED_RECONNECT_WAIT_US (5 * 1000 * 1000)
 #define DS5_RAW_PERSIST_SETTLE_US (5 * 1000 * 1000)
@@ -172,6 +173,15 @@ static raw_hidp_channel_t s_interrupt = {
     .psm = DS5_HIDP_PSM_INTERRUPT,
     .fd = -1,
 };
+
+void __attribute__((weak)) bt_dualsense_raw_hidp_note_tx(const uint8_t *data,
+                                                         size_t len,
+                                                         int status)
+{
+    (void)data;
+    (void)len;
+    (void)status;
+}
 
 static void start_connect_flow(void);
 static void start_discovery(void);
@@ -1302,6 +1312,9 @@ static void bringup_task(void *arg)
             (notify_bits & DS5_RAW_BRINGUP_NOTIFY_RETRY) != 0 ?
             "retry" :
             (s_bringup_pending_reason != NULL ? s_bringup_pending_reason : "worker");
+        if ((notify_bits & DS5_RAW_BRINGUP_NOTIFY_INITIAL) != 0) {
+            vTaskDelay(pdMS_TO_TICKS(DS5_RAW_BRINGUP_SETTLE_MS));
+        }
         send_bringup(reason);
     }
 }
@@ -1506,9 +1519,11 @@ static int raw_write(raw_hidp_channel_t *channel, const uint8_t *data, size_t le
     int written = write(channel->fd, data, len);
     int64_t duration_us = esp_timer_get_time() - start_us;
     if (written != (int)len) {
+        int err = written < 0 ? -errno : -EIO;
         ESP_LOGW(TAG, "Raw HIDP %s write len=%u result=%d errno=%d dur_us=%" PRId64,
                  channel->name, (unsigned)len, written, errno, duration_us);
-        return written < 0 ? -errno : -EIO;
+        bt_dualsense_raw_hidp_note_tx(data, len, err);
+        return err;
     }
 
     if (duration_us > 50000) {
@@ -1518,6 +1533,7 @@ static int raw_write(raw_hidp_channel_t *channel, const uint8_t *data, size_t le
         ESP_LOGI(TAG, "Raw HIDP %s tx len=%u first=0x%02X dur_us=%" PRId64,
                  channel->name, (unsigned)len, data[0], duration_us);
     }
+    bt_dualsense_raw_hidp_note_tx(data, len, 0);
     return 0;
 }
 

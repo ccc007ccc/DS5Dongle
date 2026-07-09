@@ -117,6 +117,30 @@ static void note_hidp_report(uint8_t report_id)
         break;
     }
 }
+
+void bt_dualsense_raw_hidp_note_tx(const uint8_t *data, size_t len, int status)
+{
+    if (status != 0) {
+        s_stats.hidp_tx_errors++;
+        s_stats.hidp_last_err = status;
+        return;
+    }
+
+    s_stats.hidp_last_err = 0;
+    if (data == NULL || len == 0) {
+        return;
+    }
+
+    if (data[0] == (uint8_t)(0x40 | 0x03)) {
+        s_stats.hidp_tx_feature_get++;
+    } else if (data[0] == (uint8_t)(0x50 | 0x03)) {
+        s_stats.hidp_tx_feature_set++;
+    } else if (data[0] == 0xA2 && len > 1) {
+        note_hidp_report(data[1]);
+    } else {
+        note_hidp_report(data[0]);
+    }
+}
 #endif
 
 static bool enqueue_latest(const dual_chip_tx_item_t *item)
@@ -869,9 +893,6 @@ static void tx_task(void *arg)
                 err = -EINVAL;
             } else {
                 err = bt_dualsense_raw_hidp_get_feature(item.payload[0]);
-                if (err == 0) {
-                    s_stats.hidp_tx_feature_get++;
-                }
             }
         } else if (item.type == DS5_DUAL_MSG_BT_TX_FEATURE_SET) {
             if (item.len < 1U) {
@@ -880,9 +901,6 @@ static void tx_task(void *arg)
                 err = bt_dualsense_raw_hidp_set_feature(item.payload[0],
                                                         item.payload + 1,
                                                         item.len - 1U);
-                if (err == 0) {
-                    s_stats.hidp_tx_feature_set++;
-                }
             }
         } else {
             err = bt_dualsense_raw_hidp_send_report(
@@ -901,7 +919,6 @@ static void tx_task(void *arg)
                     item.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT) &&
                    item.len > 0) {
             s_stats.hidp_last_err = 0;
-            note_hidp_report(item.payload[0]);
         } else {
             s_stats.hidp_last_err = 0;
         }
