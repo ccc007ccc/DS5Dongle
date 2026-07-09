@@ -69,12 +69,15 @@
 #define DS5_HIDP_REPORT_TYPE_OUTPUT 0x02
 #define DS5_HIDP_REPORT_TYPE_FEATURE 0x03
 #define DS5_RAW_RX_TASK_STACK 4096
+#define DS5_RAW_BRINGUP_TASK_STACK 4096
 #define DS5_RAW_RX_BUFFER_LEN 768
 #define DS5_RAW_RECONNECT_DELAY_US (2 * 1000 * 1000)
 #define DS5_RAW_SAVED_RECONNECT_WAIT_US (5 * 1000 * 1000)
 #define DS5_RAW_PERSIST_SETTLE_US (5 * 1000 * 1000)
 #define DS5_RAW_MAX_SAVED_RECONNECT_FAILURES 3
 #define DS5_BLACKLIST_MAX 8
+#define DS5_RAW_BRINGUP_NOTIFY_INITIAL 0x00000001UL
+#define DS5_RAW_BRINGUP_NOTIFY_RETRY 0x00000002UL
 
 typedef enum {
     RAW_CH_CONTROL = 0,
@@ -145,6 +148,8 @@ static uint8_t s_blacklist_count;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_bringup_timer;
 static esp_timer_handle_t s_persist_timer;
+static TaskHandle_t s_bringup_task;
+static const char *s_bringup_pending_reason;
 static bool s_saved_bda_dirty;
 static bool s_blacklist_dirty;
 static bt_dualsense_raw_hidp_rx_cb_t s_rx_cb;
@@ -174,6 +179,7 @@ static void close_channel(raw_hidp_channel_t *channel);
 static void connect_hidp_control(void);
 static void connect_hidp_interrupt(void);
 static void send_bringup(const char *reason);
+static void queue_bringup_attempt(const char *reason, uint32_t notify_bits);
 static void notify_state(void);
 static void stop_bringup_timer(void);
 static void stop_reconnect_timer(void);
@@ -1256,11 +1262,48 @@ static void persist_timer_cb(void *arg)
 static void bringup_timer_cb(void *arg)
 {
     (void)arg;
-    if (s_bringup_attempts >= CONFIG_DS5_BRINGUP_RETRIES && !s_have_full_report) {
-        handle_bringup_failure("retry-exhausted");
+    queue_bringup_attempt("retry", DS5_RAW_BRINGUP_NOTIFY_RETRY);
+}
+
+static void queue_bringup_attempt(const char *reason, uint32_t notify_bits)
+{
+    if (s_bringup_task == NULL) {
+        ESP_LOGW(TAG, "Raw HIDP bring-up worker is not running reason=%s",
+                 reason != NULL ? reason : "?");
         return;
     }
-    send_bringup("retry");
+
+    if (reason != NULL) {
+        s_bringup_pending_reason = reason;
+    }
+    xTaskNotify(s_bringup_task,
+                notify_bits != 0 ? notify_bits : DS5_RAW_BRINGUP_NOTIFY_INITIAL,
+                eSetBits);
+}
+
+static void bringup_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        uint32_t notify_bits = 0;
+        if (xTaskNotifyWait(0, UINT32_MAX, &notify_bits, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        if ((notify_bits & DS5_RAW_BRINGUP_NOTIFY_RETRY) != 0 &&
+            s_bringup_attempts >= CONFIG_DS5_BRINGUP_RETRIES &&
+            !s_have_full_report) {
+            handle_bringup_failure("retry-exhausted");
+            continue;
+        }
+
+        const char *reason =
+            (notify_bits & DS5_RAW_BRINGUP_NOTIFY_RETRY) != 0 ?
+            "retry" :
+            (s_bringup_pending_reason != NULL ? s_bringup_pending_reason : "worker");
+        send_bringup(reason);
+    }
 }
 
 static esp_err_t connect_psm(raw_connect_step_t step, uint16_t psm)
@@ -1459,15 +1502,22 @@ static int raw_write(raw_hidp_channel_t *channel, const uint8_t *data, size_t le
         return -EINVAL;
     }
 
+    int64_t start_us = esp_timer_get_time();
     int written = write(channel->fd, data, len);
+    int64_t duration_us = esp_timer_get_time() - start_us;
     if (written != (int)len) {
-        ESP_LOGW(TAG, "Raw HIDP %s write len=%u result=%d errno=%d",
-                 channel->name, (unsigned)len, written, errno);
+        ESP_LOGW(TAG, "Raw HIDP %s write len=%u result=%d errno=%d dur_us=%" PRId64,
+                 channel->name, (unsigned)len, written, errno, duration_us);
         return written < 0 ? -errno : -EIO;
     }
 
-    ESP_LOGI(TAG, "Raw HIDP %s tx len=%u first=0x%02X",
-             channel->name, (unsigned)len, data[0]);
+    if (duration_us > 50000) {
+        ESP_LOGW(TAG, "Raw HIDP %s tx len=%u first=0x%02X dur_us=%" PRId64,
+                 channel->name, (unsigned)len, data[0], duration_us);
+    } else {
+        ESP_LOGI(TAG, "Raw HIDP %s tx len=%u first=0x%02X dur_us=%" PRId64,
+                 channel->name, (unsigned)len, data[0], duration_us);
+    }
     return 0;
 }
 
@@ -1752,12 +1802,12 @@ static void maybe_start_hidp_bringup(const char *reason)
     set_scan_availability(false, "hid-channels-open");
     led_status_set(DS5_LED_STATE_BT_CONNECTING);
     ESP_LOGI(TAG,
-             "Raw HIDP starting DualSense bring-up reason=%s ctl_fd=%d int_fd=%d attempts=%u",
+             "Raw HIDP queueing DualSense bring-up reason=%s ctl_fd=%d int_fd=%d attempts=%u",
              reason != NULL ? reason : "event",
              s_control.fd,
              s_interrupt.fd,
              (unsigned)s_bringup_attempts);
-    send_bringup(reason);
+    queue_bringup_attempt(reason, DS5_RAW_BRINGUP_NOTIFY_INITIAL);
 }
 
 static void send_bringup(const char *reason)
@@ -2477,6 +2527,20 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
         .name = "raw_hidp_persist",
     };
     ESP_ERROR_CHECK(esp_timer_create(&persist_timer_args, &s_persist_timer));
+
+    if (s_bringup_task == NULL) {
+        BaseType_t ok = xTaskCreate(bringup_task,
+                                    "raw_hidp_bringup",
+                                    DS5_RAW_BRINGUP_TASK_STACK,
+                                    NULL,
+                                    6,
+                                    &s_bringup_task);
+        if (ok != pdPASS) {
+            ESP_LOGE(TAG, "Raw HIDP failed to start bring-up worker");
+            s_bringup_task = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     err = esp_bt_l2cap_init();
     if (err != ESP_OK) {

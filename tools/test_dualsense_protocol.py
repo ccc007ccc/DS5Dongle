@@ -1177,7 +1177,7 @@ def test_c_source_contract() -> None:
         "bind_target_peer_if_needed",
         "finalize_ready_peer(\"full-report\")",
         "Raw HIDP bring-up failed after %u attempts reason=%s",
-        "Raw HIDP starting DualSense bring-up reason=%s",
+        "Raw HIDP queueing DualSense bring-up reason=%s",
         "Raw HIDP removed %s from blacklist after validated DualSense report; persist deferred",
         "Raw HIDP resuming explicit target %s after stack ready",
         "Raw HIDP preserving manual target %s across reconnect timer",
