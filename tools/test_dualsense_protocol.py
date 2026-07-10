@@ -1154,6 +1154,7 @@ def test_c_source_contract() -> None:
         assert snippet in combined_m61_dse_source, f"missing M61 DSE bridge snippet: {snippet}"
     assert "m61_ds5_dse.c" in m61_cmake_source
     assert "m61_ds5_bridge_config.c" in m61_cmake_source
+    assert "m61_ds5_inactivity.c" in m61_cmake_source
     assert "m61_haptics_resampler" not in m61_cmake_source
     assert "resample.cpp" not in m61_cmake_source
 

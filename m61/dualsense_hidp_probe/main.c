@@ -11,6 +11,7 @@
 #include "dual_chip_spi_proto.h"
 #include "m61_ds5_bridge_config.h"
 #include "m61_ds5_dse.h"
+#include "m61_ds5_inactivity.h"
 #include "m61_esp32_transport.h"
 #include "m61_usb_gamepad.h"
 
@@ -283,6 +284,8 @@ static bool hid_control_prepare_pending;
 static bool hid_interrupt_prepare_pending;
 static bool disconnect_cleanup_scheduled;
 static TickType_t disconnect_cleanup_tick;
+static m61_ds5_inactivity_t inactivity_tracker;
+static bool inactivity_disconnect_pending;
 
 #if CONFIG_M61_DS5_AUTO_START
 static bool auto_start_enabled = true;
@@ -357,6 +360,73 @@ static bool ds5_bt_transport_ready(void)
 #endif
 }
 
+static uint32_t inactivity_now_ms(void)
+{
+    return (uint32_t)xTaskGetTickCount() * (uint32_t)portTICK_PERIOD_MS;
+}
+
+static void note_controller_inactivity(const dualsense_state_t *state)
+{
+    bool disconnect_due;
+    uint8_t inactive_minutes;
+
+    if (state == NULL || !state->is_full_report) {
+        return;
+    }
+
+    inactive_minutes = m61_ds5_bridge_config_get()->inactive_time;
+    taskENTER_CRITICAL();
+    disconnect_due = m61_ds5_inactivity_note_report(&inactivity_tracker,
+                                                     state,
+                                                     inactivity_now_ms(),
+                                                     inactive_minutes);
+    if (disconnect_due) {
+        inactivity_disconnect_pending = true;
+    }
+    taskEXIT_CRITICAL();
+}
+
+static void reset_controller_inactivity(void)
+{
+    taskENTER_CRITICAL();
+    m61_ds5_inactivity_reset(&inactivity_tracker);
+    inactivity_disconnect_pending = false;
+    taskEXIT_CRITICAL();
+}
+
+static void process_controller_inactivity_disconnect(void)
+{
+    bool pending;
+    int err;
+
+    if (!ds5_bt_transport_ready()) {
+        reset_controller_inactivity();
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    pending = inactivity_disconnect_pending;
+    inactivity_disconnect_pending = false;
+    taskEXIT_CRITICAL();
+    if (!pending) {
+        return;
+    }
+
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+    err = m61_esp32_transport_disconnect(true);
+#else
+    err = default_conn != NULL ?
+        bt_conn_disconnect(default_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN) :
+        -ENOTCONN;
+#endif
+    printf("inactive controller disconnect result=%d\r\n", err);
+    if (err != 0) {
+        taskENTER_CRITICAL();
+        m61_ds5_inactivity_retry(&inactivity_tracker);
+        taskEXIT_CRITICAL();
+    }
+}
+
 static void maybe_remote_wake_on_input(const dualsense_state_t *state)
 {
     bool changed;
@@ -416,6 +486,7 @@ static void auto_reset_link_state(void)
     auto_next_hidp_tick = 0;
     auto_next_bringup_tick = 0;
     br_connected_tick = xTaskGetTickCount();
+    reset_controller_inactivity();
     m61_usb_gamepad_reset_feature_cache();
     m61_ds5_dse_reset();
 }
@@ -1186,6 +1257,7 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
         if (state.is_full_report) {
             dualsense_headphones_connected = state.headphones;
         }
+        note_controller_inactivity(&state);
         maybe_remote_wake_on_input(&state);
         if (state.is_full_report && parse.payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN) {
             m61_usb_gamepad_send_report01(buf->data + parse.payload_offset,
@@ -1243,6 +1315,7 @@ static void dual_chip_input_callback(const uint8_t *payload,
     if (state->is_full_report) {
         dualsense_headphones_connected = state->headphones;
     }
+    note_controller_inactivity(state);
     maybe_remote_wake_on_input(state);
     if (state->is_full_report &&
         parse->payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN &&
@@ -1973,6 +2046,8 @@ static void usb_hid_bridge_task(void *pvParameters)
         bool host_mic_active = m61_usb_gamepad_audio_in_active();
         bool speaker_active = m61_usb_gamepad_audio_speaker_active();
         bool bt_mic_active = host_mic_active && !speaker_active;
+
+        process_controller_inactivity_disconnect();
 
         if (!speaker_active) {
             pending_speaker_count = 0;
