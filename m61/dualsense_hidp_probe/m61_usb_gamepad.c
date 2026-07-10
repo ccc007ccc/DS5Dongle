@@ -30,7 +30,8 @@
 #endif
 
 #define USBD_VID 0x054C
-#define USBD_PID 0x0CE6
+#define USBD_PID_DS5 0x0CE6
+#define USBD_PID_DSE 0x0DF2
 #define USBD_MAX_POWER 500
 #define ITF_NUM_AUDIO_CONTROL 0
 #define ITF_NUM_AUDIO_STREAMING_OUT 1
@@ -59,7 +60,8 @@
 #define USB_DUALSENSE_CONFIG_DESC_KBD_SIZE 25
 #define USB_DUALSENSE_CONFIG_DESC_SIZE \
     (USB_DUALSENSE_CONFIG_DESC_BASE_SIZE + USB_DUALSENSE_CONFIG_DESC_KBD_SIZE)
-#define HID_DUALSENSE_REPORT_DESC_SIZE 321
+#define HID_DS5_REPORT_DESC_SIZE 321
+#define HID_DSE_REPORT_DESC_SIZE 437
 #define FEATURE_CACHE_SLOTS 12
 #define AUDIO_INPUT_CHANNELS 4
 #define AUDIO_BYTES_PER_SAMPLE 2
@@ -150,11 +152,11 @@ typedef struct {
 
 #if CONFIG_M61_USB_GAMEPAD_ENABLE
 static const uint8_t device_descriptor[] = {
-    USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0x00, 0x00, 0x00, USBD_VID, USBD_PID, 0x0100, 0x01)
+    USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0x00, 0x00, 0x00, USBD_VID, USBD_PID_DS5, 0x0100, 0x01)
 };
 static uint8_t device_descriptor_runtime[sizeof(device_descriptor)];
 
-static const uint8_t dualsense_report_desc[HID_DUALSENSE_REPORT_DESC_SIZE] = {
+static const uint8_t dualsense_ds5_report_desc[HID_DS5_REPORT_DESC_SIZE] = {
     0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x85, 0x01,
     0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35,
     0x09, 0x33, 0x09, 0x34, 0x15, 0x00, 0x26, 0xFF,
@@ -196,6 +198,64 @@ static const uint8_t dualsense_report_desc[HID_DUALSENSE_REPORT_DESC_SIZE] = {
     0x85, 0xF8, 0x09, 0x39, 0x95, 0x3F, 0xB1, 0x02,
     0x85, 0xF9, 0x09, 0x3A, 0x95, 0x3F, 0xB1, 0x02,
     0xC0,
+};
+
+static const uint8_t dualsense_dse_report_desc[HID_DSE_REPORT_DESC_SIZE] = {
+    0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x85, 0x01,
+    0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35,
+    0x09, 0x33, 0x09, 0x34, 0x15, 0x00, 0x26, 0xFF,
+    0x00, 0x75, 0x08, 0x95, 0x06, 0x81, 0x02, 0x06,
+    0x00, 0xFF, 0x09, 0x20, 0x95, 0x01, 0x81, 0x02,
+    0x05, 0x01, 0x09, 0x39, 0x15, 0x00, 0x25, 0x07,
+    0x35, 0x00, 0x46, 0x3B, 0x01, 0x65, 0x14, 0x75,
+    0x04, 0x95, 0x01, 0x81, 0x42, 0x65, 0x00, 0x05,
+    0x09, 0x19, 0x01, 0x29, 0x0F, 0x15, 0x00, 0x25,
+    0x01, 0x75, 0x01, 0x95, 0x0F, 0x81, 0x02, 0x06,
+    0x00, 0xFF, 0x09, 0x21, 0x95, 0x0D, 0x81, 0x02,
+    0x06, 0x00, 0xFF, 0x09, 0x22, 0x15, 0x00, 0x26,
+    0xFF, 0x00, 0x75, 0x08, 0x95, 0x34, 0x81, 0x02,
+    0x85, 0x02, 0x09, 0x23, 0x95, 0x3F, 0x91, 0x02,
+    0x85, 0x05, 0x09, 0x33, 0x95, 0x28, 0xB1, 0x02,
+    0x85, 0x08, 0x09, 0x34, 0x95, 0x2F, 0xB1, 0x02,
+    0x85, 0x09, 0x09, 0x24, 0x95, 0x13, 0xB1, 0x02,
+    0x85, 0x0A, 0x09, 0x25, 0x95, 0x1A, 0xB1, 0x02,
+    0x85, 0x0B, 0x09, 0x41, 0x95, 0x29, 0xB1, 0x02,
+    0x85, 0x0C, 0x09, 0x42, 0x95, 0x29, 0xB1, 0x02,
+    0x85, 0x20, 0x09, 0x26, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0x21, 0x09, 0x27, 0x95, 0x04, 0xB1, 0x02,
+    0x85, 0x22, 0x09, 0x40, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0x80, 0x09, 0x28, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0x81, 0x09, 0x29, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0x82, 0x09, 0x2A, 0x95, 0x09, 0xB1, 0x02,
+    0x85, 0x83, 0x09, 0x2B, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0x84, 0x09, 0x2C, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0x85, 0x09, 0x2D, 0x95, 0x02, 0xB1, 0x02,
+    0x85, 0xA0, 0x09, 0x2E, 0x95, 0x01, 0xB1, 0x02,
+    0x85, 0xE0, 0x09, 0x2F, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0xF0, 0x09, 0x30, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0xF1, 0x09, 0x31, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0xF2, 0x09, 0x32, 0x95, 0x34, 0xB1, 0x02,
+    0x85, 0xF4, 0x09, 0x35, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0xF5, 0x09, 0x36, 0x95, 0x03, 0xB1, 0x02,
+    0x85, 0x60, 0x09, 0x41, 0x95, 0x3F, 0xB1, 0x02,
+    0x85, 0x61, 0x09, 0x42, 0xB1, 0x02, 0x85, 0x62,
+    0x09, 0x43, 0xB1, 0x02, 0x85, 0x63, 0x09, 0x44,
+    0xB1, 0x02, 0x85, 0x64, 0x09, 0x45, 0xB1, 0x02,
+    0x85, 0x65, 0x09, 0x46, 0xB1, 0x02, 0x85, 0x68,
+    0x09, 0x47, 0xB1, 0x02, 0x85, 0x70, 0x09, 0x48,
+    0xB1, 0x02, 0x85, 0x71, 0x09, 0x49, 0xB1, 0x02,
+    0x85, 0x72, 0x09, 0x4A, 0xB1, 0x02, 0x85, 0x73,
+    0x09, 0x4B, 0xB1, 0x02, 0x85, 0x74, 0x09, 0x4C,
+    0xB1, 0x02, 0x85, 0x75, 0x09, 0x4D, 0xB1, 0x02,
+    0x85, 0x76, 0x09, 0x4E, 0xB1, 0x02, 0x85, 0x77,
+    0x09, 0x4F, 0xB1, 0x02, 0x85, 0x78, 0x09, 0x50,
+    0xB1, 0x02, 0x85, 0x79, 0x09, 0x51, 0xB1, 0x02,
+    0x85, 0x7A, 0x09, 0x52, 0xB1, 0x02, 0x85, 0x7B,
+    0x09, 0x53, 0xB1, 0x02, 0x85, 0xF6, 0x09, 0x37,
+    0x95, 0x3F, 0xB1, 0x02, 0x85, 0xF7, 0x09, 0x38,
+    0x95, 0x3F, 0xB1, 0x02, 0x85, 0xF8, 0x09, 0x39,
+    0x95, 0x3F, 0xB1, 0x02, 0x85, 0xF9, 0x09, 0x3A,
+    0x95, 0x3F, 0xB1, 0x02, 0xC0,
 };
 
 static const uint8_t keyboard_report_desc[HID_KBD_REPORT_DESC_SIZE] = {
@@ -372,8 +432,8 @@ static const uint8_t config_descriptor[] = {
     0x00,
     0x01,
     HID_DESCRIPTOR_TYPE_HID_REPORT,
-    HID_DUALSENSE_REPORT_DESC_SIZE & 0xFF,
-    (HID_DUALSENSE_REPORT_DESC_SIZE >> 8) & 0xFF,
+    HID_DS5_REPORT_DESC_SIZE & 0xFF,
+    (HID_DS5_REPORT_DESC_SIZE >> 8) & 0xFF,
 
     0x07, USB_DESCRIPTOR_TYPE_ENDPOINT,
     HID_IN_EP,
@@ -469,6 +529,8 @@ static const char *string_descriptors[] = {
     "DualSense Wireless Controller",
     "M61DS5COMPOSITE1",
 };
+static const char dualsense_edge_product_string[] =
+    "DualSense Edge Wireless Controller";
 
 static const uint8_t ds5_idle_payload[M61_DS5_USB_INPUT_PAYLOAD_LEN] = {
     0x7f, 0x7d, 0x7f, 0x7e, 0x00, 0x00, 0xa7,
@@ -562,6 +624,7 @@ static m61_ps_shortcut_t ps_shortcut;
 static bool descriptor_wake_enabled;
 static bool descriptor_keyboard_enabled;
 static bool descriptor_usb_serial_enabled;
+static bool descriptor_edge_enabled;
 static uint8_t descriptor_polling_interval = HID_INT_EP_INTERVAL;
 static bool shortcut_key_release_pending;
 static uint32_t shortcut_key_release_time_ms;
@@ -586,7 +649,8 @@ static void queue_host_report(uint8_t report_id, uint8_t report_type,
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
 
-typedef char ds5_report_desc_size_check[(sizeof(dualsense_report_desc) == HID_DUALSENSE_REPORT_DESC_SIZE) ? 1 : -1];
+typedef char ds5_report_desc_size_check[(sizeof(dualsense_ds5_report_desc) == HID_DS5_REPORT_DESC_SIZE) ? 1 : -1];
+typedef char dse_report_desc_size_check[(sizeof(dualsense_dse_report_desc) == HID_DSE_REPORT_DESC_SIZE) ? 1 : -1];
 typedef char ds5_config_desc_size_check[(sizeof(config_descriptor) == USB_DUALSENSE_CONFIG_DESC_SIZE) ? 1 : -1];
 typedef char keyboard_report_desc_size_check[(sizeof(keyboard_report_desc) == HID_KBD_REPORT_DESC_SIZE) ? 1 : -1];
 typedef char wake_bos_desc_size_check[(sizeof(wake_bos_descriptor) == BOS_DESC_LEN) ? 1 : -1];
@@ -1404,9 +1468,25 @@ static void m61_usb_clock_recover(void)
 #endif
 }
 
+static bool configured_edge_identity(void)
+{
+    const m61_ds5_bridge_config_body_t *config =
+        m61_ds5_bridge_config_get();
+
+    if (config->controller_mode == M61_DS5_CONTROLLER_MODE_DSE) {
+        return true;
+    }
+    if (config->controller_mode == M61_DS5_CONTROLLER_MODE_DS5) {
+        return false;
+    }
+    return m61_ds5_dse_is_edge();
+}
+
 static const uint8_t *device_descriptor_callback(uint8_t speed)
 {
     uint16_t bcd_usb = descriptor_wake_enabled ? USB_2_1 : USB_2_0;
+    uint16_t product_id = descriptor_edge_enabled ?
+                          USBD_PID_DSE : USBD_PID_DS5;
 
     usb_diag.device_desc++;
     usb_diag.last_speed = speed;
@@ -1414,6 +1494,8 @@ static const uint8_t *device_descriptor_callback(uint8_t speed)
            sizeof(device_descriptor_runtime));
     device_descriptor_runtime[2] = (uint8_t)(bcd_usb & 0xFFU);
     device_descriptor_runtime[3] = (uint8_t)(bcd_usb >> 8);
+    device_descriptor_runtime[10] = (uint8_t)(product_id & 0xFFU);
+    device_descriptor_runtime[11] = (uint8_t)(product_id >> 8);
     if (!descriptor_usb_serial_enabled) {
         device_descriptor_runtime[16] = 0;
     }
@@ -1425,6 +1507,10 @@ static const uint8_t *config_descriptor_callback(uint8_t speed)
     uint16_t total_length = descriptor_keyboard_enabled ?
                             USB_DUALSENSE_CONFIG_DESC_SIZE :
                             USB_DUALSENSE_CONFIG_DESC_BASE_SIZE;
+    uint16_t hid_report_length = descriptor_edge_enabled ?
+                                 HID_DSE_REPORT_DESC_SIZE :
+                                 HID_DS5_REPORT_DESC_SIZE;
+    bool gamepad_hid_seen = false;
 
     usb_diag.config_desc++;
     usb_diag.last_speed = speed;
@@ -1454,6 +1540,13 @@ static const uint8_t *config_descriptor_callback(uint8_t speed)
                 config_descriptor_runtime[offset + 6U] =
                     descriptor_polling_interval;
             }
+        } else if (desc_type == HID_DESCRIPTOR_TYPE_HID &&
+                   desc_len >= 9U && !gamepad_hid_seen) {
+            config_descriptor_runtime[offset + 7U] =
+                (uint8_t)(hid_report_length & 0xFFU);
+            config_descriptor_runtime[offset + 8U] =
+                (uint8_t)(hid_report_length >> 8);
+            gamepad_hid_seen = true;
         }
         offset += desc_len;
     }
@@ -1477,6 +1570,9 @@ static const char *string_descriptor_callback(uint8_t speed, uint8_t index)
     usb_diag.last_string_index = index;
     if (index >= (sizeof(string_descriptors) / sizeof(string_descriptors[0]))) {
         return NULL;
+    }
+    if (index == 2U && descriptor_edge_enabled) {
+        return dualsense_edge_product_string;
     }
     return string_descriptors[index];
 }
@@ -1980,13 +2076,23 @@ static void make_payload_from_state(const dualsense_state_t *state, uint8_t *pay
 
 static void register_usb_dualsense_device(void)
 {
+    const uint8_t *gamepad_report_desc;
+    size_t gamepad_report_desc_len;
+
     descriptor_wake_enabled = m61_ds5_bridge_config_wake_enabled();
     descriptor_keyboard_enabled = descriptor_wake_enabled ||
                                   m61_ds5_bridge_config_ps_shortcut_enabled();
     descriptor_usb_serial_enabled =
         m61_ds5_bridge_config_usb_serial_enabled();
+    descriptor_edge_enabled = configured_edge_identity();
     descriptor_polling_interval =
         m61_ds5_bridge_config_polling_interval();
+    gamepad_report_desc = descriptor_edge_enabled ?
+                          dualsense_dse_report_desc :
+                          dualsense_ds5_report_desc;
+    gamepad_report_desc_len = descriptor_edge_enabled ?
+                               sizeof(dualsense_dse_report_desc) :
+                               sizeof(dualsense_ds5_report_desc);
     reset_keyboard_runtime(false);
 
     usbd_desc_register(0, descriptor_wake_enabled ?
@@ -2010,8 +2116,8 @@ static void register_usb_dualsense_device(void)
                                                sizeof(audio_entity_table) / sizeof(audio_entity_table[0])));
     usbd_add_interface(0, usbd_hid_init_intf(0,
                                              &hid_intf,
-                                             dualsense_report_desc,
-                                             sizeof(dualsense_report_desc)));
+                                             gamepad_report_desc,
+                                             gamepad_report_desc_len));
     if (descriptor_keyboard_enabled) {
         usbd_add_interface(0, usbd_hid_init_intf(0,
                                                  &hid_keyboard_intf,
@@ -2041,7 +2147,9 @@ void m61_usb_gamepad_init(void)
     register_usb_dualsense_device();
     usb_init_result = usbd_initialize(0, 0, usbd_event_handler);
     usb_initialized = (usb_init_result == 0);
-    printf("M61 USB DualSense composite init result=%d\r\n", usb_init_result);
+    printf("M61 USB %s composite init result=%d\r\n",
+           descriptor_edge_enabled ? "DualSense Edge" : "DualSense",
+           usb_init_result);
 }
 
 void m61_usb_gamepad_deinit(void)
@@ -2066,7 +2174,9 @@ int m61_usb_gamepad_reinit(void)
     register_usb_dualsense_device();
     usb_init_result = usbd_initialize(0, 0, usbd_event_handler);
     usb_initialized = (usb_init_result == 0);
-    printf("M61 USB DualSense composite reinit result=%d\r\n", usb_init_result);
+    printf("M61 USB %s composite reinit result=%d\r\n",
+           descriptor_edge_enabled ? "DualSense Edge" : "DualSense",
+           usb_init_result);
     return usb_init_result;
 }
 

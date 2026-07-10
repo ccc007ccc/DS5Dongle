@@ -9,7 +9,9 @@ aligned while ESP-IDF/hardware are unavailable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
+import re
 import struct
 import sys
 
@@ -182,6 +184,17 @@ def read_u32_le(data: bytes, offset: int) -> int:
         | (data[offset + 2] << 16)
         | (data[offset + 3] << 24)
     )
+
+
+def extract_c_hex_array(source: str, name: str) -> bytes:
+    match = re.search(
+        rf"static const uint8_t\s+{re.escape(name)}\s*\[[^\]]+\]\s*=\s*\{{(.*?)\n\}};",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None, f"missing C byte array: {name}"
+    body = re.sub(r"//.*", "", match.group(1))
+    return bytes(int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]{2})", body))
 
 
 def put_i16_le(data: bytearray, offset: int, value: int) -> None:
@@ -1106,6 +1119,79 @@ def test_c_source_contract() -> None:
     ]
     for snippet in m61_audio_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
+    ds5_report_descriptor = extract_c_hex_array(
+        m61_usb_source, "dualsense_ds5_report_desc"
+    )
+    dse_report_descriptor = extract_c_hex_array(
+        m61_usb_source, "dualsense_dse_report_desc"
+    )
+    assert len(ds5_report_descriptor) == 321
+    assert hashlib.sha256(ds5_report_descriptor).hexdigest() == (
+        "aedac1a242cd1535eefc5572ae3646f47576ead49c2e22239f49fce922ffc421"
+    )
+    assert len(dse_report_descriptor) == 437
+    assert hashlib.sha256(dse_report_descriptor).hexdigest() == (
+        "29481b2b75ed8abe315b6731ecbfc731217209e276d4895460869d7e3142f8a4"
+    )
+    m61_identity_snippets = [
+        "USBD_PID_DS5 0x0CE6",
+        "USBD_PID_DSE 0x0DF2",
+        "DualSense Edge Wireless Controller",
+        "config->controller_mode == M61_DS5_CONTROLLER_MODE_DSE",
+        "config->controller_mode == M61_DS5_CONTROLLER_MODE_DS5",
+        "return m61_ds5_dse_is_edge();",
+        "descriptor_edge_enabled = configured_edge_identity();",
+        "device_descriptor_runtime[10] = (uint8_t)(product_id & 0xFFU);",
+        "uint16_t hid_report_length = descriptor_edge_enabled ?",
+        "config_descriptor_runtime[offset + 7U] =",
+        "if (index == 2U && descriptor_edge_enabled)",
+        "gamepad_report_desc = descriptor_edge_enabled ?",
+        "gamepad_report_desc_len = descriptor_edge_enabled ?",
+    ]
+    for snippet in m61_identity_snippets:
+        assert snippet in m61_usb_source, f"missing M61 USB identity snippet: {snippet}"
+    assert "CONFIG_M61_DS5_USB_IDENTITY_PROBE_WAIT_MS 500" in m61_main_source
+    assert m61_main_source.count("wait_for_usb_identity_probe();") == 2
+    assert "config->controller_mode != M61_DS5_CONTROLLER_MODE_AUTO" in m61_main_source
+    for snippet in (
+        "hidp_request_feature_report(0x70, 64U)",
+        "usb_identity_probe_pending = true;",
+        "usb_identity_probe_attempts++;",
+        "USB_IDENTITY_PROBE_DSE",
+        "USB_IDENTITY_PROBE_TIMEOUT_DS5",
+        "result=timeout-DS5",
+        "m61_esp32_transport_set_bt_state_callback(dual_chip_bt_state_callback, NULL);",
+        "DS5_DUAL_BT_STATE_CONTROL_OPEN |",
+        "DS5_DUAL_BT_STATE_INTERRUPT_OPEN",
+        "memcmp(dual_chip_dse_link_bda, bda, 6U)",
+        "DSE probe state reset on ESP32 BT generation",
+    ):
+        assert snippet in m61_main_source, f"missing identity probe lifecycle snippet: {snippet}"
+    for snippet in (
+        "m61_esp32_transport_bt_state_cb_t bt_state_cb;",
+        "s_transport.bt_state_cb(state.flags,",
+        "void m61_esp32_transport_set_bt_state_callback",
+        "m61_esp32_transport_input_cb_t input_cb = s_transport.input_cb;",
+        "m61_esp32_transport_feature_cb_t feature_cb = s_transport.feature_cb;",
+        "m61_esp32_transport_bt_state_cb_t bt_state_cb = s_transport.bt_state_cb;",
+        "s_transport.input_cb = input_cb;",
+        "s_transport.input_cb_ctx = input_cb_ctx;",
+        "s_transport.feature_cb = feature_cb;",
+        "s_transport.feature_cb_ctx = feature_cb_ctx;",
+        "s_transport.bt_state_cb = bt_state_cb;",
+        "s_transport.bt_state_cb_ctx = bt_state_cb_ctx;",
+    ):
+        assert snippet in m61_transport_source, f"missing ESP32 BT state callback snippet: {snippet}"
+    transport_memset = m61_transport_source.index(
+        "memset(&s_transport, 0, sizeof(s_transport));"
+    )
+    transport_restore = m61_transport_source.index(
+        "s_transport.input_cb = input_cb;", transport_memset
+    )
+    transport_mutex = m61_transport_source.index(
+        "s_transport.lock = xSemaphoreCreateMutex();", transport_restore
+    )
+    assert transport_memset < transport_restore < transport_mutex
     assert "AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM" not in m61_usb_source
     assert "resample_speaker_upstream_frame" not in m61_usb_source
     assert "USB remote wake requested by controller input" in m61_main_source

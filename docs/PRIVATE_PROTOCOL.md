@@ -65,12 +65,10 @@ Load validates length, magic, size, and CRC. Save reads the value back and
 verifies the same fields and body bytes. The previous body-only 20-byte format
 is migrated; legacy `disable_mic/disable_speaker=1` becomes select value `3`.
 
-## Remaining Runtime Work
+## Runtime Behavior
 
-Wire compatibility and persistence are implemented. These configuration
-effects are not yet complete and must not be reported as finished:
-
-- full `controller_mode` DS5/DSE USB identity switching
+Wire compatibility, persistence, and the configuration effects below are
+implemented.
 
 `polling_rate_mode` updates the HID IN/OUT endpoint interval on USB reconnect.
 `inactive_time` disconnects a controller after the configured number of
@@ -84,6 +82,21 @@ reconnect. A short PS press sends `Win+G`; a press held for at least 750 ms
 sends `Win+Tab`. PS release uses the upstream 50 ms low-level debounce, and
 each keyboard chord is released after 30 ms. The keyboard endpoint and busy
 state are independent from the DualSense HID IN/OUT endpoints.
+
+`controller_mode` snapshots one complete USB identity on each USB init or
+reconnect. DS5 uses PID `0x0CE6`, product string `DualSense Wireless
+Controller`, and the upstream 321-byte HID report descriptor. DSE uses PID
+`0x0DF2`, product string `DualSense Edge Wireless Controller`, and the
+upstream 437-byte descriptor; the configuration descriptor's HID report
+length is changed with the selected descriptor. Forced DS5/DSE modes select
+their identity immediately. Auto mode waits up to 500 ms after the first full
+controller report for the Edge `0x70` feature probe before the first USB
+enumeration. The wait actively sends a fresh `0x70` request and records its
+attempt, pending state, request error, and either an Edge result or an explicit
+timeout-to-DS5 result. The selected identity remains stable until the next
+reconnect. In dual-chip mode, ESP32 BT state transitions reset Edge detection
+on disconnect and at the start of a new controller generation, including a
+change of controller address, so auto mode cannot inherit an old Edge result.
 
 `enable_wake` snapshots USB 2.1 descriptors on reconnect, advertises remote
 wakeup, and exposes the same keyboard interface even when PS shortcuts are

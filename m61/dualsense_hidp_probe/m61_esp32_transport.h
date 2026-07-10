@@ -116,6 +116,10 @@ typedef void (*m61_esp32_transport_feature_cb_t)(uint8_t report_id,
                                                  const uint8_t *data,
                                                  size_t len,
                                                  void *ctx);
+typedef void (*m61_esp32_transport_bt_state_cb_t)(uint32_t flags,
+                                                  const uint8_t bda[6],
+                                                  uint16_t state_seq,
+                                                  void *ctx);
 
 void m61_esp32_transport_init(void);
 bool m61_esp32_transport_ready(void);
@@ -124,6 +128,8 @@ void m61_esp32_transport_set_input_callback(m61_esp32_transport_input_cb_t cb,
                                             void *ctx);
 void m61_esp32_transport_set_feature_callback(m61_esp32_transport_feature_cb_t cb,
                                               void *ctx);
+void m61_esp32_transport_set_bt_state_callback(m61_esp32_transport_bt_state_cb_t cb,
+                                               void *ctx);
 int m61_esp32_transport_send_bt_report(const uint8_t *report,
                                        size_t report_len,
                                        TickType_t deadline_tick,

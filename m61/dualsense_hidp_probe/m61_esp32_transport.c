@@ -144,6 +144,8 @@ typedef struct {
     void *input_cb_ctx;
     m61_esp32_transport_feature_cb_t feature_cb;
     void *feature_cb_ctx;
+    m61_esp32_transport_bt_state_cb_t bt_state_cb;
+    void *bt_state_cb_ctx;
     m61_esp32_transport_stats_t stats;
 } m61_esp32_transport_state_t;
 
@@ -719,6 +721,12 @@ static void handle_rx_bt_state(const uint8_t *payload, size_t payload_len)
     s_transport.stats.peer_bt_interrupt_mtu = state.interrupt_mtu;
     memcpy(s_transport.stats.peer_bt_bda, state.bda, sizeof(state.bda));
     s_transport.stats.peer_bt_state_seq = state.state_seq;
+    if (s_transport.bt_state_cb != NULL) {
+        s_transport.bt_state_cb(state.flags,
+                                state.bda,
+                                state.state_seq,
+                                s_transport.bt_state_cb_ctx);
+    }
     note_event(M61_ESP32_EVENT_BT_STATE_RX,
                state.reconnect_failures,
                state.last_error,
@@ -1384,9 +1392,21 @@ static int send_time_sync(void)
 
 void m61_esp32_transport_init(void)
 {
+    m61_esp32_transport_input_cb_t input_cb = s_transport.input_cb;
+    void *input_cb_ctx = s_transport.input_cb_ctx;
+    m61_esp32_transport_feature_cb_t feature_cb = s_transport.feature_cb;
+    void *feature_cb_ctx = s_transport.feature_cb_ctx;
+    m61_esp32_transport_bt_state_cb_t bt_state_cb = s_transport.bt_state_cb;
+    void *bt_state_cb_ctx = s_transport.bt_state_cb_ctx;
     int err;
 
     memset(&s_transport, 0, sizeof(s_transport));
+    s_transport.input_cb = input_cb;
+    s_transport.input_cb_ctx = input_cb_ctx;
+    s_transport.feature_cb = feature_cb;
+    s_transport.feature_cb_ctx = feature_cb_ctx;
+    s_transport.bt_state_cb = bt_state_cb;
+    s_transport.bt_state_cb_ctx = bt_state_cb_ctx;
     s_transport.lock = xSemaphoreCreateMutex();
     err = init_spi_master();
     s_transport.ready = (err == 0);
@@ -1461,6 +1481,13 @@ void m61_esp32_transport_set_feature_callback(m61_esp32_transport_feature_cb_t c
 {
     s_transport.feature_cb = cb;
     s_transport.feature_cb_ctx = ctx;
+}
+
+void m61_esp32_transport_set_bt_state_callback(m61_esp32_transport_bt_state_cb_t cb,
+                                               void *ctx)
+{
+    s_transport.bt_state_cb = cb;
+    s_transport.bt_state_cb_ctx = ctx;
 }
 
 int m61_esp32_transport_send_bt_report(const uint8_t *report,

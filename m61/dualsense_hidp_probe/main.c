@@ -167,6 +167,10 @@
 #define CONFIG_M61_USB_START_DELAY_AFTER_BT_MS 200
 #endif
 
+#ifndef CONFIG_M61_DS5_USB_IDENTITY_PROBE_WAIT_MS
+#define CONFIG_M61_DS5_USB_IDENTITY_PROBE_WAIT_MS 500
+#endif
+
 #ifndef CONFIG_M61_STATUS_LED_ENABLE
 #define CONFIG_M61_STATUS_LED_ENABLE 1
 #endif
@@ -286,6 +290,23 @@ static bool disconnect_cleanup_scheduled;
 static TickType_t disconnect_cleanup_tick;
 static m61_ds5_inactivity_t inactivity_tracker;
 static bool inactivity_disconnect_pending;
+static bool usb_identity_probe_pending;
+static uint32_t usb_identity_probe_attempts;
+static int usb_identity_probe_last_error;
+
+typedef enum {
+    USB_IDENTITY_PROBE_NONE = 0,
+    USB_IDENTITY_PROBE_PENDING,
+    USB_IDENTITY_PROBE_DSE,
+    USB_IDENTITY_PROBE_TIMEOUT_DS5,
+} usb_identity_probe_result_t;
+
+static usb_identity_probe_result_t usb_identity_probe_result;
+
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+static bool dual_chip_dse_link_active;
+static uint8_t dual_chip_dse_link_bda[6];
+#endif
 
 #if CONFIG_M61_DS5_AUTO_START
 static bool auto_start_enabled = true;
@@ -358,6 +379,47 @@ static bool ds5_bt_transport_ready(void)
 #else
     return hid_interrupt.connected;
 #endif
+}
+
+static void wait_for_usb_identity_probe(void)
+{
+    const m61_ds5_bridge_config_body_t *config =
+        m61_ds5_bridge_config_get();
+    TickType_t deadline;
+    int request_error;
+
+    if (config->controller_mode != M61_DS5_CONTROLLER_MODE_AUTO) {
+        return;
+    }
+
+    usb_identity_probe_attempts++;
+    usb_identity_probe_pending = true;
+    usb_identity_probe_result = USB_IDENTITY_PROBE_PENDING;
+    request_error = hidp_request_feature_report(0x70, 64U);
+    usb_identity_probe_last_error = request_error;
+    printf("USB auto identity probe attempt=%lu request_err=%d pending=1\r\n",
+           (unsigned long)usb_identity_probe_attempts,
+           request_error);
+
+    deadline = xTaskGetTickCount() +
+               pdMS_TO_TICKS(CONFIG_M61_DS5_USB_IDENTITY_PROBE_WAIT_MS);
+    while (!m61_ds5_dse_is_edge() &&
+           !tick_due(xTaskGetTickCount(), deadline)) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    usb_identity_probe_pending = false;
+    if (m61_ds5_dse_is_edge()) {
+        usb_identity_probe_result = USB_IDENTITY_PROBE_DSE;
+        printf("USB auto identity probe result=DSE attempt=%lu request_err=%d\r\n",
+               (unsigned long)usb_identity_probe_attempts,
+               request_error);
+    } else {
+        usb_identity_probe_result = USB_IDENTITY_PROBE_TIMEOUT_DS5;
+        printf("USB auto identity probe result=timeout-DS5 attempt=%lu timeout_ms=%u request_err=%d\r\n",
+               (unsigned long)usb_identity_probe_attempts,
+               (unsigned int)CONFIG_M61_DS5_USB_IDENTITY_PROBE_WAIT_MS,
+               request_error);
+    }
 }
 
 static uint32_t inactivity_now_ms(void)
@@ -1288,6 +1350,36 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
 }
 
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+static void dual_chip_bt_state_callback(uint32_t flags,
+                                        const uint8_t bda[6],
+                                        uint16_t state_seq,
+                                        void *ctx)
+{
+    bool link_active =
+        (flags & (DS5_DUAL_BT_STATE_CONTROL_OPEN |
+                  DS5_DUAL_BT_STATE_INTERRUPT_OPEN)) != 0U;
+    bool bda_changed = link_active &&
+                       memcmp(dual_chip_dse_link_bda, bda, 6U) != 0;
+
+    (void)ctx;
+
+    if ((link_active && (!dual_chip_dse_link_active || bda_changed)) ||
+        (!link_active && dual_chip_dse_link_active)) {
+        m61_ds5_dse_reset();
+        printf("DSE probe state reset on ESP32 BT generation seq=%u active=%u bda_changed=%u\r\n",
+               (unsigned int)state_seq,
+               link_active ? 1U : 0U,
+               bda_changed ? 1U : 0U);
+    }
+
+    dual_chip_dse_link_active = link_active;
+    if (link_active) {
+        memcpy(dual_chip_dse_link_bda, bda, 6U);
+    } else {
+        memset(dual_chip_dse_link_bda, 0, sizeof(dual_chip_dse_link_bda));
+    }
+}
+
 static void dual_chip_input_callback(const uint8_t *payload,
                                      size_t payload_len,
                                      const dualsense_state_t *state,
@@ -2516,6 +2608,7 @@ static void dual_chip_usb_start_task(void *pvParameters)
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
+    wait_for_usb_identity_probe();
     printf("DualSense full report seen via ESP32; starting USB composite device\r\n");
     vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
     m61_usb_bus_detach_pulse(350);
@@ -2588,6 +2681,7 @@ static void app_start_task(void *pvParameters)
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
+    wait_for_usb_identity_probe();
     printf("DualSense full report seen; starting USB composite device\r\n");
     vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
     m61_usb_bus_detach_pulse(350);
@@ -2789,6 +2883,12 @@ int cmd_ds5(int argc, char **argv)
                hid_control_prepare_pending ? 1 : 0,
                hid_interrupt_prepare_pending ? 1 : 0,
                deferred_conn_unref_pending() ? 1 : 0);
+        printf("usb_identity_probe pending=%u attempts=%lu result=%u last_err=%d edge=%u\r\n",
+               usb_identity_probe_pending ? 1U : 0U,
+               (unsigned long)usb_identity_probe_attempts,
+               (unsigned int)usb_identity_probe_result,
+               usb_identity_probe_last_error,
+               m61_ds5_dse_is_edge() ? 1U : 0U);
         printf("usb_gamepad ready=%d configured=%d busy=%d sent=%lu dropped=%lu\r\n",
                m61_usb_gamepad_ready() ? 1 : 0,
                m61_usb_gamepad_configured() ? 1 : 0,
@@ -3385,6 +3485,7 @@ int main(void)
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
     m61_esp32_transport_set_input_callback(dual_chip_input_callback, NULL);
     m61_esp32_transport_set_feature_callback(m61_dse_note_feature_report, NULL);
+    m61_esp32_transport_set_bt_state_callback(dual_chip_bt_state_callback, NULL);
     m61_esp32_transport_init();
     xTaskCreate(dual_chip_boot_task,
                 "esp32_boot",
