@@ -487,6 +487,7 @@ static void auto_reset_link_state(void)
     auto_next_bringup_tick = 0;
     br_connected_tick = xTaskGetTickCount();
     reset_controller_inactivity();
+    m61_usb_gamepad_reset_controller_state();
     m61_usb_gamepad_reset_feature_cache();
     m61_ds5_dse_reset();
 }
@@ -1259,6 +1260,7 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
         }
         note_controller_inactivity(&state);
         maybe_remote_wake_on_input(&state);
+        m61_usb_gamepad_note_controller_state(&state);
         if (state.is_full_report && parse.payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN) {
             m61_usb_gamepad_send_report01(buf->data + parse.payload_offset,
                                           M61_DS5_USB_INPUT_PAYLOAD_LEN);
@@ -1317,6 +1319,7 @@ static void dual_chip_input_callback(const uint8_t *payload,
     }
     note_controller_inactivity(state);
     maybe_remote_wake_on_input(state);
+    m61_usb_gamepad_note_controller_state(state);
     if (state->is_full_report &&
         parse->payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN &&
         parse->payload_offset + M61_DS5_USB_INPUT_PAYLOAD_LEN <= payload_len) {

@@ -30,6 +30,8 @@ void m61_usb_gamepad_deinit(void);
 int m61_usb_gamepad_reinit(void);
 void m61_usb_gamepad_send_report01(const uint8_t *payload, size_t len);
 void m61_usb_gamepad_send_state(const dualsense_state_t *state);
+void m61_usb_gamepad_note_controller_state(const dualsense_state_t *state);
+void m61_usb_gamepad_reset_controller_state(void);
 void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data, size_t len);
 void m61_usb_gamepad_reset_feature_cache(void);
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len);

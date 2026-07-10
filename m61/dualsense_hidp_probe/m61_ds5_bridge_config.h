@@ -123,6 +123,7 @@ uint8_t m61_ds5_bridge_config_mic_select(void);
 uint8_t m61_ds5_bridge_config_speaker_select(void);
 bool m61_ds5_bridge_config_speaker_uses_headset(bool headset_connected);
 bool m61_ds5_bridge_config_usb_serial_enabled(void);
+bool m61_ds5_bridge_config_ps_shortcut_enabled(void);
 bool m61_ds5_bridge_config_wake_enabled(void);
 bool m61_ds5_bridge_config_dse_enabled(void);
 void m61_ds5_bridge_config_apply_usb_set_state(uint8_t *payload, size_t len);

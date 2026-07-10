@@ -70,9 +70,7 @@ is migrated; legacy `disable_mic/disable_speaker=1` becomes select value `3`.
 Wire compatibility and persistence are implemented. These configuration
 effects are not yet complete and must not be reported as finished:
 
-- `ps_shortcut_enabled` keyboard shortcut path
 - full `controller_mode` DS5/DSE USB identity switching
-- full Windows `enable_wake` support, including BOS/MS OS 2.0 selective suspend
 
 `polling_rate_mode` updates the HID IN/OUT endpoint interval on USB reconnect.
 `inactive_time` disconnects a controller after the configured number of
@@ -80,6 +78,17 @@ minutes with all four stick axes in the upstream 120..140 neutral window,
 both triggers released, D-pad neutral, and no buttons pressed. `0` disables
 the policy. The disconnect is dispatched by the bridge task so Bluetooth and
 SPI receive callbacks never tear down their own transport stack.
-`enable_wake` currently controls the remote-wakeup descriptor bit and sends a
-CherryUSB remote wake request on controller button/D-pad activity while
-suspended. The Windows selective-suspend descriptor path remains incomplete.
+
+`ps_shortcut_enabled` exposes a separate boot-keyboard HID interface on USB
+reconnect. A short PS press sends `Win+G`; a press held for at least 750 ms
+sends `Win+Tab`. PS release uses the upstream 50 ms low-level debounce, and
+each keyboard chord is released after 30 ms. The keyboard endpoint and busy
+state are independent from the DualSense HID IN/OUT endpoints.
+
+`enable_wake` snapshots USB 2.1 descriptors on reconnect, advertises remote
+wakeup, and exposes the same keyboard interface even when PS shortcuts are
+disabled. The BOS platform capability provides the 88-byte Microsoft OS 2.0
+`SelectiveSuspendEnabled=1` property for the audio function so Windows can
+suspend the composite device. Controller button/D-pad activity requests a
+CherryUSB remote wake. After resume, the keyboard sends the upstream F15
+keydown/keyup sequence twice so Windows consumes input during its wake window.

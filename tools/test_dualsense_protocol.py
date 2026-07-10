@@ -1087,7 +1087,7 @@ def test_c_source_contract() -> None:
         "m61_ds5_bridge_config_mic_enabled",
         "m61_ds5_bridge_config_speaker_enabled",
         "m61_ds5_bridge_config_polling_interval",
-        "config_descriptor_runtime[offset + 6U] = interval",
+        "descriptor_polling_interval",
         "config_descriptor_runtime[7] |= USB_CONFIG_REMOTE_WAKEUP",
         "m61_usb_gamepad_take_speaker_opus",
         "AUDIO_IN_STREAM_PACKET_SIZE",

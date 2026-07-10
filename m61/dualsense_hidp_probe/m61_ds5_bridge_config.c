@@ -361,6 +361,11 @@ bool m61_ds5_bridge_config_usb_serial_enabled(void)
     return s_config.enable_usb_sn != 0U;
 }
 
+bool m61_ds5_bridge_config_ps_shortcut_enabled(void)
+{
+    return s_config.ps_shortcut_enabled != 0U;
+}
+
 bool m61_ds5_bridge_config_wake_enabled(void)
 {
     return s_config.enable_wake != 0U;

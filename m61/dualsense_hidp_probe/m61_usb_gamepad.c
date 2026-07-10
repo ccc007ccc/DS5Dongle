@@ -8,6 +8,7 @@
 #include "m61_ds5_bridge_config.h"
 #include "m61_ds5_dse.h"
 #include "m61_esp32_transport.h"
+#include "m61_ps_shortcut.h"
 #include "bflb_clock.h"
 #include "bflb_core.h"
 #include "bflb_irq.h"
@@ -35,7 +36,9 @@
 #define ITF_NUM_AUDIO_STREAMING_OUT 1
 #define ITF_NUM_AUDIO_STREAMING_IN 2
 #define ITF_NUM_HID 3
-#define ITF_NUM_TOTAL 4
+#define ITF_NUM_HID_KBD 4
+#define ITF_NUM_BASE 4
+#define ITF_NUM_TOTAL 5
 #define AUDIO_OUT_EP 0x01
 #define AUDIO_IN_EP 0x82
 #define AUDIO_OUT_PACKET_SIZE 392
@@ -48,7 +51,14 @@
 #define HID_OUT_EP 0x03
 #define HID_INT_EP_SIZE 64
 #define HID_INT_EP_INTERVAL 1
-#define USB_DUALSENSE_CONFIG_DESC_SIZE 0x00E3
+#define HID_KBD_IN_EP 0x87
+#define HID_KBD_EP_SIZE 8
+#define HID_KBD_EP_INTERVAL 10
+#define HID_KBD_REPORT_DESC_SIZE 45
+#define USB_DUALSENSE_CONFIG_DESC_BASE_SIZE 0x00E3
+#define USB_DUALSENSE_CONFIG_DESC_KBD_SIZE 25
+#define USB_DUALSENSE_CONFIG_DESC_SIZE \
+    (USB_DUALSENSE_CONFIG_DESC_BASE_SIZE + USB_DUALSENSE_CONFIG_DESC_KBD_SIZE)
 #define HID_DUALSENSE_REPORT_DESC_SIZE 321
 #define FEATURE_CACHE_SLOTS 12
 #define AUDIO_INPUT_CHANNELS 4
@@ -75,6 +85,22 @@
 #define USB_RECONNECT_DELAY_MS 150U
 #define USB_RECONNECT_TASK_STACK_WORDS 1024
 #define USB_RECONNECT_TASK_PRIORITY (tskIDLE_PRIORITY + 1)
+#define USB_KEYBOARD_TASK_STACK_WORDS 1024
+#define USB_KEYBOARD_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
+#define USB_KEYBOARD_TASK_PERIOD_MS 5U
+#define USB_SHORTCUT_KEY_HOLD_MS 30U
+#define USB_WAKE_SETTLE_MS 150U
+#define USB_WAKE_KEY_HOLD_MS 80U
+#define USB_WAKE_KEY_UP_SETTLE_MS 200U
+#define USB_WAKE_REQUEST_TIMEOUT_MS 5000U
+#define USB_WAKE_KEY_ATTEMPTS 2U
+#define HID_KEY_G 0x0AU
+#define HID_KEY_TAB 0x2BU
+#define HID_KEY_F15 0x68U
+#define HID_MODIFIER_LEFT_GUI 0x08U
+#define MS_OS_20_VENDOR_CODE 0x01U
+#define MS_OS_20_DESC_LEN 88U
+#define BOS_DESC_LEN 33U
 #define AUDIO_CODEC_ERR_STATE_TOO_SMALL -1001
 #define HAPTICS_DOWNSAMPLE_FACTOR 16
 #define HAPTICS_RESAMPLE_MODE_WDL_EQUIV 2
@@ -169,6 +195,32 @@ static const uint8_t dualsense_report_desc[HID_DUALSENSE_REPORT_DESC_SIZE] = {
     0x85, 0xF7, 0x09, 0x38, 0x95, 0x3F, 0xB1, 0x02,
     0x85, 0xF8, 0x09, 0x39, 0x95, 0x3F, 0xB1, 0x02,
     0x85, 0xF9, 0x09, 0x3A, 0x95, 0x3F, 0xB1, 0x02,
+    0xC0,
+};
+
+static const uint8_t keyboard_report_desc[HID_KBD_REPORT_DESC_SIZE] = {
+    0x05, 0x01,
+    0x09, 0x06,
+    0xA1, 0x01,
+    0x05, 0x07,
+    0x19, 0xE0,
+    0x29, 0xE7,
+    0x15, 0x00,
+    0x25, 0x01,
+    0x75, 0x01,
+    0x95, 0x08,
+    0x81, 0x02,
+    0x95, 0x01,
+    0x75, 0x08,
+    0x81, 0x01,
+    0x95, 0x06,
+    0x75, 0x08,
+    0x15, 0x00,
+    0x25, 0x65,
+    0x05, 0x07,
+    0x19, 0x00,
+    0x29, 0x65,
+    0x81, 0x00,
     0xC0,
 };
 
@@ -334,8 +386,69 @@ static const uint8_t config_descriptor[] = {
     USB_ENDPOINT_TYPE_INTERRUPT,
     HID_INT_EP_SIZE, 0x00,
     HID_INT_EP_INTERVAL,
+
+    /* Interface 4: optional HID boot keyboard for wake and PS shortcuts. */
+    0x09, USB_DESCRIPTOR_TYPE_INTERFACE,
+    ITF_NUM_HID_KBD, 0x00, 0x01,
+    0x03, 0x01, 0x01, 0x00,
+
+    0x09, HID_DESCRIPTOR_TYPE_HID,
+    0x11, 0x01,
+    0x00,
+    0x01,
+    HID_DESCRIPTOR_TYPE_HID_REPORT,
+    HID_KBD_REPORT_DESC_SIZE, 0x00,
+
+    0x07, USB_DESCRIPTOR_TYPE_ENDPOINT,
+    HID_KBD_IN_EP,
+    USB_ENDPOINT_TYPE_INTERRUPT,
+    HID_KBD_EP_SIZE, 0x00,
+    HID_KBD_EP_INTERVAL,
 };
 static uint8_t config_descriptor_runtime[sizeof(config_descriptor)];
+
+static const uint8_t wake_bos_descriptor[] = {
+    USB_BOS_HEADER_DESCRIPTOR_INIT(BOS_DESC_LEN, 1),
+    USB_BOS_CAP_PLATFORM_WINUSB_DESCRIPTOR_INIT(MS_OS_20_VENDOR_CODE,
+                                                MS_OS_20_DESC_LEN),
+};
+
+static const uint8_t wake_ms_os_20_descriptor[] = {
+    USB_MSOSV2_COMP_ID_SET_HEADER_DESCRIPTOR_INIT(MS_OS_20_DESC_LEN),
+
+    WBVAL(0x0008),
+    WBVAL(WINUSB_SUBSET_HEADER_CONFIGURATION_TYPE),
+    0x00,
+    0x00,
+    WBVAL(MS_OS_20_DESC_LEN - 0x0A),
+
+    WBVAL(0x0008),
+    WBVAL(WINUSB_SUBSET_HEADER_FUNCTION_TYPE),
+    ITF_NUM_AUDIO_CONTROL,
+    0x00,
+    WBVAL(MS_OS_20_DESC_LEN - 0x0A - 0x08),
+
+    WBVAL(0x003E),
+    WBVAL(WINUSB_FEATURE_REG_PROPERTY_TYPE),
+    WBVAL(0x0004),
+    WBVAL(48),
+    'S', 0, 'e', 0, 'l', 0, 'e', 0, 'c', 0, 't', 0, 'i', 0, 'v', 0,
+    'e', 0, 'S', 0, 'u', 0, 's', 0, 'p', 0, 'e', 0, 'n', 0, 'd', 0,
+    'E', 0, 'n', 0, 'a', 0, 'b', 0, 'l', 0, 'e', 0, 'd', 0, 0, 0,
+    WBVAL(0x0004),
+    DBVAL(0x00000001),
+};
+
+static const struct usb_bos_descriptor wake_bos = {
+    .string = wake_bos_descriptor,
+    .string_len = sizeof(wake_bos_descriptor),
+};
+
+static const struct usb_msosv2_descriptor wake_ms_os_20 = {
+    .compat_id = wake_ms_os_20_descriptor,
+    .compat_id_len = sizeof(wake_ms_os_20_descriptor),
+    .vendor_code = MS_OS_20_VENDOR_CODE,
+};
 
 static const uint8_t device_quality_descriptor[] = {
     0x0a,
@@ -371,6 +484,7 @@ static const uint8_t ds5_idle_payload[M61_DS5_USB_INPUT_PAYLOAD_LEN] = {
 static volatile bool usb_ready;
 static volatile bool usb_configured;
 static volatile bool usb_busy;
+static volatile bool keyboard_busy;
 static volatile bool usb_suspended;
 static volatile bool usb_out_armed;
 static volatile bool audio_out_open;
@@ -396,6 +510,7 @@ static volatile int audio_speaker_volume_db;
 static volatile int audio_mic_volume_db;
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t usb_in_buffer[HID_INT_EP_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t usb_out_buffer[HID_INT_EP_SIZE];
+static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t keyboard_in_buffer[HID_KBD_EP_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t usb_control_buffer[M61_DS5_USB_FEATURE_MAX_LEN];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t audio_out_buffer[AUDIO_OUT_PACKET_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t audio_in_buffer[AUDIO_IN_PACKET_SIZE];
@@ -435,11 +550,36 @@ static StaticTask_t audio_codec_task_tcb;
 static StackType_t audio_codec_task_stack[AUDIO_CODEC_TASK_STACK_WORDS] __attribute__((aligned(16)));
 static StaticTask_t usb_reconnect_task_tcb;
 static StackType_t usb_reconnect_task_stack[USB_RECONNECT_TASK_STACK_WORDS] __attribute__((aligned(16)));
+static StaticTask_t usb_keyboard_task_tcb;
+static StackType_t usb_keyboard_task_stack[USB_KEYBOARD_TASK_STACK_WORDS] __attribute__((aligned(16)));
 static uint32_t audio_opus_encoder_state[(AUDIO_OPUS_ENCODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static TaskHandle_t audio_codec_task_handle;
 static TaskHandle_t usb_reconnect_task_handle;
+static TaskHandle_t usb_keyboard_task_handle;
 static m61_usb_gamepad_host_report_t pending_host_report;
+static m61_ps_shortcut_t ps_shortcut;
+static bool descriptor_wake_enabled;
+static bool descriptor_keyboard_enabled;
+static bool descriptor_usb_serial_enabled;
+static uint8_t descriptor_polling_interval = HID_INT_EP_INTERVAL;
+static bool shortcut_key_release_pending;
+static uint32_t shortcut_key_release_time_ms;
+static uint8_t keyboard_protocol = 1U;
+static uint8_t keyboard_idle_rate;
+
+typedef enum {
+    USB_WAKE_IDLE = 0,
+    USB_WAKE_REQUESTED,
+    USB_WAKE_KEY_DOWN,
+    USB_WAKE_KEY_UP_SENT,
+    USB_WAKE_DONE,
+} usb_wake_state_t;
+
+static volatile usb_wake_state_t usb_wake_state;
+static volatile uint32_t usb_wake_state_entered_ms;
+static volatile bool usb_wake_resume_seen;
+static volatile uint8_t usb_wake_key_attempts;
 
 static void queue_host_report(uint8_t report_id, uint8_t report_type,
                               const uint8_t *data, uint32_t len);
@@ -448,6 +588,9 @@ static uint8_t feature_cache_replace_index;
 
 typedef char ds5_report_desc_size_check[(sizeof(dualsense_report_desc) == HID_DUALSENSE_REPORT_DESC_SIZE) ? 1 : -1];
 typedef char ds5_config_desc_size_check[(sizeof(config_descriptor) == USB_DUALSENSE_CONFIG_DESC_SIZE) ? 1 : -1];
+typedef char keyboard_report_desc_size_check[(sizeof(keyboard_report_desc) == HID_KBD_REPORT_DESC_SIZE) ? 1 : -1];
+typedef char wake_bos_desc_size_check[(sizeof(wake_bos_descriptor) == BOS_DESC_LEN) ? 1 : -1];
+typedef char wake_ms_os_20_desc_size_check[(sizeof(wake_ms_os_20_descriptor) == MS_OS_20_DESC_LEN) ? 1 : -1];
 
 static uintptr_t usb_lock(void)
 {
@@ -457,6 +600,165 @@ static uintptr_t usb_lock(void)
 static void usb_unlock(uintptr_t flags)
 {
     bflb_irq_restore(flags);
+}
+
+static uint32_t usb_now_ms(void)
+{
+    return (uint32_t)bflb_mtimer_get_time_ms();
+}
+
+static bool usb_time_due(uint32_t now_ms, uint32_t due_ms)
+{
+    return (int32_t)(now_ms - due_ms) >= 0;
+}
+
+static void reset_keyboard_runtime(bool release_key)
+{
+    uintptr_t flags = usb_lock();
+
+    m61_ps_shortcut_reset(&ps_shortcut);
+    shortcut_key_release_pending = release_key;
+    shortcut_key_release_time_ms = usb_now_ms();
+    usb_wake_state = USB_WAKE_IDLE;
+    usb_wake_state_entered_ms = 0;
+    usb_wake_resume_seen = false;
+    usb_wake_key_attempts = 0;
+    usb_unlock(flags);
+}
+
+static bool keyboard_send_report(uint8_t modifier, uint8_t keycode)
+{
+    int ret;
+
+    if (!descriptor_keyboard_enabled || !usb_ready || !usb_configured ||
+        usb_suspended || keyboard_busy || !usb_device_is_configured(0)) {
+        return false;
+    }
+
+    memset(keyboard_in_buffer, 0, sizeof(keyboard_in_buffer));
+    keyboard_in_buffer[0] = modifier;
+    keyboard_in_buffer[2] = keycode;
+    keyboard_busy = true;
+    ret = usbd_ep_start_write(0, HID_KBD_IN_EP,
+                              keyboard_in_buffer,
+                              sizeof(keyboard_in_buffer));
+    if (ret != 0) {
+        keyboard_busy = false;
+        return false;
+    }
+    return true;
+}
+
+static bool process_wake_keyboard(uint32_t now_ms)
+{
+    usb_wake_state_t state = usb_wake_state;
+
+    switch (state) {
+        case USB_WAKE_REQUESTED:
+            if (usb_wake_resume_seen) {
+                if ((uint32_t)(now_ms - usb_wake_state_entered_ms) <
+                    USB_WAKE_SETTLE_MS) {
+                    return true;
+                }
+                if (keyboard_send_report(0, HID_KEY_F15)) {
+                    usb_wake_state = USB_WAKE_KEY_DOWN;
+                    usb_wake_state_entered_ms = now_ms;
+                }
+            } else if ((uint32_t)(now_ms - usb_wake_state_entered_ms) >
+                       USB_WAKE_REQUEST_TIMEOUT_MS) {
+                usb_wake_state = USB_WAKE_DONE;
+            }
+            return true;
+
+        case USB_WAKE_KEY_DOWN:
+            if ((uint32_t)(now_ms - usb_wake_state_entered_ms) >=
+                    USB_WAKE_KEY_HOLD_MS &&
+                keyboard_send_report(0, 0)) {
+                usb_wake_state = USB_WAKE_KEY_UP_SENT;
+                usb_wake_state_entered_ms = now_ms;
+            }
+            return true;
+
+        case USB_WAKE_KEY_UP_SENT:
+            if ((uint32_t)(now_ms - usb_wake_state_entered_ms) <
+                USB_WAKE_KEY_UP_SETTLE_MS) {
+                return true;
+            }
+            usb_wake_key_attempts++;
+            if (usb_wake_key_attempts < USB_WAKE_KEY_ATTEMPTS) {
+                if (keyboard_send_report(0, HID_KEY_F15)) {
+                    usb_wake_state = USB_WAKE_KEY_DOWN;
+                    usb_wake_state_entered_ms = now_ms;
+                } else {
+                    usb_wake_key_attempts--;
+                }
+            } else {
+                usb_wake_state = USB_WAKE_DONE;
+            }
+            return true;
+
+        case USB_WAKE_IDLE:
+        case USB_WAKE_DONE:
+        default:
+            return false;
+    }
+}
+
+static void usb_keyboard_task(void *arg)
+{
+    (void)arg;
+
+    while (1) {
+        uint32_t now_ms = usb_now_ms();
+
+        if (descriptor_keyboard_enabled && !keyboard_busy &&
+            !process_wake_keyboard(now_ms)) {
+            if (shortcut_key_release_pending) {
+                if (usb_time_due(now_ms, shortcut_key_release_time_ms) &&
+                    keyboard_send_report(0, 0)) {
+                    shortcut_key_release_pending = false;
+                }
+            } else if (m61_ds5_bridge_config_ps_shortcut_enabled()) {
+                m61_ps_shortcut_action_t action;
+                uintptr_t flags = usb_lock();
+
+                action = m61_ps_shortcut_take_action(&ps_shortcut);
+                usb_unlock(flags);
+                if (action != M61_PS_SHORTCUT_NONE) {
+                    uint8_t keycode = action == M61_PS_SHORTCUT_WIN_TAB ?
+                                      HID_KEY_TAB : HID_KEY_G;
+
+                    if (keyboard_send_report(HID_MODIFIER_LEFT_GUI, keycode)) {
+                        shortcut_key_release_pending = true;
+                        shortcut_key_release_time_ms =
+                            now_ms + USB_SHORTCUT_KEY_HOLD_MS;
+                    } else {
+                        flags = usb_lock();
+                        ps_shortcut.pending_action = action;
+                        usb_unlock(flags);
+                    }
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(USB_KEYBOARD_TASK_PERIOD_MS));
+    }
+}
+
+static void ensure_usb_keyboard_task(void)
+{
+    if (usb_keyboard_task_handle != NULL) {
+        return;
+    }
+    usb_keyboard_task_handle = xTaskCreateStatic(usb_keyboard_task,
+                                                 "ds5_kbd",
+                                                 USB_KEYBOARD_TASK_STACK_WORDS,
+                                                 NULL,
+                                                 USB_KEYBOARD_TASK_PRIORITY,
+                                                 usb_keyboard_task_stack,
+                                                 &usb_keyboard_task_tcb);
+    if (usb_keyboard_task_handle == NULL) {
+        printf("M61 USB keyboard task create failed\r\n");
+    }
 }
 
 static int16_t read_i16_le(const uint8_t *data)
@@ -1104,11 +1406,15 @@ static void m61_usb_clock_recover(void)
 
 static const uint8_t *device_descriptor_callback(uint8_t speed)
 {
+    uint16_t bcd_usb = descriptor_wake_enabled ? USB_2_1 : USB_2_0;
+
     usb_diag.device_desc++;
     usb_diag.last_speed = speed;
     memcpy(device_descriptor_runtime, device_descriptor,
            sizeof(device_descriptor_runtime));
-    if (!m61_ds5_bridge_config_usb_serial_enabled()) {
+    device_descriptor_runtime[2] = (uint8_t)(bcd_usb & 0xFFU);
+    device_descriptor_runtime[3] = (uint8_t)(bcd_usb >> 8);
+    if (!descriptor_usb_serial_enabled) {
         device_descriptor_runtime[16] = 0;
     }
     return device_descriptor_runtime;
@@ -1116,13 +1422,19 @@ static const uint8_t *device_descriptor_callback(uint8_t speed)
 
 static const uint8_t *config_descriptor_callback(uint8_t speed)
 {
-    uint8_t interval = m61_ds5_bridge_config_polling_interval();
+    uint16_t total_length = descriptor_keyboard_enabled ?
+                            USB_DUALSENSE_CONFIG_DESC_SIZE :
+                            USB_DUALSENSE_CONFIG_DESC_BASE_SIZE;
 
     usb_diag.config_desc++;
     usb_diag.last_speed = speed;
     memcpy(config_descriptor_runtime, config_descriptor,
            sizeof(config_descriptor_runtime));
-    if (m61_ds5_bridge_config_wake_enabled()) {
+    config_descriptor_runtime[2] = (uint8_t)(total_length & 0xFFU);
+    config_descriptor_runtime[3] = (uint8_t)(total_length >> 8);
+    config_descriptor_runtime[4] = descriptor_keyboard_enabled ?
+                                   ITF_NUM_TOTAL : ITF_NUM_BASE;
+    if (descriptor_wake_enabled) {
         config_descriptor_runtime[7] |= USB_CONFIG_REMOTE_WAKEUP;
     } else {
         config_descriptor_runtime[7] &= (uint8_t)~USB_CONFIG_REMOTE_WAKEUP;
@@ -1139,7 +1451,8 @@ static const uint8_t *config_descriptor_callback(uint8_t speed)
             uint8_t address = config_descriptor_runtime[offset + 2U];
 
             if (address == HID_IN_EP || address == HID_OUT_EP) {
-                config_descriptor_runtime[offset + 6U] = interval;
+                config_descriptor_runtime[offset + 6U] =
+                    descriptor_polling_interval;
             }
         }
         offset += desc_len;
@@ -1168,11 +1481,20 @@ static const char *string_descriptor_callback(uint8_t speed, uint8_t index)
     return string_descriptors[index];
 }
 
-static const struct usb_descriptor dualsense_descriptor = {
+static const struct usb_descriptor dualsense_descriptor_base = {
     .device_descriptor_callback = device_descriptor_callback,
     .config_descriptor_callback = config_descriptor_callback,
     .device_quality_descriptor_callback = device_quality_descriptor_callback,
     .string_descriptor_callback = string_descriptor_callback,
+};
+
+static const struct usb_descriptor dualsense_descriptor_wake = {
+    .device_descriptor_callback = device_descriptor_callback,
+    .config_descriptor_callback = config_descriptor_callback,
+    .device_quality_descriptor_callback = device_quality_descriptor_callback,
+    .string_descriptor_callback = string_descriptor_callback,
+    .msosv2_descriptor = &wake_ms_os_20,
+    .bos_descriptor = &wake_bos,
 };
 
 static void queue_feature_request(uint8_t report_id, uint32_t requested_len)
@@ -1454,10 +1776,15 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
 
     switch (event) {
         case USBD_EVENT_RESET:
-        case USBD_EVENT_DISCONNECTED:
+        case USBD_EVENT_DISCONNECTED: {
+            bool preserve_wake_request =
+                event == USBD_EVENT_RESET &&
+                usb_wake_state == USB_WAKE_REQUESTED;
+
             usb_ready = false;
             usb_configured = false;
             usb_busy = false;
+            keyboard_busy = false;
             usb_suspended = false;
             usb_out_armed = false;
             audio_out_open = false;
@@ -1466,12 +1793,23 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             flush_haptics_queue();
             flush_speaker_queues();
             flush_mic_queues();
+            if (preserve_wake_request) {
+                m61_ps_shortcut_reset(&ps_shortcut);
+                shortcut_key_release_pending = false;
+            } else {
+                reset_keyboard_runtime(false);
+            }
             break;
+        }
         case USBD_EVENT_CONFIGURED:
             usb_ready = true;
             usb_configured = true;
             usb_busy = false;
+            keyboard_busy = false;
             usb_suspended = false;
+            if (usb_wake_state == USB_WAKE_REQUESTED) {
+                usb_wake_resume_seen = true;
+            }
             usb_out_armed = false;
             arm_hid_out(0);
             arm_audio_out(busid);
@@ -1479,6 +1817,9 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             break;
         case USBD_EVENT_RESUME:
             usb_suspended = false;
+            if (usb_wake_state == USB_WAKE_REQUESTED) {
+                usb_wake_resume_seen = true;
+            }
             arm_hid_out(0);
             arm_audio_out(busid);
             arm_audio_in(busid);
@@ -1487,6 +1828,13 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             usb_suspended = true;
             usb_out_armed = false;
             audio_in_busy = false;
+            if (usb_wake_state == USB_WAKE_KEY_DOWN) {
+                shortcut_key_release_pending = true;
+                shortcut_key_release_time_ms = usb_now_ms();
+            }
+            usb_wake_state = USB_WAKE_IDLE;
+            usb_wake_resume_seen = false;
+            usb_wake_key_attempts = 0;
             break;
         default:
             break;
@@ -1499,6 +1847,15 @@ static void usbd_hid_in_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
     (void)ep;
     (void)nbytes;
     usb_busy = false;
+}
+
+static void usbd_hid_keyboard_in_callback(uint8_t busid, uint8_t ep,
+                                          uint32_t nbytes)
+{
+    (void)busid;
+    (void)ep;
+    (void)nbytes;
+    keyboard_busy = false;
 }
 
 static void usbd_hid_out_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
@@ -1546,6 +1903,11 @@ static struct usbd_endpoint hid_out_ep = {
     .ep_addr = HID_OUT_EP,
 };
 
+static struct usbd_endpoint hid_keyboard_in_ep = {
+    .ep_cb = usbd_hid_keyboard_in_callback,
+    .ep_addr = HID_KBD_IN_EP,
+};
+
 static struct usbd_endpoint audio_out_ep = {
     .ep_cb = usbd_audio_out_ep_callback,
     .ep_addr = AUDIO_OUT_EP,
@@ -1573,6 +1935,7 @@ static struct usbd_interface audio_control_intf;
 static struct usbd_interface audio_stream_out_intf;
 static struct usbd_interface audio_stream_in_intf;
 static struct usbd_interface hid_intf;
+static struct usbd_interface hid_keyboard_intf;
 
 static void set_button_bit(uint8_t *value, uint8_t bit, uint32_t buttons, dualsense_button_mask_t mask)
 {
@@ -1617,7 +1980,18 @@ static void make_payload_from_state(const dualsense_state_t *state, uint8_t *pay
 
 static void register_usb_dualsense_device(void)
 {
-    usbd_desc_register(0, &dualsense_descriptor);
+    descriptor_wake_enabled = m61_ds5_bridge_config_wake_enabled();
+    descriptor_keyboard_enabled = descriptor_wake_enabled ||
+                                  m61_ds5_bridge_config_ps_shortcut_enabled();
+    descriptor_usb_serial_enabled =
+        m61_ds5_bridge_config_usb_serial_enabled();
+    descriptor_polling_interval =
+        m61_ds5_bridge_config_polling_interval();
+    reset_keyboard_runtime(false);
+
+    usbd_desc_register(0, descriptor_wake_enabled ?
+                          &dualsense_descriptor_wake :
+                          &dualsense_descriptor_base);
 
     usbd_add_interface(0, usbd_audio_init_intf(0,
                                                &audio_control_intf,
@@ -1638,11 +2012,20 @@ static void register_usb_dualsense_device(void)
                                              &hid_intf,
                                              dualsense_report_desc,
                                              sizeof(dualsense_report_desc)));
+    if (descriptor_keyboard_enabled) {
+        usbd_add_interface(0, usbd_hid_init_intf(0,
+                                                 &hid_keyboard_intf,
+                                                 keyboard_report_desc,
+                                                 sizeof(keyboard_report_desc)));
+    }
 
     usbd_add_endpoint(0, &audio_out_ep);
     usbd_add_endpoint(0, &audio_in_ep);
     usbd_add_endpoint(0, &hid_in_ep);
     usbd_add_endpoint(0, &hid_out_ep);
+    if (descriptor_keyboard_enabled) {
+        usbd_add_endpoint(0, &hid_keyboard_in_ep);
+    }
 }
 
 void m61_usb_gamepad_init(void)
@@ -1654,6 +2037,7 @@ void m61_usb_gamepad_init(void)
     flush_speaker_queues();
     flush_mic_queues();
     ensure_audio_codec_task();
+    ensure_usb_keyboard_task();
     register_usb_dualsense_device();
     usb_init_result = usbd_initialize(0, 0, usbd_event_handler);
     usb_initialized = (usb_init_result == 0);
@@ -1666,6 +2050,7 @@ void m61_usb_gamepad_deinit(void)
         usb_ready = false;
         usb_configured = false;
         usb_busy = false;
+        keyboard_busy = false;
         usb_suspended = false;
         usb_out_armed = false;
         usbd_deinitialize(0);
@@ -1677,6 +2062,7 @@ int m61_usb_gamepad_reinit(void)
 {
     m61_usb_gamepad_deinit();
     m61_usb_clock_recover();
+    ensure_usb_keyboard_task();
     register_usb_dualsense_device();
     usb_init_result = usbd_initialize(0, 0, usbd_event_handler);
     usb_initialized = (usb_init_result == 0);
@@ -1730,6 +2116,30 @@ void m61_usb_gamepad_send_state(const dualsense_state_t *state)
 
     make_payload_from_state(state, payload);
     m61_usb_gamepad_send_report01(payload, sizeof(payload));
+}
+
+void m61_usb_gamepad_note_controller_state(const dualsense_state_t *state)
+{
+    uintptr_t flags;
+
+    if (state == NULL) {
+        return;
+    }
+    flags = usb_lock();
+    m61_ps_shortcut_note(&ps_shortcut,
+                         (state->buttons & DS5_BUTTON_PS) != 0U,
+                         usb_now_ms(),
+                         descriptor_keyboard_enabled &&
+                         m61_ds5_bridge_config_ps_shortcut_enabled());
+    usb_unlock(flags);
+}
+
+void m61_usb_gamepad_reset_controller_state(void)
+{
+    bool release_key = shortcut_key_release_pending ||
+                       usb_wake_state == USB_WAKE_KEY_DOWN;
+
+    reset_keyboard_runtime(release_key);
 }
 
 void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data, size_t len)
@@ -1907,10 +2317,21 @@ bool m61_usb_gamepad_audio_speaker_active(void)
 
 bool m61_usb_gamepad_remote_wakeup(void)
 {
-    if (!m61_ds5_bridge_config_wake_enabled() || !usb_suspended) {
+    int ret;
+
+    if (!descriptor_wake_enabled || !usb_suspended) {
         return false;
     }
-    return usbd_send_remote_wakeup(0) == 0;
+    usb_wake_state = USB_WAKE_REQUESTED;
+    usb_wake_state_entered_ms = usb_now_ms();
+    usb_wake_resume_seen = false;
+    usb_wake_key_attempts = 0;
+    ret = usbd_send_remote_wakeup(0);
+    if (ret != 0) {
+        usb_wake_state = USB_WAKE_IDLE;
+        return false;
+    }
+    return true;
 }
 
 bool m61_usb_gamepad_ready(void)
@@ -2083,13 +2504,20 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
     uintptr_t flags;
 
     (void)busid;
-    (void)intf;
 
     usb_diag.hid_get_report++;
     usb_diag.last_report_id = report_id;
     usb_diag.last_report_type = report_type;
     *data = usb_control_buffer;
     *len = 0;
+
+    if (intf == ITF_NUM_HID_KBD) {
+        if (requested_len >= HID_KBD_EP_SIZE) {
+            memset(usb_control_buffer, 0, HID_KBD_EP_SIZE);
+            *len = HID_KBD_EP_SIZE;
+        }
+        return;
+    }
 
     if (report_type == HID_REPORT_INPUT && report_id == M61_DS5_USB_INPUT_REPORT_ID) {
         memcpy(usb_control_buffer, last_input_payload, sizeof(last_input_payload));
@@ -2137,30 +2565,36 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
 uint8_t usbd_hid_get_idle(uint8_t busid, uint8_t intf, uint8_t report_id)
 {
     (void)busid;
-    (void)intf;
 
     usb_diag.hid_get_idle++;
     usb_diag.last_report_id = report_id;
+    if (intf == ITF_NUM_HID_KBD) {
+        return keyboard_idle_rate;
+    }
     return 0;
 }
 
 uint8_t usbd_hid_get_protocol(uint8_t busid, uint8_t intf)
 {
     (void)busid;
-    (void)intf;
 
     usb_diag.hid_get_protocol++;
+    if (intf == ITF_NUM_HID_KBD) {
+        return keyboard_protocol;
+    }
     return 1;
 }
 
 void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t report_type, uint8_t *report, uint32_t report_len)
 {
     (void)busid;
-    (void)intf;
 
     usb_diag.hid_set_report++;
     usb_diag.last_report_id = report_id;
     usb_diag.last_report_type = report_type;
+    if (intf == ITF_NUM_HID_KBD) {
+        return;
+    }
     if (report_type == HID_REPORT_FEATURE &&
         set_bridge_config_report(report_id, report, report_len)) {
         return;
@@ -2171,20 +2605,23 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
 void usbd_hid_set_idle(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t duration)
 {
     (void)busid;
-    (void)intf;
-    (void)duration;
 
     usb_diag.hid_set_idle++;
     usb_diag.last_report_id = report_id;
+    if (intf == ITF_NUM_HID_KBD) {
+        keyboard_idle_rate = duration;
+    }
 }
 
 void usbd_hid_set_protocol(uint8_t busid, uint8_t intf, uint8_t protocol)
 {
     (void)busid;
-    (void)intf;
 
     usb_diag.hid_set_protocol++;
     usb_diag.last_report_type = protocol;
+    if (intf == ITF_NUM_HID_KBD) {
+        keyboard_protocol = protocol;
+    }
 }
 
 void usbd_audio_open(uint8_t busid, uint8_t intf)
@@ -2314,6 +2751,8 @@ void m61_usb_gamepad_deinit(void) {}
 int m61_usb_gamepad_reinit(void) { return -1; }
 void m61_usb_gamepad_send_report01(const uint8_t *payload, size_t len) { (void)payload; (void)len; }
 void m61_usb_gamepad_send_state(const dualsense_state_t *state) { (void)state; }
+void m61_usb_gamepad_note_controller_state(const dualsense_state_t *state) { (void)state; }
+void m61_usb_gamepad_reset_controller_state(void) {}
 void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data, size_t len)
 {
     (void)report_id;

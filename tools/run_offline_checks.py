@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         ("project structure", [sys.executable, "tools/verify_project.py"]),
         ("DualSense parser vectors", [sys.executable, "tools/test_dualsense_protocol.py"]),
         ("M61 inactivity policy", [sys.executable, "tools/test_m61_inactivity.py"]),
+        ("M61 PS shortcut policy", [sys.executable, "tools/test_m61_ps_shortcut.py"]),
+        ("M61 wake descriptors", [sys.executable, "tools/test_m61_wake_descriptors.py"]),
         ("stage-1 log checker self-test", [sys.executable, "tools/test_stage1_log_checker.py"]),
         ("M61 HIDP log checker self-test", [sys.executable, "tools/test_m61_hidp_log_checker.py"]),
         ("dual-chip log checker self-test", [sys.executable, "tools/check_dual_chip_log.py", "--self-test"]),
