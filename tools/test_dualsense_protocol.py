@@ -1358,6 +1358,9 @@ def test_c_source_contract() -> None:
         "case HCI_EVENT_INQUIRY_COMPLETE:",
         "if (!s_inquiring)",
         "if (s_acl_pending || s_acl_handle != HCI_CON_HANDLE_INVALID)",
+        "DS5_INQUIRY_RETRY_MS 250",
+        "static void inquiry_retry_handler(btstack_timer_source_t *ts)",
+        "schedule_inquiry_retry();",
         "handle_inquiry_result(event_type, packet)",
         "Auto connect: inquiry + incoming page",
         "static bool s_acl_pending;",
@@ -1472,6 +1475,11 @@ def test_c_source_contract() -> None:
         "cb(&snapshot, esp_timer_get_time(), ctx);",
     ):
         assert snippet in esp32_raw_hidp_source, f"missing ESP32 BT lifecycle snippet: {snippet}"
+    assert re.search(
+        r"status\s*==\s*ERROR_CODE_COMMAND_DISALLOWED\)\s*\{\s*"
+        r"schedule_inquiry_retry\(\);",
+        esp32_raw_hidp_source,
+    ), "only transient inquiry command-disallowed failures should auto-retry"
     assert not re.search(
         r"HCI_OPCODE_HCI_INQUIRY_CANCEL\s*\)\s*\{\s*s_inquiring\s*=\s*false",
         esp32_raw_hidp_source,

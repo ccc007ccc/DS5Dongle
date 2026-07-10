@@ -48,6 +48,7 @@
 #define DS5_SEND_FIFO_DEPTH 10
 #define DS5_CMD_QUEUE_DEPTH 12
 #define DS5_RSSI_POLL_MS 2000
+#define DS5_INQUIRY_RETRY_MS 250
 
 #ifndef CONFIG_DS5_SCAN_SECONDS
 #define CONFIG_DS5_SCAN_SECONDS 30
@@ -143,6 +144,7 @@ static btstack_packet_callback_registration_t s_hci_cb_reg;
 static btstack_packet_callback_registration_t s_l2cap_cb_reg;
 static btstack_context_callback_registration_t s_cmd_drain_reg;
 static btstack_timer_source_t s_rssi_timer;
+static btstack_timer_source_t s_inquiry_retry_timer;
 
 static QueueHandle_t s_cmd_queue;
 static volatile bool s_cmd_drain_pending;
@@ -161,6 +163,7 @@ static bool s_discovery_enabled;
 static bool s_abort_link;
 static bool s_hci_disconnect_pending;
 static bool s_forget_pending;
+static bool s_inquiry_retry_pending;
 static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
 static uint16_t s_control_cid;
 static uint16_t s_interrupt_cid;
@@ -404,6 +407,30 @@ static void send_connect_led_state(void)
 
 /* --------------------------------------------------- connect state flow -- */
 
+static void start_inquiry(void);
+
+static void inquiry_retry_handler(btstack_timer_source_t *ts)
+{
+    (void)ts;
+    s_inquiry_retry_pending = false;
+    start_inquiry();
+}
+
+static void schedule_inquiry_retry(void)
+{
+    if (s_inquiry_retry_pending || !s_reconnect_allowed ||
+        !s_discovery_enabled || s_abort_link || s_forget_pending) {
+        return;
+    }
+
+    s_inquiry_retry_pending = true;
+    btstack_run_loop_set_timer_handler(&s_inquiry_retry_timer,
+                                       inquiry_retry_handler);
+    btstack_run_loop_set_timer(&s_inquiry_retry_timer,
+                               DS5_INQUIRY_RETRY_MS);
+    btstack_run_loop_add_timer(&s_inquiry_retry_timer);
+}
+
 static void apply_reconnect_visibility(void)
 {
     const int visible = s_reconnect_allowed && !s_abort_link &&
@@ -477,6 +504,9 @@ static void start_inquiry(void)
         ESP_LOGW(TAG, "Start inquiry rejected status=0x%02X", status);
         state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING,
                                     -status);
+        if (status == ERROR_CODE_COMMAND_DISALLOWED) {
+            schedule_inquiry_retry();
+        }
         return;
     }
 
