@@ -1348,10 +1348,10 @@ def test_c_source_contract() -> None:
         "gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO)",
         "gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED)",
         "l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL",
-        "hci_send_cmd(&hci_create_connection, addr,",
+        "hci_send_cmd(&hci_create_connection, s_current_addr,",
         "hci_send_cmd(&hci_user_confirmation_request_reply, addr)",
         "hci_send_cmd(&hci_set_connection_encryption, handle, 1)",
-        "hci_send_cmd(&hci_accept_connection_request, addr, 0x01)",
+        "hci_send_cmd(&hci_accept_connection_request, s_current_addr, 0x01)",
         "case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:",
         "case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE:",
         "case GAP_EVENT_INQUIRY_COMPLETE:",
@@ -1364,6 +1364,12 @@ def test_c_source_contract() -> None:
         "handle_inquiry_result(event_type, packet)",
         "Auto connect: inquiry + incoming page",
         "static bool s_acl_pending;",
+        "DS5_ACL_CREATE_RETRY_MS 20",
+        "static void try_send_acl_create(void)",
+        "static void try_send_acl_accept(void)",
+        "hci_can_send_command_packet_now()",
+        "ACL create waits for HCI command buffer",
+        "schedule_acl_create_retry();",
         "s_acl_pending = true;",
         "s_acl_pending = false;",
         "(cod & 0x000F00) == 0x000500",
@@ -1462,6 +1468,8 @@ def test_c_source_contract() -> None:
         "set_reconnect_policy(cmd->flag, false);",
         "set_reconnect_policy(false, false);",
         "cancel_pending_outgoing_acl();",
+        "if (!s_acl_outgoing_pending)",
+        "cancel_scheduled_acl_create();",
         "opcode == HCI_OPCODE_HCI_CREATE_CONNECTION_CANCEL",
         "hci_event_command_complete_get_return_parameters(packet)",
         "s_acl_outgoing_pending = false;",
@@ -1483,6 +1491,65 @@ def test_c_source_contract() -> None:
         "apply_reconnect_visibility();\n        break;"
     ), "empty inquiry cycles must stop scanning and retain page visibility"
     assert "schedule_inquiry_retry" not in esp32_raw_hidp_source
+    acl_create = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("static void try_send_acl_create(void)\n{"):
+        esp32_raw_hidp_source.index("static void create_connection_to(")
+    ]
+    assert "status == ERROR_CODE_COMMAND_DISALLOWED" in acl_create
+    assert "if (!hci_can_send_command_packet_now())" in acl_create
+    assert acl_create.index("hci_send_cmd(&hci_create_connection") < acl_create.index(
+        "s_acl_outgoing_pending = true;"
+    ), "outgoing ACL must become cancellable only after HCI accepted the command"
+    create_connection = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("static void create_connection_to("):
+        esp32_raw_hidp_source.index("static bool decode_inquiry_result(")
+    ]
+    assert create_connection.index("s_acl_outgoing_pending = false;") < (
+        create_connection.index("try_send_acl_create();")
+    ), "outgoing ACL must start in the not-yet-submitted state"
+    acl_cancel = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("static void try_send_acl_cancel(void)\n{"):
+        esp32_raw_hidp_source.index("static void acl_disconnect_retry_handler(")
+    ]
+    assert "schedule_acl_cancel_retry();" in acl_cancel
+    assert "!s_acl_cancel_requested || !s_acl_pending" in acl_cancel
+    assert "s_acl_cancel_pending = true;" in acl_cancel
+    acl_disconnect = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("static void try_send_acl_disconnect(void)\n{"):
+        esp32_raw_hidp_source.index("static void try_send_acl_create(void)\n{")
+    ]
+    assert "schedule_acl_disconnect_retry();" in acl_disconnect
+    assert "!s_acl_disconnect_requested || s_acl_handle != handle" in acl_disconnect
+    command_status = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case HCI_EVENT_COMMAND_STATUS:"):
+        esp32_raw_hidp_source.index("case HCI_EVENT_COMMAND_COMPLETE:")
+    ]
+    disconnect_status = command_status[
+        command_status.index("opcode == HCI_OPCODE_HCI_DISCONNECT"):
+    ]
+    assert "schedule_acl_disconnect_retry" not in disconnect_status
+    accept_status = command_status[
+        command_status.index("opcode == HCI_OPCODE_HCI_ACCEPT_CONNECTION_REQUEST"):
+    ]
+    assert "schedule_acl_accept_retry" not in accept_status
+    acl_accept = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("static void try_send_acl_accept(void)\n{"):
+        esp32_raw_hidp_source.index("static void create_connection_to(")
+    ]
+    assert "if (!hci_can_send_command_packet_now())" in acl_accept
+    assert "schedule_acl_accept_retry();" in acl_accept
+    assert "status == ERROR_CODE_COMMAND_DISALLOWED" in acl_accept
+    assert "s_acl_accept_pending = true;" in acl_accept
+    incoming_request = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case HCI_EVENT_CONNECTION_REQUEST:"):
+        esp32_raw_hidp_source.index("case HCI_EVENT_DISCONNECTION_COMPLETE:")
+    ]
+    assert incoming_request.index("cancel_scheduled_acl_create();") < (
+        incoming_request.index("s_acl_pending = true;")
+    ), "incoming ACL must cancel a deferred outgoing create before takeover"
+    assert incoming_request.index("s_acl_accept_requested = true;") < (
+        incoming_request.index("try_send_acl_accept();")
+    ), "incoming ACL acceptance must use the deferred checked-send path"
     assert not re.search(
         r"HCI_OPCODE_HCI_INQUIRY_CANCEL\s*\)\s*\{\s*s_inquiring\s*=\s*false",
         esp32_raw_hidp_source,

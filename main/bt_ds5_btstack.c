@@ -48,6 +48,7 @@
 #define DS5_SEND_FIFO_DEPTH 10
 #define DS5_CMD_QUEUE_DEPTH 12
 #define DS5_RSSI_POLL_MS 2000
+#define DS5_ACL_CREATE_RETRY_MS 20
 
 #ifndef CONFIG_DS5_SCAN_SECONDS
 #define CONFIG_DS5_SCAN_SECONDS 30
@@ -143,6 +144,10 @@ static btstack_packet_callback_registration_t s_hci_cb_reg;
 static btstack_packet_callback_registration_t s_l2cap_cb_reg;
 static btstack_context_callback_registration_t s_cmd_drain_reg;
 static btstack_timer_source_t s_rssi_timer;
+static btstack_timer_source_t s_acl_create_retry_timer;
+static btstack_timer_source_t s_acl_cancel_retry_timer;
+static btstack_timer_source_t s_acl_disconnect_retry_timer;
+static btstack_timer_source_t s_acl_accept_retry_timer;
 
 static QueueHandle_t s_cmd_queue;
 static volatile bool s_cmd_drain_pending;
@@ -161,6 +166,16 @@ static bool s_discovery_enabled;
 static bool s_abort_link;
 static bool s_hci_disconnect_pending;
 static bool s_forget_pending;
+static bool s_acl_create_retry_scheduled;
+static bool s_acl_cancel_requested;
+static bool s_acl_cancel_pending;
+static bool s_acl_cancel_retry_scheduled;
+static bool s_acl_disconnect_requested;
+static bool s_acl_disconnect_retry_scheduled;
+static bool s_acl_accept_requested;
+static bool s_acl_accept_pending;
+static bool s_acl_accept_retry_scheduled;
+static uint8_t s_acl_disconnect_reason;
 static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
 static uint16_t s_control_cid;
 static uint16_t s_interrupt_cid;
@@ -444,24 +459,95 @@ static void stop_inquiry_for_policy(void)
     }
 }
 
+static void try_send_acl_cancel(void);
+static void try_send_acl_disconnect(void);
+static void try_send_acl_accept(void);
+static void handle_disconnected(uint8_t reason);
+
 static void request_acl_disconnect(uint8_t reason)
 {
     if (s_acl_handle == HCI_CON_HANDLE_INVALID ||
-        s_hci_disconnect_pending) {
+        s_hci_disconnect_pending || s_acl_disconnect_requested) {
         return;
     }
 
-    s_hci_disconnect_pending = true;
-    hci_send_cmd(&hci_disconnect, s_acl_handle, reason);
+    s_acl_disconnect_requested = true;
+    s_acl_disconnect_reason = reason;
+    try_send_acl_disconnect();
+}
+
+static void cancel_scheduled_acl_create(void)
+{
+    if (!s_acl_create_retry_scheduled) {
+        return;
+    }
+
+    btstack_run_loop_remove_timer(&s_acl_create_retry_timer);
+    s_acl_create_retry_scheduled = false;
+}
+
+static void cancel_scheduled_acl_cancel(void)
+{
+    if (!s_acl_cancel_retry_scheduled) {
+        return;
+    }
+
+    btstack_run_loop_remove_timer(&s_acl_cancel_retry_timer);
+    s_acl_cancel_retry_scheduled = false;
+}
+
+static void cancel_scheduled_acl_disconnect(void)
+{
+    if (!s_acl_disconnect_retry_scheduled) {
+        return;
+    }
+
+    btstack_run_loop_remove_timer(&s_acl_disconnect_retry_timer);
+    s_acl_disconnect_retry_scheduled = false;
+}
+
+static void cancel_scheduled_acl_accept(void)
+{
+    if (!s_acl_accept_retry_scheduled) {
+        return;
+    }
+
+    btstack_run_loop_remove_timer(&s_acl_accept_retry_timer);
+    s_acl_accept_retry_scheduled = false;
 }
 
 static void cancel_pending_outgoing_acl(void)
 {
-    if (!s_acl_pending || !s_acl_outgoing_pending) {
+    if (!s_acl_pending || !s_new_pair) {
         return;
     }
 
-    hci_send_cmd(&hci_create_connection_cancel, s_current_addr);
+    if (!s_acl_outgoing_pending) {
+        cancel_scheduled_acl_create();
+        s_acl_cancel_requested = false;
+        s_acl_pending = false;
+        s_new_pair = false;
+        return;
+    }
+
+    if (s_acl_cancel_pending) {
+        return;
+    }
+
+    s_acl_cancel_requested = true;
+    try_send_acl_cancel();
+}
+
+static void cancel_unsent_incoming_acl(void)
+{
+    if (!s_acl_pending || s_new_pair || !s_acl_accept_requested ||
+        s_acl_accept_pending) {
+        return;
+    }
+
+    cancel_scheduled_acl_accept();
+    s_acl_accept_requested = false;
+    s_acl_pending = false;
 }
 
 static void start_inquiry(void)
@@ -532,6 +618,255 @@ static void start_auto_connect(const char *reason)
     start_inquiry();
 }
 
+static void try_send_acl_create(void);
+
+static void acl_create_retry_handler(btstack_timer_source_t *ts)
+{
+    (void)ts;
+    s_acl_create_retry_scheduled = false;
+    try_send_acl_create();
+}
+
+static void schedule_acl_create_retry(void)
+{
+    if (s_acl_create_retry_scheduled || !s_acl_pending ||
+        s_acl_outgoing_pending) {
+        return;
+    }
+
+    s_acl_create_retry_scheduled = true;
+    btstack_run_loop_set_timer_handler(&s_acl_create_retry_timer,
+                                       acl_create_retry_handler);
+    btstack_run_loop_set_timer(&s_acl_create_retry_timer,
+                               DS5_ACL_CREATE_RETRY_MS);
+    btstack_run_loop_add_timer(&s_acl_create_retry_timer);
+}
+
+static void acl_cancel_retry_handler(btstack_timer_source_t *ts)
+{
+    (void)ts;
+    s_acl_cancel_retry_scheduled = false;
+    try_send_acl_cancel();
+}
+
+static void schedule_acl_cancel_retry(void)
+{
+    if (s_acl_cancel_retry_scheduled || !s_acl_cancel_requested) {
+        return;
+    }
+
+    s_acl_cancel_retry_scheduled = true;
+    btstack_run_loop_set_timer_handler(&s_acl_cancel_retry_timer,
+                                       acl_cancel_retry_handler);
+    btstack_run_loop_set_timer(&s_acl_cancel_retry_timer,
+                               DS5_ACL_CREATE_RETRY_MS);
+    btstack_run_loop_add_timer(&s_acl_cancel_retry_timer);
+}
+
+static void try_send_acl_cancel(void)
+{
+    if (!s_acl_cancel_requested || s_acl_cancel_pending || !s_acl_pending ||
+        !s_new_pair || !s_acl_outgoing_pending) {
+        s_acl_cancel_requested = false;
+        return;
+    }
+
+    if (!hci_can_send_command_packet_now()) {
+        schedule_acl_cancel_retry();
+        return;
+    }
+
+    const uint8_t status =
+        hci_send_cmd(&hci_create_connection_cancel, s_current_addr);
+    if (!s_acl_cancel_requested || !s_acl_pending || !s_new_pair) {
+        s_acl_cancel_requested = false;
+        return;
+    }
+    if (status == ERROR_CODE_SUCCESS) {
+        s_acl_cancel_requested = false;
+        s_acl_cancel_pending = true;
+        ESP_LOGI(TAG, "ACL create cancel command sent");
+        return;
+    }
+    if (status == ERROR_CODE_COMMAND_DISALLOWED) {
+        schedule_acl_cancel_retry();
+        return;
+    }
+
+    s_acl_cancel_requested = false;
+    ESP_LOGW(TAG, "ACL create cancel submit failed status=0x%02X", status);
+    state_publish_locked_fields(0, 0, -(int32_t)status);
+}
+
+static void acl_disconnect_retry_handler(btstack_timer_source_t *ts)
+{
+    (void)ts;
+    s_acl_disconnect_retry_scheduled = false;
+    try_send_acl_disconnect();
+}
+
+static void schedule_acl_disconnect_retry(void)
+{
+    if (s_acl_disconnect_retry_scheduled || !s_acl_disconnect_requested) {
+        return;
+    }
+
+    s_acl_disconnect_retry_scheduled = true;
+    btstack_run_loop_set_timer_handler(&s_acl_disconnect_retry_timer,
+                                       acl_disconnect_retry_handler);
+    btstack_run_loop_set_timer(&s_acl_disconnect_retry_timer,
+                               DS5_ACL_CREATE_RETRY_MS);
+    btstack_run_loop_add_timer(&s_acl_disconnect_retry_timer);
+}
+
+static void try_send_acl_disconnect(void)
+{
+    if (!s_acl_disconnect_requested || s_hci_disconnect_pending ||
+        s_acl_handle == HCI_CON_HANDLE_INVALID) {
+        s_acl_disconnect_requested = false;
+        return;
+    }
+
+    if (!hci_can_send_command_packet_now()) {
+        schedule_acl_disconnect_retry();
+        return;
+    }
+
+    const hci_con_handle_t handle = s_acl_handle;
+    const uint8_t status =
+        hci_send_cmd(&hci_disconnect, handle, s_acl_disconnect_reason);
+    if (!s_acl_disconnect_requested || s_acl_handle != handle ||
+        s_acl_handle == HCI_CON_HANDLE_INVALID) {
+        s_acl_disconnect_requested = false;
+        return;
+    }
+    if (status == ERROR_CODE_SUCCESS) {
+        s_acl_disconnect_requested = false;
+        s_hci_disconnect_pending = true;
+        ESP_LOGI(TAG, "ACL disconnect command sent handle=0x%04X", handle);
+        return;
+    }
+    if (status == ERROR_CODE_COMMAND_DISALLOWED) {
+        schedule_acl_disconnect_retry();
+        return;
+    }
+
+    s_acl_disconnect_requested = false;
+    ESP_LOGW(TAG, "ACL disconnect submit failed status=0x%02X", status);
+    state_publish_locked_fields(0, 0, -(int32_t)status);
+}
+
+static void try_send_acl_create(void)
+{
+    if (!s_acl_pending || !s_new_pair || s_acl_outgoing_pending ||
+        s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        return;
+    }
+    if (s_abort_link || s_forget_pending || !s_reconnect_allowed) {
+        s_acl_pending = false;
+        s_new_pair = false;
+        return;
+    }
+
+    if (!hci_can_send_command_packet_now()) {
+        ESP_LOGI(TAG, "ACL create waits for HCI command buffer");
+        schedule_acl_create_retry();
+        return;
+    }
+
+    const uint8_t status =
+        hci_send_cmd(&hci_create_connection, s_current_addr,
+                     hci_usable_acl_packet_types(), 0, 0, 0, 1);
+    if (!s_acl_pending || !s_new_pair ||
+        s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        return;
+    }
+    if (status == ERROR_CODE_SUCCESS) {
+        s_acl_outgoing_pending = true;
+        ESP_LOGI(TAG, "ACL create command sent to %s",
+                 bd_addr_to_str(s_current_addr));
+        return;
+    }
+    if (status == ERROR_CODE_COMMAND_DISALLOWED) {
+        ESP_LOGI(TAG, "ACL create waits for HCI command buffer");
+        schedule_acl_create_retry();
+        return;
+    }
+
+    ESP_LOGW(TAG, "ACL create submit failed status=0x%02X", status);
+    s_device_found = false;
+    s_new_pair = false;
+    s_acl_pending = false;
+    s_acl_outgoing_pending = false;
+    state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
+    start_auto_connect("create-submit-failed");
+}
+
+static void acl_accept_retry_handler(btstack_timer_source_t *ts)
+{
+    (void)ts;
+    s_acl_accept_retry_scheduled = false;
+    try_send_acl_accept();
+}
+
+static void schedule_acl_accept_retry(void)
+{
+    if (s_acl_accept_retry_scheduled || !s_acl_accept_requested ||
+        s_acl_accept_pending) {
+        return;
+    }
+
+    s_acl_accept_retry_scheduled = true;
+    btstack_run_loop_set_timer_handler(&s_acl_accept_retry_timer,
+                                       acl_accept_retry_handler);
+    btstack_run_loop_set_timer(&s_acl_accept_retry_timer,
+                               DS5_ACL_CREATE_RETRY_MS);
+    btstack_run_loop_add_timer(&s_acl_accept_retry_timer);
+}
+
+static void try_send_acl_accept(void)
+{
+    if (!s_acl_accept_requested || s_acl_accept_pending || !s_acl_pending ||
+        s_new_pair || s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        s_acl_accept_requested = false;
+        return;
+    }
+    if (s_abort_link || s_forget_pending || !s_reconnect_allowed) {
+        s_acl_accept_requested = false;
+        s_acl_pending = false;
+        return;
+    }
+    if (!hci_can_send_command_packet_now()) {
+        schedule_acl_accept_retry();
+        return;
+    }
+
+    const uint8_t status =
+        hci_send_cmd(&hci_accept_connection_request, s_current_addr, 0x01);
+    if (!s_acl_accept_requested || !s_acl_pending ||
+        s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        s_acl_accept_requested = false;
+        return;
+    }
+    if (status == ERROR_CODE_SUCCESS) {
+        s_acl_accept_requested = false;
+        s_acl_accept_pending = true;
+        ESP_LOGI(TAG, "ACL accept command sent to %s",
+                 bd_addr_to_str(s_current_addr));
+        return;
+    }
+    if (status == ERROR_CODE_COMMAND_DISALLOWED) {
+        schedule_acl_accept_retry();
+        return;
+    }
+
+    ESP_LOGW(TAG, "ACL accept submit failed status=0x%02X", status);
+    s_acl_accept_requested = false;
+    s_acl_pending = false;
+    state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
+    handle_disconnected(status);
+}
+
 static void create_connection_to(const bd_addr_t addr, bool from_saved)
 {
     s_abort_link = false;
@@ -540,14 +875,13 @@ static void create_connection_to(const bd_addr_t addr, bool from_saved)
     bd_addr_copy(s_current_addr, addr);
     s_new_pair = true; /* we initiate → we create the L2CAP channels */
     s_acl_pending = true;
-    s_acl_outgoing_pending = true;
+    s_acl_outgoing_pending = false;
     s_connect_from_saved = from_saved;
     ESP_LOGI(TAG, "Connecting to %s%s", bd_addr_to_str(addr),
              from_saved ? " (saved)" : "");
-    hci_send_cmd(&hci_create_connection, addr,
-                 hci_usable_acl_packet_types(), 0, 0, 0, 1);
     STATE_SET(DS5_DUAL_BT_STATE_CONNECTING |
               (from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0));
+    try_send_acl_create();
 }
 
 static bool decode_inquiry_result(uint8_t event_type, const uint8_t *packet,
@@ -627,6 +961,15 @@ static void open_hid_channels(const char *reason)
 static void handle_disconnected(uint8_t reason)
 {
     ESP_LOGI(TAG, "Disconnected reason=0x%02X", reason);
+    cancel_scheduled_acl_create();
+    cancel_scheduled_acl_cancel();
+    cancel_scheduled_acl_disconnect();
+    cancel_scheduled_acl_accept();
+    s_acl_cancel_requested = false;
+    s_acl_cancel_pending = false;
+    s_acl_disconnect_requested = false;
+    s_acl_accept_requested = false;
+    s_acl_accept_pending = false;
     s_device_found = false;
     s_new_pair = false;
     s_acl_pending = false;
@@ -774,6 +1117,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         if (opcode == HCI_OPCODE_HCI_CREATE_CONNECTION &&
             status != ERROR_CODE_SUCCESS) {
             ESP_LOGW(TAG, "Create connection rejected status=0x%02X", status);
+            cancel_scheduled_acl_create();
             s_device_found = false;
             s_new_pair = false;
             s_acl_pending = false;
@@ -784,6 +1128,25 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             } else {
                 start_auto_connect("create-rejected");
             }
+        }
+        if (opcode == HCI_OPCODE_HCI_DISCONNECT &&
+            status != ERROR_CODE_SUCCESS) {
+            ESP_LOGW(TAG, "Disconnect rejected status=0x%02X", status);
+            cancel_scheduled_acl_disconnect();
+            s_acl_disconnect_requested = false;
+            s_hci_disconnect_pending = false;
+            state_publish_locked_fields(0, 0, -(int32_t)status);
+        }
+        if (opcode == HCI_OPCODE_HCI_ACCEPT_CONNECTION_REQUEST &&
+            status != ERROR_CODE_SUCCESS) {
+            ESP_LOGW(TAG, "Accept connection rejected status=0x%02X", status);
+            cancel_scheduled_acl_accept();
+            s_acl_accept_requested = false;
+            s_acl_accept_pending = false;
+            s_acl_pending = false;
+            state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING,
+                                        -(int32_t)status);
+            handle_disconnected(status);
         }
         break;
     }
@@ -796,10 +1159,15 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
                 hci_event_command_complete_get_return_parameters(packet);
             const uint8_t status = return_params[0];
 
+            cancel_scheduled_acl_cancel();
+            s_acl_cancel_requested = false;
+            s_acl_cancel_pending = false;
+
             if (status == ERROR_CODE_SUCCESS) {
                 ESP_LOGI(TAG, "Pending ACL create cancelled");
                 s_acl_pending = false;
                 s_acl_outgoing_pending = false;
+                s_new_pair = false;
                 if (s_abort_link || !s_reconnect_allowed) {
                     handle_disconnected(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
                 }
@@ -814,6 +1182,13 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
     case HCI_EVENT_CONNECTION_COMPLETE: {
         const uint8_t status = hci_event_connection_complete_get_status(packet);
         const bool connection_was_pending = s_acl_pending;
+        cancel_scheduled_acl_create();
+        cancel_scheduled_acl_cancel();
+        cancel_scheduled_acl_accept();
+        s_acl_cancel_requested = false;
+        s_acl_cancel_pending = false;
+        s_acl_accept_requested = false;
+        s_acl_accept_pending = false;
         s_acl_pending = false;
         s_acl_outgoing_pending = false;
         if (status == ERROR_CODE_SUCCESS) {
@@ -923,25 +1298,39 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
 
     case HCI_EVENT_CONNECTION_REQUEST: {
         bd_addr_t addr;
+        bool accept_incoming;
         hci_event_connection_request_get_bd_addr(packet, addr);
         const uint32_t cod =
             hci_event_connection_request_get_class_of_device(packet);
         ESP_LOGI(TAG, "Incoming ACL from %s cod=0x%06X",
                  bd_addr_to_str(addr), (unsigned)cod);
-        if ((cod & 0x000F00) == 0x000500 && s_reconnect_allowed &&
-            !s_abort_link && !s_forget_pending) {
+        accept_incoming = (cod & 0x000F00) == 0x000500 &&
+                          s_reconnect_allowed && !s_abort_link &&
+                          !s_forget_pending;
+        if (accept_incoming && s_acl_pending) {
+            if (s_new_pair && !s_acl_outgoing_pending) {
+                cancel_scheduled_acl_create();
+                s_acl_pending = false;
+                s_new_pair = false;
+            } else {
+                accept_incoming = false;
+            }
+        }
+        if (accept_incoming) {
             bd_addr_copy(s_current_addr, addr);
             s_device_found = false;
             s_discovery_enabled = false;
             s_new_pair = false;
             s_acl_pending = true;
             s_acl_outgoing_pending = false;
+            s_acl_accept_requested = true;
+            s_acl_accept_pending = false;
             s_connect_from_saved =
                 s_have_saved && bd_addr_cmp(addr, s_saved_addr) == 0;
             request_inquiry_stop("incoming-acl");
-            hci_send_cmd(&hci_accept_connection_request, addr, 0x01);
             STATE_SET(DS5_DUAL_BT_STATE_CONNECTING |
                       (s_connect_from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0));
+            try_send_acl_accept();
         } else {
             ESP_LOGI(TAG, "Reject incoming ACL from %s by connection policy",
                      bd_addr_to_str(addr));
@@ -1143,6 +1532,7 @@ static void cmd_execute(const bt_cmd_t *cmd)
         set_reconnect_policy(cmd->flag, false);
         stop_inquiry_for_policy();
         cancel_pending_outgoing_acl();
+        cancel_unsent_incoming_acl();
         state_publish_locked_fields(0,
                                     DS5_DUAL_BT_STATE_CONTROL_OPEN |
                                     DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
@@ -1163,6 +1553,7 @@ static void cmd_execute(const bt_cmd_t *cmd)
         set_reconnect_policy(false, false);
         stop_inquiry_for_policy();
         cancel_pending_outgoing_acl();
+        cancel_unsent_incoming_acl();
         if (cmd->mode & DS5_DUAL_FORGET_BONDS) {
             gap_delete_all_link_keys();
             ESP_LOGI(TAG, "All link keys deleted");
