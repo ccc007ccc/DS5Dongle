@@ -154,8 +154,13 @@ static bool s_device_found;
 static bool s_new_pair; /* we initiated: create L2CAP channels ourselves */
 static bool s_inquiring;
 static bool s_acl_pending;
+static bool s_acl_outgoing_pending;
 static bool s_connect_from_saved;
-static bool s_inquiry_after_disconnect;
+static bool s_reconnect_allowed = true;
+static bool s_discovery_enabled;
+static bool s_abort_link;
+static bool s_hci_disconnect_pending;
+static bool s_forget_pending;
 static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
 static uint16_t s_control_cid;
 static uint16_t s_interrupt_cid;
@@ -247,6 +252,8 @@ static void saved_addr_erase(void)
 static void state_publish_locked_fields(uint32_t set, uint32_t clear, int32_t err)
 {
     bt_dualsense_raw_hidp_state_t snapshot;
+    bt_dualsense_raw_hidp_state_cb_t callback;
+    void *callback_ctx;
 
     portENTER_CRITICAL(&s_state_mux);
     s_state.flags = (s_state.flags | set) & ~clear;
@@ -263,10 +270,12 @@ static void state_publish_locked_fields(uint32_t set, uint32_t clear, int32_t er
     memcpy(s_state.bda, s_current_addr, sizeof(s_state.bda));
     s_state.state_seq++;
     snapshot = s_state;
+    callback = s_state_cb;
+    callback_ctx = s_state_cb_ctx;
     portEXIT_CRITICAL(&s_state_mux);
 
-    if (s_state_cb != NULL) {
-        s_state_cb(&snapshot, esp_timer_get_time(), s_state_cb_ctx);
+    if (callback != NULL) {
+        callback(&snapshot, esp_timer_get_time(), callback_ctx);
     }
 }
 
@@ -395,9 +404,70 @@ static void send_connect_led_state(void)
 
 /* --------------------------------------------------- connect state flow -- */
 
+static void apply_reconnect_visibility(void)
+{
+    const int visible = s_reconnect_allowed && !s_abort_link &&
+                        !s_forget_pending &&
+                        s_acl_handle == HCI_CON_HANDLE_INVALID &&
+                        !s_acl_pending;
+
+    gap_connectable_control(visible);
+    gap_discoverable_control(visible);
+}
+
+static void set_reconnect_policy(bool allow_reconnect, bool enable_discovery)
+{
+    s_reconnect_allowed = allow_reconnect;
+    s_discovery_enabled = allow_reconnect && enable_discovery;
+    if (!s_discovery_enabled) {
+        s_device_found = false;
+    }
+    apply_reconnect_visibility();
+}
+
+static void request_inquiry_stop(const char *reason)
+{
+    const int status = gap_inquiry_stop();
+
+    if (status != ERROR_CODE_SUCCESS &&
+        status != ERROR_CODE_COMMAND_DISALLOWED) {
+        ESP_LOGW(TAG, "Inquiry stop failed reason=%s status=0x%02X",
+                 reason != NULL ? reason : "policy", status);
+    }
+}
+
+static void stop_inquiry_for_policy(void)
+{
+    s_device_found = false;
+    if (s_inquiring) {
+        request_inquiry_stop("policy");
+    }
+}
+
+static void request_acl_disconnect(uint8_t reason)
+{
+    if (s_acl_handle == HCI_CON_HANDLE_INVALID ||
+        s_hci_disconnect_pending) {
+        return;
+    }
+
+    s_hci_disconnect_pending = true;
+    hci_send_cmd(&hci_disconnect, s_acl_handle, reason);
+}
+
+static void cancel_pending_outgoing_acl(void)
+{
+    if (!s_acl_pending || !s_acl_outgoing_pending) {
+        return;
+    }
+
+    hci_send_cmd(&hci_create_connection_cancel, s_current_addr);
+}
+
 static void start_inquiry(void)
 {
-    if (s_inquiring || s_acl_pending ||
+    if (!s_reconnect_allowed || !s_discovery_enabled || s_abort_link ||
+        s_forget_pending || s_inquiring || s_acl_pending ||
         s_acl_handle != HCI_CON_HANDLE_INVALID) {
         return;
     }
@@ -428,6 +498,10 @@ static void wait_for_controller_page(const char *reason)
         return;
     }
 
+    s_abort_link = false;
+    s_forget_pending = false;
+    set_reconnect_policy(true, false);
+    stop_inquiry_for_policy();
     if (s_have_saved) {
         bd_addr_copy(s_current_addr, s_saved_addr);
     } else {
@@ -435,8 +509,7 @@ static void wait_for_controller_page(const char *reason)
     }
     s_new_pair = false;
     s_connect_from_saved = s_have_saved;
-    gap_connectable_control(1);
-    gap_discoverable_control(1);
+    apply_reconnect_visibility();
     led_status_set(DS5_LED_STATE_BT_CONNECTING);
     ESP_LOGI(TAG, "Waiting for controller page reason=%s saved=%d",
              reason != NULL ? reason : "auto",
@@ -448,8 +521,9 @@ static void wait_for_controller_page(const char *reason)
 
 static void start_auto_connect(const char *reason)
 {
-    gap_connectable_control(1);
-    gap_discoverable_control(1);
+    s_abort_link = false;
+    s_forget_pending = false;
+    set_reconnect_policy(true, true);
     if (s_have_saved) {
         bd_addr_copy(s_current_addr, s_saved_addr);
     }
@@ -460,9 +534,13 @@ static void start_auto_connect(const char *reason)
 
 static void create_connection_to(const bd_addr_t addr, bool from_saved)
 {
+    s_abort_link = false;
+    s_forget_pending = false;
+    set_reconnect_policy(true, false);
     bd_addr_copy(s_current_addr, addr);
     s_new_pair = true; /* we initiate → we create the L2CAP channels */
     s_acl_pending = true;
+    s_acl_outgoing_pending = true;
     s_connect_from_saved = from_saved;
     ESP_LOGI(TAG, "Connecting to %s%s", bd_addr_to_str(addr),
              from_saved ? " (saved)" : "");
@@ -504,7 +582,8 @@ static void handle_inquiry_result(uint8_t event_type, const uint8_t *packet)
     bd_addr_t addr;
     uint32_t cod;
 
-    if (!s_inquiring || s_device_found || s_acl_pending ||
+    if (!s_reconnect_allowed || !s_discovery_enabled || s_abort_link ||
+        s_forget_pending || !s_inquiring || s_device_found || s_acl_pending ||
         !decode_inquiry_result(event_type, packet, addr, &cod)) {
         return;
     }
@@ -520,7 +599,7 @@ static void handle_inquiry_result(uint8_t event_type, const uint8_t *packet)
     bd_addr_copy(s_current_addr, addr);
     s_device_found = true;
     STATE_SET(DS5_DUAL_BT_STATE_TARGET_FOUND);
-    gap_inquiry_stop();
+    request_inquiry_stop("target-found");
 }
 
 static void rssi_poll_handler(btstack_timer_source_t *ts)
@@ -548,18 +627,20 @@ static void open_hid_channels(const char *reason)
 static void handle_disconnected(uint8_t reason)
 {
     ESP_LOGI(TAG, "Disconnected reason=0x%02X", reason);
-    const bool start_scan = s_inquiry_after_disconnect;
-    s_inquiry_after_disconnect = false;
     s_device_found = false;
     s_new_pair = false;
     s_acl_pending = false;
+    s_acl_outgoing_pending = false;
+    s_abort_link = false;
+    s_hci_disconnect_pending = false;
+    s_forget_pending = false;
     s_acl_handle = HCI_CON_HANDLE_INVALID;
     s_control_cid = 0;
     s_interrupt_cid = 0;
     send_fifo_clear();
-    gap_connectable_control(1);
-    gap_discoverable_control(1);
-    led_status_set(DS5_LED_STATE_BT_CONNECTING);
+    apply_reconnect_visibility();
+    led_status_set(s_reconnect_allowed ? DS5_LED_STATE_BT_CONNECTING
+                                       : DS5_LED_STATE_BOOT_OK);
     portENTER_CRITICAL(&s_state_mux);
     s_state.rssi = 0;
     portEXIT_CRITICAL(&s_state_mux);
@@ -571,8 +652,39 @@ static void handle_disconnected(uint8_t reason)
                                 DS5_DUAL_BT_STATE_TARGET_FOUND |
                                 DS5_DUAL_BT_STATE_FROM_SAVED,
                                 0);
-    if (start_scan) {
+    if (s_reconnect_allowed && s_discovery_enabled) {
         start_inquiry();
+    }
+}
+
+static void recover_security_failure(hci_con_handle_t handle,
+                                     uint8_t status,
+                                     const char *stage)
+{
+    const int32_t error = status != ERROR_CODE_SUCCESS ?
+                          -(int32_t)status : -EACCES;
+
+    ESP_LOGW(TAG, "%s failed status=0x%02X; drop stale key and retry",
+             stage, status);
+    gap_drop_link_key_for_bd_addr(s_current_addr);
+    s_device_found = false;
+    s_new_pair = false;
+    s_abort_link = true;
+    s_forget_pending = false;
+    set_reconnect_policy(true, true);
+    state_publish_locked_fields(0,
+                                DS5_DUAL_BT_STATE_CONTROL_OPEN |
+                                DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
+                                DS5_DUAL_BT_STATE_FULL_REPORT,
+                                error);
+
+    if (handle != HCI_CON_HANDLE_INVALID) {
+        s_acl_handle = handle;
+    }
+    if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        request_acl_disconnect(ERROR_CODE_AUTHENTICATION_FAILURE);
+    } else if (!s_acl_pending) {
+        handle_disconnected(ERROR_CODE_AUTHENTICATION_FAILURE);
     }
 }
 
@@ -625,8 +737,25 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         break;
 
     case GAP_EVENT_INQUIRY_COMPLETE:
-        ESP_LOGI(TAG, "Inquiry complete");
+    case HCI_EVENT_INQUIRY_COMPLETE:
+        /* ESP32 VHCI can deliver only the raw HCI completion after
+         * gap_inquiry_stop(). BTstack can also synthesize the GAP event, so
+         * s_inquiring is the one-shot guard against a duplicate create. */
+        if (!s_inquiring) {
+            break;
+        }
+        ESP_LOGI(TAG, "Inquiry complete event=0x%02X", event_type);
         s_inquiring = false;
+        if (!s_reconnect_allowed || !s_discovery_enabled || s_abort_link ||
+            s_forget_pending) {
+            s_device_found = false;
+            apply_reconnect_visibility();
+            break;
+        }
+        if (s_acl_pending || s_acl_handle != HCI_CON_HANDLE_INVALID) {
+            s_device_found = false;
+            break;
+        }
         if (s_device_found) {
             s_device_found = false;
             create_connection_to(s_current_addr, false);
@@ -647,18 +776,45 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             s_device_found = false;
             s_new_pair = false;
             s_acl_pending = false;
+            s_acl_outgoing_pending = false;
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
-            start_auto_connect("create-rejected");
+            if (s_abort_link || !s_reconnect_allowed) {
+                handle_disconnected(status);
+            } else {
+                start_auto_connect("create-rejected");
+            }
         }
-        if (opcode == HCI_OPCODE_HCI_INQUIRY_CANCEL) {
-            s_inquiring = false;
+        break;
+    }
+
+    case HCI_EVENT_COMMAND_COMPLETE: {
+        const uint16_t opcode =
+            hci_event_command_complete_get_command_opcode(packet);
+        if (opcode == HCI_OPCODE_HCI_CREATE_CONNECTION_CANCEL) {
+            const uint8_t *return_params =
+                hci_event_command_complete_get_return_parameters(packet);
+            const uint8_t status = return_params[0];
+
+            if (status == ERROR_CODE_SUCCESS) {
+                ESP_LOGI(TAG, "Pending ACL create cancelled");
+                s_acl_pending = false;
+                s_acl_outgoing_pending = false;
+                if (s_abort_link || !s_reconnect_allowed) {
+                    handle_disconnected(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+                }
+            } else {
+                ESP_LOGW(TAG, "ACL create cancel failed status=0x%02X", status);
+                state_publish_locked_fields(0, 0, -(int32_t)status);
+            }
         }
         break;
     }
 
     case HCI_EVENT_CONNECTION_COMPLETE: {
         const uint8_t status = hci_event_connection_complete_get_status(packet);
+        const bool connection_was_pending = s_acl_pending;
         s_acl_pending = false;
+        s_acl_outgoing_pending = false;
         if (status == ERROR_CODE_SUCCESS) {
             s_acl_handle =
                 hci_event_connection_complete_get_connection_handle(packet);
@@ -668,30 +824,29 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             portENTER_CRITICAL(&s_state_mux);
             s_state.rssi = 0;
             portEXIT_CRITICAL(&s_state_mux);
-            hci_send_cmd(&hci_authentication_requested, s_acl_handle);
+            if (!connection_was_pending || s_abort_link || s_forget_pending ||
+                !s_reconnect_allowed) {
+                ESP_LOGI(TAG, "ACL completed after shutdown policy; disconnect");
+                s_abort_link = true;
+                request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+            } else {
+                hci_send_cmd(&hci_authentication_requested, s_acl_handle);
+            }
         } else {
+            if (!connection_was_pending) {
+                ESP_LOGI(TAG, "Ignore late cancelled ACL completion status=0x%02X",
+                         status);
+                break;
+            }
             ESP_LOGW(TAG, "ACL connect failed status=0x%02X", status);
             s_device_found = false;
             s_new_pair = false;
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
-            start_auto_connect("acl-failed");
-        }
-        break;
-    }
-
-    case HCI_EVENT_LINK_KEY_REQUEST: {
-        bd_addr_t addr;
-        hci_event_link_key_request_get_bd_addr(packet, addr);
-        link_key_t link_key;
-        link_key_type_t type;
-        if (gap_get_link_key_for_bd_addr(addr, link_key, &type)) {
-            ESP_LOGI(TAG, "Link key reply for %s (type=%u)",
-                     bd_addr_to_str(addr), (unsigned)type);
-            hci_send_cmd(&hci_link_key_request_reply, addr, link_key);
-        } else {
-            ESP_LOGI(TAG, "No link key for %s, force re-pair",
-                     bd_addr_to_str(addr));
-            hci_send_cmd(&hci_link_key_request_negative_reply, addr);
+            if (s_abort_link || !s_reconnect_allowed) {
+                handle_disconnected(status);
+            } else {
+                start_auto_connect("acl-failed");
+            }
         }
         break;
     }
@@ -721,19 +876,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             hci_event_authentication_complete_get_connection_handle(packet);
         ESP_LOGI(TAG, "Authentication complete status=0x%02X", status);
         if (status != ERROR_CODE_SUCCESS) {
-            gap_drop_link_key_for_bd_addr(s_current_addr);
-            if (s_have_saved &&
-                bd_addr_cmp(s_current_addr, s_saved_addr) == 0) {
-                saved_addr_erase();
-            }
-            s_device_found = false;
-            s_new_pair = false;
-            s_inquiry_after_disconnect = true;
-            state_publish_locked_fields(0, 0, -status);
-            if (handle != HCI_CON_HANDLE_INVALID) {
-                hci_send_cmd(&hci_disconnect, handle,
-                             ERROR_CODE_AUTHENTICATION_FAILURE);
-            }
+            recover_security_failure(handle, status, "authentication");
         } else {
             hci_send_cmd(&hci_set_connection_encryption, handle, 1);
         }
@@ -746,7 +889,12 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             hci_event_encryption_change_get_encryption_enabled(packet);
         ESP_LOGI(TAG, "Encryption change status=0x%02X enabled=%u",
                  status, enabled);
-        if (status == ERROR_CODE_SUCCESS && enabled && s_new_pair) {
+        if (status != ERROR_CODE_SUCCESS || !enabled) {
+            recover_security_failure(
+                hci_event_encryption_change_get_connection_handle(packet),
+                status,
+                "encryption");
+        } else if (s_new_pair) {
             open_hid_channels("encryption-change");
         }
         break;
@@ -761,7 +909,12 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             hci_event_encryption_change_v2_get_encryption_key_size(packet);
         ESP_LOGI(TAG, "Encryption change v2 status=0x%02X enabled=%u key_size=%u",
                  status, enabled, key_size);
-        if (status == ERROR_CODE_SUCCESS && enabled && s_new_pair) {
+        if (status != ERROR_CODE_SUCCESS || !enabled) {
+            recover_security_failure(
+                hci_event_encryption_change_v2_get_connection_handle(packet),
+                status,
+                "encryption-v2");
+        } else if (s_new_pair) {
             open_hid_channels("encryption-change-v2");
         }
         break;
@@ -774,16 +927,25 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             hci_event_connection_request_get_class_of_device(packet);
         ESP_LOGI(TAG, "Incoming ACL from %s cod=0x%06X",
                  bd_addr_to_str(addr), (unsigned)cod);
-        if ((cod & 0x000F00) == 0x000500) {
+        if ((cod & 0x000F00) == 0x000500 && s_reconnect_allowed &&
+            !s_abort_link && !s_forget_pending) {
             bd_addr_copy(s_current_addr, addr);
+            s_device_found = false;
+            s_discovery_enabled = false;
             s_new_pair = false;
             s_acl_pending = true;
+            s_acl_outgoing_pending = false;
             s_connect_from_saved =
                 s_have_saved && bd_addr_cmp(addr, s_saved_addr) == 0;
-            gap_inquiry_stop();
+            request_inquiry_stop("incoming-acl");
             hci_send_cmd(&hci_accept_connection_request, addr, 0x01);
             STATE_SET(DS5_DUAL_BT_STATE_CONNECTING |
                       (s_connect_from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0));
+        } else {
+            ESP_LOGI(TAG, "Reject incoming ACL from %s by connection policy",
+                     bd_addr_to_str(addr));
+            hci_send_cmd(&hci_reject_connection_request, addr,
+                         ERROR_CODE_CONNECTION_REJECTED_DUE_TO_UNACCEPTABLE_BD_ADDR);
         }
         break;
     }
@@ -852,11 +1014,12 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
             s_control_cid = 0;
             s_interrupt_cid = 0;
             s_device_found = false;
+            s_abort_link = true;
+            s_forget_pending = false;
+            set_reconnect_policy(true, true);
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING,
                                         -status);
-            if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
-                hci_send_cmd(&hci_disconnect, s_acl_handle, 0x13);
-            }
+            request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
             break;
         }
         if (psm == PSM_HID_CONTROL) {
@@ -872,7 +1035,14 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
         } else if (psm == PSM_HID_INTERRUPT) {
             ESP_LOGI(TAG, "HID Interrupt opened cid=0x%04X", local_cid);
             s_interrupt_cid = local_cid;
-            saved_addr_store(s_current_addr);
+            if (!s_abort_link && !s_forget_pending && s_reconnect_allowed) {
+                saved_addr_store(s_current_addr);
+            } else {
+                ESP_LOGI(TAG, "Skip address save while link shutdown is pending");
+                request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+                break;
+            }
+            s_discovery_enabled = false;
             led_status_set(DS5_LED_STATE_BT_CONNECTED);
             gap_connectable_control(0);
             gap_discoverable_control(0);
@@ -891,7 +1061,12 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
             l2cap_event_incoming_connection_get_local_cid(packet);
         const uint16_t psm = l2cap_event_incoming_connection_get_psm(packet);
         ESP_LOGI(TAG, "L2CAP incoming psm=0x%04X cid=0x%04X", psm, local_cid);
-        l2cap_accept_connection(local_cid);
+        if (s_abort_link || s_forget_pending || !s_reconnect_allowed) {
+            ESP_LOGI(TAG, "Decline L2CAP incoming by connection policy");
+            l2cap_decline_connection(local_cid);
+        } else {
+            l2cap_accept_connection(local_cid);
+        }
         break;
     }
 
@@ -909,7 +1084,9 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
         }
         if (s_control_cid == 0 && s_interrupt_cid == 0 &&
             s_acl_handle != HCI_CON_HANDLE_INVALID) {
-            hci_send_cmd(&hci_disconnect, s_acl_handle, 0x13);
+            s_abort_link = true;
+            set_reconnect_policy(true, false);
+            request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
         }
         break;
     }
@@ -943,11 +1120,11 @@ static void cmd_execute(const bt_cmd_t *cmd)
 {
     switch (cmd->kind) {
     case BT_CMD_CONNECT:
-        if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+        if (s_acl_handle != HCI_CON_HANDLE_INVALID || s_acl_pending ||
+            s_abort_link || s_hci_disconnect_pending || s_forget_pending) {
+            state_publish_locked_fields(0, 0, -EBUSY);
             break;
         }
-        gap_connectable_control(1);
-        gap_discoverable_control(1);
         if (cmd->has_bda) {
             create_connection_to(cmd->bda, false);
         } else if (cmd->mode == DS5_DUAL_BT_CONNECT_SAVED_ONLY) {
@@ -960,20 +1137,31 @@ static void cmd_execute(const bt_cmd_t *cmd)
         break;
 
     case BT_CMD_DISCONNECT:
-        if (s_inquiring) {
-            gap_inquiry_stop();
-        }
-        if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
-            hci_send_cmd(&hci_disconnect, s_acl_handle, 0x13);
-        }
-        if (!cmd->flag) {
-            /* stay invisible until the next explicit connect request */
-            gap_connectable_control(0);
-            gap_discoverable_control(0);
+        s_abort_link = true;
+        s_forget_pending = false;
+        set_reconnect_policy(cmd->flag, false);
+        stop_inquiry_for_policy();
+        cancel_pending_outgoing_acl();
+        state_publish_locked_fields(0,
+                                    DS5_DUAL_BT_STATE_CONTROL_OPEN |
+                                    DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
+                                    DS5_DUAL_BT_STATE_FULL_REPORT |
+                                    DS5_DUAL_BT_STATE_CONNECTING |
+                                    DS5_DUAL_BT_STATE_TARGET_FOUND |
+                                    DS5_DUAL_BT_STATE_FROM_SAVED,
+                                    0);
+        request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+        if (s_acl_handle == HCI_CON_HANDLE_INVALID && !s_acl_pending) {
+            handle_disconnected(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
         }
         break;
 
     case BT_CMD_FORGET:
+        s_abort_link = true;
+        s_forget_pending = true;
+        set_reconnect_policy(false, false);
+        stop_inquiry_for_policy();
+        cancel_pending_outgoing_acl();
         if (cmd->mode & DS5_DUAL_FORGET_BONDS) {
             gap_delete_all_link_keys();
             ESP_LOGI(TAG, "All link keys deleted");
@@ -981,7 +1169,18 @@ static void cmd_execute(const bt_cmd_t *cmd)
         if (cmd->mode & DS5_DUAL_FORGET_SAVED_ADDR) {
             saved_addr_erase();
         }
-        state_publish_locked_fields(0, 0, 0);
+        state_publish_locked_fields(0,
+                                    DS5_DUAL_BT_STATE_CONTROL_OPEN |
+                                    DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
+                                    DS5_DUAL_BT_STATE_FULL_REPORT |
+                                    DS5_DUAL_BT_STATE_CONNECTING |
+                                    DS5_DUAL_BT_STATE_TARGET_FOUND |
+                                    DS5_DUAL_BT_STATE_FROM_SAVED,
+                                    0);
+        request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+        if (s_acl_handle == HCI_CON_HANDLE_INVALID && !s_acl_pending) {
+            handle_disconnected(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+        }
         break;
 
     case BT_CMD_SEND_REPORT: {
@@ -1087,6 +1286,7 @@ esp_err_t bt_dualsense_raw_hidp_start(void)
 {
     crc32_table_init();
     saved_addr_load();
+    state_publish_locked_fields(0, 0, 0);
 
     s_cmd_queue = xQueueCreate(DS5_CMD_QUEUE_DEPTH, sizeof(bt_cmd_t));
     if (s_cmd_queue == NULL) {
@@ -1189,6 +1389,15 @@ void bt_dualsense_raw_hidp_set_rx_callback(bt_dualsense_raw_hidp_rx_cb_t cb,
 void bt_dualsense_raw_hidp_set_state_callback(
     bt_dualsense_raw_hidp_state_cb_t cb, void *ctx)
 {
+    bt_dualsense_raw_hidp_state_t snapshot;
+
+    portENTER_CRITICAL(&s_state_mux);
     s_state_cb = cb;
     s_state_cb_ctx = ctx;
+    snapshot = s_state;
+    portEXIT_CRITICAL(&s_state_mux);
+
+    if (cb != NULL) {
+        cb(&snapshot, esp_timer_get_time(), ctx);
+    }
 }

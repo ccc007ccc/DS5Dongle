@@ -1163,8 +1163,10 @@ def test_c_source_contract() -> None:
         "m61_esp32_transport_set_bt_state_callback(dual_chip_bt_state_callback, NULL);",
         "DS5_DUAL_BT_STATE_CONTROL_OPEN |",
         "DS5_DUAL_BT_STATE_INTERRUPT_OPEN",
-        "memcmp(dual_chip_dse_link_bda, bda, 6U)",
-        "DSE probe state reset on ESP32 BT generation",
+        "generation != dual_chip_bt_generation",
+        "DSE/USB bridge state reset on ESP32 BT generation=",
+        "m61_usb_gamepad_reset_transport_queues();",
+        "observed_bt_generation != dual_chip_bt_generation",
     ):
         assert snippet in m61_main_source, f"missing identity probe lifecycle snippet: {snippet}"
     for snippet in (
@@ -1180,6 +1182,15 @@ def test_c_source_contract() -> None:
         "s_transport.feature_cb_ctx = feature_cb_ctx;",
         "s_transport.bt_state_cb = bt_state_cb;",
         "s_transport.bt_state_cb_ctx = bt_state_cb_ctx;",
+        "static void invalidate_peer_generation(void)",
+        "s_transport.stats.rx_hello = 0;",
+        "s_transport.stats.peer_bt_flags = 0;",
+        "s_transport.stats.last_credit_bt_ready = 0;",
+        "state_cb(0, empty_bda, 0, generation, state_cb_ctx);",
+        "sequence_delta != 0U",
+        "sequence_delta != 1U",
+        "s_transport.stats.peer_generation = s_transport.peer_generation;",
+        "if (!peer_link_ready())",
     ):
         assert snippet in m61_transport_source, f"missing ESP32 BT state callback snippet: {snippet}"
     transport_memset = m61_transport_source.index(
@@ -1192,6 +1203,19 @@ def test_c_source_contract() -> None:
         "s_transport.lock = xSemaphoreCreateMutex();", transport_restore
     )
     assert transport_memset < transport_restore < transport_mutex
+    recovery_start = m61_transport_source.index(
+        "static void perform_recovery(uint8_t reason)"
+    )
+    recovery_not_ready = m61_transport_source.index(
+        "s_transport.ready = false;", recovery_start
+    )
+    recovery_invalidate = m61_transport_source.index(
+        "invalidate_peer_generation();", recovery_not_ready
+    )
+    recovery_reset = m61_transport_source.index(
+        "bflb_gpio_reset(s_transport.gpio", recovery_invalidate
+    )
+    assert recovery_not_ready < recovery_invalidate < recovery_reset
     assert "AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM" not in m61_usb_source
     assert "resample_speaker_upstream_frame" not in m61_usb_source
     assert "USB remote wake requested by controller input" in m61_main_source
@@ -1325,13 +1349,15 @@ def test_c_source_contract() -> None:
         "gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED)",
         "l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL",
         "hci_send_cmd(&hci_create_connection, addr,",
-        "hci_send_cmd(&hci_link_key_request_reply, addr, link_key)",
-        "hci_send_cmd(&hci_link_key_request_negative_reply, addr)",
         "hci_send_cmd(&hci_user_confirmation_request_reply, addr)",
         "hci_send_cmd(&hci_set_connection_encryption, handle, 1)",
         "hci_send_cmd(&hci_accept_connection_request, addr, 0x01)",
         "case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:",
         "case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE:",
+        "case GAP_EVENT_INQUIRY_COMPLETE:",
+        "case HCI_EVENT_INQUIRY_COMPLETE:",
+        "if (!s_inquiring)",
+        "if (s_acl_pending || s_acl_handle != HCI_CON_HANDLE_INVALID)",
         "handle_inquiry_result(event_type, packet)",
         "Auto connect: inquiry + incoming page",
         "static bool s_acl_pending;",
@@ -1339,6 +1365,7 @@ def test_c_source_contract() -> None:
         "s_acl_pending = false;",
         "(cod & 0x000F00) == 0x000500",
         "saved_addr_store(s_current_addr)",
+        "Skip address save while link shutdown is pending",
         "DS5_NVS_KEY_ADDR",
         "init_feature_prefetch",
         "send_connect_led_state",
@@ -1421,6 +1448,34 @@ def test_c_source_contract() -> None:
     )
     for snippet in dual_chip_snippets:
         assert snippet in combined_dual_chip_source, f"missing dual-chip snippet: {snippet}"
+    assert "case HCI_EVENT_LINK_KEY_REQUEST:" not in esp32_raw_hidp_source
+    assert "hci_link_key_request_reply" not in esp32_raw_hidp_source
+    assert "hci_link_key_request_negative_reply" not in esp32_raw_hidp_source
+    for snippet in (
+        "static bool s_reconnect_allowed = true;",
+        "static bool s_discovery_enabled;",
+        "static bool s_abort_link;",
+        "static bool s_forget_pending;",
+        "set_reconnect_policy(cmd->flag, false);",
+        "set_reconnect_policy(false, false);",
+        "cancel_pending_outgoing_acl();",
+        "opcode == HCI_OPCODE_HCI_CREATE_CONNECTION_CANCEL",
+        "hci_event_command_complete_get_return_parameters(packet)",
+        "s_acl_outgoing_pending = false;",
+        "const bool connection_was_pending = s_acl_pending;",
+        "Ignore late cancelled ACL completion",
+        "request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);",
+        "recover_security_failure(handle, status, \"authentication\");",
+        "recover_security_failure(",
+        "l2cap_decline_connection(local_cid);",
+        "snapshot = s_state;",
+        "cb(&snapshot, esp_timer_get_time(), ctx);",
+    ):
+        assert snippet in esp32_raw_hidp_source, f"missing ESP32 BT lifecycle snippet: {snippet}"
+    assert not re.search(
+        r"HCI_OPCODE_HCI_INQUIRY_CANCEL\s*\)\s*\{\s*s_inquiring\s*=\s*false",
+        esp32_raw_hidp_source,
+    ), "inquiry Command Status must not consume the completion one-shot"
     btstack_port_snippets = [
         "nvs_commit(the_nvs_handle)",
         "#define MAX_NR_HOST_EVENT_PACKETS 16",
