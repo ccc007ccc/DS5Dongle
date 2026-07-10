@@ -31,6 +31,8 @@ DUAL_PROTO = ROOT / "main" / "dual_chip_spi_proto.c"
 ESP32_DUAL_SPI = ROOT / "main" / "esp32_dual_chip_spi.c"
 ESP32_RAW_HIDP = ROOT / "main" / "bt_ds5_btstack.c"
 ESP32_LED_STATUS = ROOT / "main" / "led_status.h"
+BTSTACK_TLV_ESP32 = ROOT / "components" / "btstack" / "port" / "btstack_tlv_esp32.c"
+BTSTACK_VHCI_ESP32 = ROOT / "components" / "btstack" / "port" / "hci_transport_esp32_vhci.c"
 ESP32_DUAL_DEFAULTS = ROOT / "sdkconfig.dual_chip.defaults"
 ESP32_DUAL_LEFT_DEFAULTS = ROOT / "sdkconfig.dual_chip.devkit_left.defaults"
 ESP32_DUAL_VSPI_DEFAULTS = ROOT / "sdkconfig.dual_chip.devkit_vspi.defaults"
@@ -962,6 +964,8 @@ def test_c_source_contract() -> None:
     esp32_dual_spi_source = ESP32_DUAL_SPI.read_text(encoding="utf-8")
     esp32_raw_hidp_source = ESP32_RAW_HIDP.read_text(encoding="utf-8")
     esp32_led_status_source = ESP32_LED_STATUS.read_text(encoding="utf-8")
+    btstack_tlv_source = BTSTACK_TLV_ESP32.read_text(encoding="utf-8")
+    btstack_vhci_source = BTSTACK_VHCI_ESP32.read_text(encoding="utf-8")
     esp32_dual_defaults = ESP32_DUAL_DEFAULTS.read_text(encoding="utf-8")
     esp32_dual_left_defaults = ESP32_DUAL_LEFT_DEFAULTS.read_text(encoding="utf-8")
     esp32_dual_vspi_defaults = ESP32_DUAL_VSPI_DEFAULTS.read_text(encoding="utf-8")
@@ -1185,6 +1189,13 @@ def test_c_source_contract() -> None:
         "hci_send_cmd(&hci_user_confirmation_request_reply, addr)",
         "hci_send_cmd(&hci_set_connection_encryption, handle, 1)",
         "hci_send_cmd(&hci_accept_connection_request, addr, 0x01)",
+        "case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:",
+        "case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE:",
+        "handle_inquiry_result(event_type, packet)",
+        "Auto connect: inquiry + incoming page",
+        "static bool s_acl_pending;",
+        "s_acl_pending = true;",
+        "s_acl_pending = false;",
         "(cod & 0x000F00) == 0x000500",
         "saved_addr_store(s_current_addr)",
         "DS5_NVS_KEY_ADDR",
@@ -1266,6 +1277,16 @@ def test_c_source_contract() -> None:
     )
     for snippet in dual_chip_snippets:
         assert snippet in combined_dual_chip_source, f"missing dual-chip snippet: {snippet}"
+    btstack_port_snippets = [
+        "nvs_commit(the_nvs_handle)",
+        "#define MAX_NR_HOST_EVENT_PACKETS 16",
+        "#define HCI_VHCI_INCOMING_BUFFER_SIZE (HCI_INCOMING_PACKET_BUFFER_SIZE + 1u)",
+        "space < (uint16_t)(len + 2u)",
+        "btstack_ring_buffer_reset(&hci_ringbuffer)",
+    ]
+    combined_btstack_port_source = "\n".join([btstack_tlv_source, btstack_vhci_source])
+    for snippet in btstack_port_snippets:
+        assert snippet in combined_btstack_port_source, f"missing BTstack port snippet: {snippet}"
     esp32_forget_snippets = [
         "DS5_DUAL_FORGET_BONDS",
         "gap_delete_all_link_keys()",

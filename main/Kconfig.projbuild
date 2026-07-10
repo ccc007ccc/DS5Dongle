@@ -1,11 +1,12 @@
 menu "DS5 DualSense Bridge"
 
     config DS5_SCAN_SECONDS
-        int "Classic Bluetooth inquiry duration, seconds"
-        range 2 61
+        int "Classic Bluetooth inquiry duration (1.28-second units)"
+        range 1 48
         default 30
         help
-            Time spent scanning for a DualSense controller before retrying.
+            Standard HCI inquiry duration units. The default 30 is about
+            38.4 seconds. BTstack only accepts values from 1 through 48.
 
     config DS5_ACCEPT_ANY_GAMEPAD
         bool "Accept first discovered classic Bluetooth gamepad"

@@ -126,8 +126,12 @@ static void btstack_tlv_esp32_delete_tag(void * context, uint32_t tag){
         	break;
         default :
             log_error("Error (0x%04x) deleting reading %s!\n", err, key_buffer);
-            break;
+            return;
     }
+	err = nvs_commit(the_nvs_handle);
+	if (err != ESP_OK){
+		log_error("Error (0x%04x) nvs_commit delete %s!", err, key_buffer);
+	}
 }
 
 static const btstack_tlv_t btstack_tlv_esp32 = {

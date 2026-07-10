@@ -29,7 +29,9 @@
 
 **结论:ESP32 侧蓝牙整体重建,换用 BTstack(官方 ESP32 VHCI port),
 按参考项目 [awalol/DS5Dongle](https://github.com/awalol/DS5Dongle)(Pico W + BTstack)
-的 `src/bt.cpp` 状态机 1:1 移植。** 参考仓库已 clone 到 `C:\code\MCU\DS5Dongle_ref`。
+的 `src/bt.cpp` 还原协议行为，再按 ESP32 VHCI 与双板线程模型适配。**
+本轮核对固定在上游提交 `ea93fad59a8f74e49f649a59005dc8b1a6b87a70`，
+临时只读 clone 位于 `C:\tmp\awalol-DS5Dongle`。
 
 ## 参考实现要点(awalol/DS5Dongle,必须还原)
 
@@ -39,13 +41,17 @@
   connectable + discoverable;HCI power on。
 - `bt_l2cap_init()`:`sdp_init()`(重连后自动断开的关键修复)+
   `l2cap_register_service(PSM 0x11/0x13, MTU 672, LEVEL_2)` + `l2cap_init()`。
-- 首配:inquiry 30s → CoD `(cod & 0x000F00) == 0x000500` 判定手柄 →
+- 首配:inquiry duration=30(标准 HCI 单位 1.28s,约 38.4s) → 同时处理原始
+  `HCI_EVENT_INQUIRY_RESULT*`/EIR 与 GAP 合成结果 → CoD
+  `(cod & 0x000F00) == 0x000500` 判定手柄 →
   `hci_create_connection` → `hci_authentication_requested` →
   link key 请求(有 key 回 key,无 key 负回复强制重配)→
   SSP user confirmation 自动接受 → 认证完成后 `hci_set_connection_encryption` →
   加密成功且 `new_pair` 时主动 `l2cap_create_channel`(先 0x11 后 0x13)。
 - 回连:手柄发起 page,`HCI_EVENT_CONNECTION_REQUEST` 按 CoD accept,
   L2CAP incoming connection 直接 accept,通道由手柄经已注册 service 建立。
+- 双板适配额外维护 ACL pending 状态,避免 incoming page 停止 inquiry 后、
+  `CONNECTION_COMPLETE` 到达前错误重启扫描。
 - link key 持久化:BTstack link key DB(TLV);ESP32 port 对应
   `btstack_tlv_esp32`(NVS)+ `btstack_link_key_db_tlv`。
 - 断开:清 cid/handle/发送队列,回 `state_init_data`(66 字节摇杆中位报文)
@@ -62,6 +68,10 @@
 - `0xF6` SET,`buffer[0]` 子命令:`0x01` set_config、`0x02` config_save、
   `0x03` tud_disconnect/tud_connect。
 - Flash `Config`:`magic 0x66ccff00` + `version` + `crc32(body)` + `size` + body。
+
+当前审计结论:命令号已存在,但配置体字段语义与 flash 封装尚未达标。
+旧实现的 `disable_mic/disable_speaker` 必须替换成上游
+`mic_select/speaker_select`,EasyFlash 存储也必须加入 `Config` 头和 CRC 校验。
 
 ## 保留 / 重建边界
 

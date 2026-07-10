@@ -34,11 +34,12 @@ python tools\build_esp32_stage1.py --backend dual-chip --pin-profile devkit-left
 ```
 
 This uses `sdkconfig.dual_chip.devkit_left.defaults`.
-The dual-chip ESP32 firmware enables auto-connect at boot: with a saved,
-bonded DualSense it stays connectable/discoverable and waits for the
-controller to page back (press PS); with no saved controller it runs 30 s
-inquiry rounds until a gamepad (CoD 0x0005xx) in pairing mode (PS+Create)
-is found.
+The dual-chip ESP32 firmware enables auto-connect at boot. It remains
+connectable/discoverable for controller-initiated page reconnects (press PS)
+while also repeating inquiry rounds. The configured value `30` is the HCI
+inquiry duration in 1.28-second units (about 38.4 seconds), not 30 wall-clock
+seconds. Continuous inquiry allows PS+Create re-pairing even when a saved bond
+has become stale.
 
 The older `devkit-vspi` profile uses the right-side VSPI pins
 `GPIO18/GPIO23/GPIO19/GPIO5` plus `GPIO22/GPIO21`. Keep it only as a backup if

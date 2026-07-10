@@ -9,8 +9,9 @@ DualSense ⇄(经典蓝牙 HIDP 0x11/0x13)⇄ ESP32 ⇄(SPI 私有帧协议)⇄ 
 
 - **ESP32**:蓝牙侧。运行 [BTstack](https://github.com/bluekitchen/btstack)
   (裁剪版内置于 `components/btstack`,VHCI 直连内置 controller,无需 patch ESP-IDF)。
-  蓝牙状态机 1:1 移植自参考项目 [awalol/DS5Dongle](https://github.com/awalol/DS5Dongle)
-  (Pico W 单芯片实现)的 `src/bt.cpp`。
+  蓝牙状态机以参考项目 [awalol/DS5Dongle](https://github.com/awalol/DS5Dongle)
+  `ea93fad59a8f74e49f649a59005dc8b1a6b87a70` 的 `src/bt.cpp` 为准，按 ESP32
+  VHCI 和双板线程模型做必要适配。
 - **M61(Ai-M61-32S / BL618)**:USB 侧。CherryUSB 枚举为 `VID_054C&PID_0CE6`
   DualSense 复合设备(HID + USB Audio),bl_mcu_sdk 构建。
 - 两芯片间为自定义 SPI 帧协议(`main/dual_chip_spi_proto.h`,M61 为 SPI master)。
@@ -25,20 +26,27 @@ DualSense ⇄(经典蓝牙 HIDP 0x11/0x13)⇄ ESP32 ⇄(SPI 私有帧协议)⇄ 
 | `tools/` | 构建/烧录/日志检查脚本 |
 | `docs/` | 现行文档;`docs/archive/` 为历史资料(不可尽信) |
 
-## 蓝牙行为(与参考项目一致)
+## 蓝牙行为
 
 - **首次配对**:手柄按住 PS+Create 进入配对模式 → ESP32 inquiry 扫描
   (按 CoD 手柄类别 `0x000500` 掩码过滤)→ 创建 ACL → SSP 认证/加密 →
   主动打开 L2CAP HID Control(PSM 0x11)与 Interrupt(PSM 0x13),MTU 672。
 - **回连**:手柄单按 PS 主动 page 回连,ESP32 按已注册的 L2CAP service 接受;
-  link key 由 BTstack 持久化在 NVS。开机时若有保存地址也会主动尝试连接。
+  link key 由 BTstack 持久化在 NVS。ESP32 保持 page scan 的同时继续 inquiry,
+  所以旧 bond 失效后仍可用 PS+Create 重新配对。
 - **地址保存**:连接成功后手柄地址写入 NVS(`ds5bt/saved_bda`),
-  供状态上报与开机直连;`BT_FORGET` 命令可清除绑定与地址。
+  供状态上报和识别回连来源;真正的认证凭据是 BTstack NVS link key。
+  `BT_FORGET` 命令可分别清除绑定与地址。
 - 输出报文:`0xA2` 前缀 + CRC32(seed 同参考 `utils.h`);
   Feature:`0x43`(GET)/`0x53 + CRC32`(SET);
   连接建立后预取 0x09/0x20/0x22/0x05 并用 0x70 探测 DualSense Edge。
 
-## 私有配置协议(USB HID Feature Report,与参考项目字节兼容)
+## 私有配置协议(USB HID Feature Report)
+
+`0xF6`~`0xF9` 的命令号和基本方向已经存在，但当前配置体和 flash 封装仍在
+按上游 `ea93fad` 重构，不能把现状视为已经逐字节兼容。已确认的旧实现错误包括
+把 `mic_select/speaker_select (0..3)` 写成布尔字段，以及缺失上游
+`magic + CRC32 + size + body` 的持久化封装。
 
 | Report | 方向 | 含义 |
 |--------|------|------|
@@ -82,6 +90,7 @@ READY IO16↔GPIO32,IRQ IO17↔GPIO13);M61 原生 USB 注意事项见
 ## 排障
 
 1. **扫描配对**:手柄按住 PS+Create 至灯条快速双闪 → ESP32 串口应出现
+   `Inquiry result event=...` →
    `Gamepad found` → `ACL connected` → `Authentication complete status=0x00` →
    `HID Control/Interrupt opened`。
 2. **PS 单按回连**:串口应出现 `Incoming ACL` → `Link key reply` →

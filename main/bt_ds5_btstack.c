@@ -153,6 +153,7 @@ static bool s_have_saved;
 static bool s_device_found;
 static bool s_new_pair; /* we initiated: create L2CAP channels ourselves */
 static bool s_inquiring;
+static bool s_acl_pending;
 static bool s_connect_from_saved;
 static bool s_inquiry_after_disconnect;
 static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
@@ -206,11 +207,18 @@ static void saved_addr_store(const bd_addr_t addr)
         ESP_LOGE(TAG, "NVS open failed, controller address not saved");
         return;
     }
-    if (nvs_set_blob(h, DS5_NVS_KEY_ADDR, addr, sizeof(bd_addr_t)) == ESP_OK) {
-        nvs_commit(h);
+    esp_err_t err =
+        nvs_set_blob(h, DS5_NVS_KEY_ADDR, addr, sizeof(bd_addr_t));
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    if (err == ESP_OK) {
         bd_addr_copy(s_saved_addr, addr);
         s_have_saved = true;
         ESP_LOGI(TAG, "Controller address saved: %s", bd_addr_to_str(addr));
+    } else {
+        ESP_LOGE(TAG, "Controller address save failed: %s",
+                 esp_err_to_name(err));
     }
     nvs_close(h);
 }
@@ -219,8 +227,14 @@ static void saved_addr_erase(void)
 {
     nvs_handle_t h;
     if (nvs_open(DS5_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_erase_key(h, DS5_NVS_KEY_ADDR);
-        nvs_commit(h);
+        esp_err_t err = nvs_erase_key(h, DS5_NVS_KEY_ADDR);
+        if (err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) {
+            err = nvs_commit(h);
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Controller address erase failed: %s",
+                     esp_err_to_name(err));
+        }
         nvs_close(h);
     }
     s_have_saved = false;
@@ -383,20 +397,34 @@ static void send_connect_led_state(void)
 
 static void start_inquiry(void)
 {
-    if (s_inquiring || s_acl_handle != HCI_CON_HANDLE_INVALID) {
+    if (s_inquiring || s_acl_pending ||
+        s_acl_handle != HCI_CON_HANDLE_INVALID) {
         return;
     }
-    ESP_LOGI(TAG, "Start inquiry (%us)", (unsigned)CONFIG_DS5_SCAN_SECONDS);
+
+    const int status = gap_inquiry_start(CONFIG_DS5_SCAN_SECONDS);
+    if (status != ERROR_CODE_SUCCESS) {
+        ESP_LOGW(TAG, "Start inquiry rejected status=0x%02X", status);
+        state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING,
+                                    -status);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Start inquiry (%u x 1.28s)",
+             (unsigned)CONFIG_DS5_SCAN_SECONDS);
     s_device_found = false;
-    gap_inquiry_start(CONFIG_DS5_SCAN_SECONDS);
+    s_connect_from_saved = false;
     s_inquiring = true;
     led_status_set(DS5_LED_STATE_BT_CONNECTING);
-    STATE_SET(DS5_DUAL_BT_STATE_CONNECTING);
+    state_publish_locked_fields(DS5_DUAL_BT_STATE_CONNECTING,
+                                DS5_DUAL_BT_STATE_TARGET_FOUND |
+                                    DS5_DUAL_BT_STATE_FROM_SAVED,
+                                0);
 }
 
 static void wait_for_controller_page(const char *reason)
 {
-    if (s_acl_handle != HCI_CON_HANDLE_INVALID) {
+    if (s_acl_pending || s_acl_handle != HCI_CON_HANDLE_INVALID) {
         return;
     }
 
@@ -420,17 +448,21 @@ static void wait_for_controller_page(const char *reason)
 
 static void start_auto_connect(const char *reason)
 {
+    gap_connectable_control(1);
+    gap_discoverable_control(1);
     if (s_have_saved) {
-        wait_for_controller_page(reason);
-    } else {
-        start_inquiry();
+        bd_addr_copy(s_current_addr, s_saved_addr);
     }
+    ESP_LOGI(TAG, "Auto connect: inquiry + incoming page reason=%s saved=%d",
+             reason != NULL ? reason : "auto", s_have_saved ? 1 : 0);
+    start_inquiry();
 }
 
 static void create_connection_to(const bd_addr_t addr, bool from_saved)
 {
     bd_addr_copy(s_current_addr, addr);
     s_new_pair = true; /* we initiate → we create the L2CAP channels */
+    s_acl_pending = true;
     s_connect_from_saved = from_saved;
     ESP_LOGI(TAG, "Connecting to %s%s", bd_addr_to_str(addr),
              from_saved ? " (saved)" : "");
@@ -438,6 +470,57 @@ static void create_connection_to(const bd_addr_t addr, bool from_saved)
                  hci_usable_acl_packet_types(), 0, 0, 0, 1);
     STATE_SET(DS5_DUAL_BT_STATE_CONNECTING |
               (from_saved ? DS5_DUAL_BT_STATE_FROM_SAVED : 0));
+}
+
+static bool decode_inquiry_result(uint8_t event_type, const uint8_t *packet,
+                                  bd_addr_t addr, uint32_t *cod)
+{
+    switch (event_type) {
+    case GAP_EVENT_INQUIRY_RESULT:
+        gap_event_inquiry_result_get_bd_addr(packet, addr);
+        *cod = gap_event_inquiry_result_get_class_of_device(packet);
+        return true;
+    case HCI_EVENT_INQUIRY_RESULT:
+        hci_event_inquiry_result_get_bd_addr(packet, addr);
+        *cod = hci_event_inquiry_result_get_class_of_device(packet);
+        return true;
+    case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:
+        hci_event_inquiry_result_with_rssi_get_bd_addr(packet, addr);
+        *cod =
+            hci_event_inquiry_result_with_rssi_get_class_of_device(packet);
+        return true;
+    case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE:
+        hci_event_extended_inquiry_response_get_bd_addr(packet, addr);
+        *cod =
+            hci_event_extended_inquiry_response_get_class_of_device(packet);
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void handle_inquiry_result(uint8_t event_type, const uint8_t *packet)
+{
+    bd_addr_t addr;
+    uint32_t cod;
+
+    if (!s_inquiring || s_device_found || s_acl_pending ||
+        !decode_inquiry_result(event_type, packet, addr, &cod)) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Inquiry result event=0x%02X addr=%s CoD=0x%06X",
+             event_type, bd_addr_to_str(addr), (unsigned)cod);
+    if ((cod & 0x000F00) != 0x000500) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Gamepad found: %s (CoD 0x%06X)",
+             bd_addr_to_str(addr), (unsigned)cod);
+    bd_addr_copy(s_current_addr, addr);
+    s_device_found = true;
+    STATE_SET(DS5_DUAL_BT_STATE_TARGET_FOUND);
+    gap_inquiry_stop();
 }
 
 static void rssi_poll_handler(btstack_timer_source_t *ts)
@@ -469,6 +552,7 @@ static void handle_disconnected(uint8_t reason)
     s_inquiry_after_disconnect = false;
     s_device_found = false;
     s_new_pair = false;
+    s_acl_pending = false;
     s_acl_handle = HCI_CON_HANDLE_INVALID;
     s_control_cid = 0;
     s_interrupt_cid = 0;
@@ -528,26 +612,17 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         break;
     }
 
-    /* BTstack consumes the raw HCI inquiry events when gap_inquiry_start()
-     * is used and re-emits them as GAP_EVENT_INQUIRY_RESULT (it also forwards
-     * the raw event). Handle only the GAP variants so each result/complete is
-     * processed exactly once. */
-    case GAP_EVENT_INQUIRY_RESULT: {
-        bd_addr_t addr;
-        gap_event_inquiry_result_get_bd_addr(packet, addr);
-        const uint32_t cod =
-            gap_event_inquiry_result_get_class_of_device(packet);
-        /* Major device class Peripheral, gamepad-ish (CoD 0x002508) */
-        if ((cod & 0x000F00) == 0x000500) {
-            ESP_LOGI(TAG, "Gamepad found: %s (CoD 0x%06X)",
-                     bd_addr_to_str(addr), (unsigned)cod);
-            bd_addr_copy(s_current_addr, addr);
-            s_device_found = true;
-            STATE_SET(DS5_DUAL_BT_STATE_TARGET_FOUND);
-            gap_inquiry_stop();
-        }
+    /* awalol/DS5Dongle handles the controller's raw inquiry events. Keep the
+     * GAP event as a fallback because BTstack normally emits it first, but do
+     * not depend on that synthesis: some controller/transport combinations
+     * only expose the raw event reliably. handle_inquiry_result() is
+     * idempotent across both forms. */
+    case GAP_EVENT_INQUIRY_RESULT:
+    case HCI_EVENT_INQUIRY_RESULT:
+    case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:
+    case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE:
+        handle_inquiry_result(event_type, packet);
         break;
-    }
 
     case GAP_EVENT_INQUIRY_COMPLETE:
         ESP_LOGI(TAG, "Inquiry complete");
@@ -557,11 +632,10 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             create_connection_to(s_current_addr, false);
             break;
         }
-        if (s_have_saved) {
-            wait_for_controller_page("inquiry-complete-no-target");
-        } else {
-            start_inquiry();
-        }
+        /* Keep accepting controller-initiated pages while repeating inquiry.
+         * This is essential when our saved link key is stale and the user has
+         * put the controller back into PS+Create pairing mode. */
+        start_inquiry();
         break;
 
     case HCI_EVENT_COMMAND_STATUS: {
@@ -572,8 +646,9 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             ESP_LOGW(TAG, "Create connection rejected status=0x%02X", status);
             s_device_found = false;
             s_new_pair = false;
+            s_acl_pending = false;
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
-            wait_for_controller_page("create-rejected");
+            start_auto_connect("create-rejected");
         }
         if (opcode == HCI_OPCODE_HCI_INQUIRY_CANCEL) {
             s_inquiring = false;
@@ -583,6 +658,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
 
     case HCI_EVENT_CONNECTION_COMPLETE: {
         const uint8_t status = hci_event_connection_complete_get_status(packet);
+        s_acl_pending = false;
         if (status == ERROR_CODE_SUCCESS) {
             s_acl_handle =
                 hci_event_connection_complete_get_connection_handle(packet);
@@ -598,7 +674,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             s_device_found = false;
             s_new_pair = false;
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING, -status);
-            wait_for_controller_page("acl-failed");
+            start_auto_connect("acl-failed");
         }
         break;
     }
@@ -646,7 +722,10 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         ESP_LOGI(TAG, "Authentication complete status=0x%02X", status);
         if (status != ERROR_CODE_SUCCESS) {
             gap_drop_link_key_for_bd_addr(s_current_addr);
-            saved_addr_erase();
+            if (s_have_saved &&
+                bd_addr_cmp(s_current_addr, s_saved_addr) == 0) {
+                saved_addr_erase();
+            }
             s_device_found = false;
             s_new_pair = false;
             s_inquiry_after_disconnect = true;
@@ -698,6 +777,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         if ((cod & 0x000F00) == 0x000500) {
             bd_addr_copy(s_current_addr, addr);
             s_new_pair = false;
+            s_acl_pending = true;
             s_connect_from_saved =
                 s_have_saved && bd_addr_cmp(addr, s_saved_addr) == 0;
             gap_inquiry_stop();

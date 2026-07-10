@@ -83,15 +83,17 @@
 static void (*transport_packet_handler)(uint8_t packet_type, uint8_t *packet, uint16_t size);
 
 // ring buffer for incoming HCI packets. Each packet has 2 byte len tag + H4 packet type + packet itself
-#define MAX_NR_HOST_EVENT_PACKETS 4
+#define MAX_NR_HOST_EVENT_PACKETS 16
 static uint8_t hci_ringbuffer_storage[HCI_HOST_ACL_PACKET_NUM   * (2 + 1 + HCI_ACL_HEADER_SIZE + HCI_HOST_ACL_PACKET_LEN) +
                                       HCI_HOST_SCO_PACKET_NUM   * (2 + 1 + HCI_SCO_HEADER_SIZE + HCI_HOST_SCO_PACKET_LEN) +
                                       MAX_NR_HOST_EVENT_PACKETS * (2 + 1 + HCI_EVENT_BUFFER_SIZE)];
 
 static btstack_ring_buffer_t hci_ringbuffer;
 
-// incoming packet buffer
-static uint8_t hci_packet_with_pre_buffer[HCI_INCOMING_PRE_BUFFER_SIZE + HCI_INCOMING_PACKET_BUFFER_SIZE]; // packet type + max(acl header + acl payload, event header + event data)
+// incoming packet buffer: VHCI includes the H4 packet type byte, while
+// HCI_INCOMING_PACKET_BUFFER_SIZE only covers the HCI packet itself.
+#define HCI_VHCI_INCOMING_BUFFER_SIZE (HCI_INCOMING_PACKET_BUFFER_SIZE + 1u)
+static uint8_t hci_packet_with_pre_buffer[HCI_INCOMING_PRE_BUFFER_SIZE + HCI_VHCI_INCOMING_BUFFER_SIZE];
 static uint8_t * hci_receive_buffer = &hci_packet_with_pre_buffer[HCI_INCOMING_PRE_BUFFER_SIZE];
 
 static SemaphoreHandle_t ring_buffer_mutex;
@@ -138,11 +140,17 @@ static int host_recv_pkt_cb(uint8_t *data, uint16_t len){
         return 0;
     }
 
+    if ((data == NULL) || (len < 2) ||
+        (len > HCI_VHCI_INCOMING_BUFFER_SIZE)){
+        log_error("transport_recv_pkt_cb invalid packet len %u", len);
+        return 0;
+    }
+
     xSemaphoreTake(ring_buffer_mutex, portMAX_DELAY);
 
-    // check space
+    // check space (the ring stores a two-byte length tag before each packet)
     uint16_t space = btstack_ring_buffer_bytes_free(&hci_ringbuffer);
-    if (space < len){
+    if (space < (uint16_t)(len + 2u)){
         xSemaphoreGive(ring_buffer_mutex);
         log_error("transport_recv_pkt_cb packet %u, space %u -> dropping packet", len, space);
         return 0;
@@ -184,6 +192,11 @@ static void transport_deliver_packets(void *context){
         uint8_t len_tag[2];
         btstack_ring_buffer_read(&hci_ringbuffer, len_tag, 2, &number_read);
         uint32_t len = little_endian_read_16(len_tag, 0);
+        if ((len < 2u) || (len > HCI_VHCI_INCOMING_BUFFER_SIZE)){
+            log_error("transport_deliver_packets invalid packet len %u", (unsigned int) len);
+            btstack_ring_buffer_reset(&hci_ringbuffer);
+            break;
+        }
         btstack_ring_buffer_read(&hci_ringbuffer, hci_receive_buffer, len, &number_read);
         xSemaphoreGive(ring_buffer_mutex);
         transport_packet_handler(hci_receive_buffer[0], &hci_receive_buffer[1], len-1);
