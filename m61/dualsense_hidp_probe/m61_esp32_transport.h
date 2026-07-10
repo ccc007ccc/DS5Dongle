@@ -72,6 +72,7 @@ typedef struct {
     uint16_t peer_bt_interrupt_mtu;
     uint8_t peer_bt_bda[6];
     uint16_t peer_bt_state_seq;
+    uint32_t peer_generation;
     uint32_t peer_queue_drops;
     uint32_t peer_hidp_tx_errors;
     int peer_hidp_last_err;
@@ -119,6 +120,7 @@ typedef void (*m61_esp32_transport_feature_cb_t)(uint8_t report_id,
 typedef void (*m61_esp32_transport_bt_state_cb_t)(uint32_t flags,
                                                   const uint8_t bda[6],
                                                   uint16_t state_seq,
+                                                  uint32_t generation,
                                                   void *ctx);
 
 void m61_esp32_transport_init(void);

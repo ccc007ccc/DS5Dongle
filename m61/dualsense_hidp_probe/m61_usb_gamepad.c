@@ -2298,6 +2298,18 @@ void m61_usb_gamepad_reset_feature_cache(void)
     usb_unlock(flags);
 }
 
+void m61_usb_gamepad_reset_transport_queues(void)
+{
+    uintptr_t flags = usb_lock();
+
+    pending_feature_request_valid = false;
+    pending_host_report_valid = false;
+    usb_unlock(flags);
+    flush_haptics_queue();
+    flush_speaker_queues();
+    flush_mic_queues();
+}
+
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len)
 {
     bool valid;
@@ -2869,6 +2881,8 @@ void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data
     (void)data;
     (void)len;
 }
+void m61_usb_gamepad_reset_feature_cache(void) {}
+void m61_usb_gamepad_reset_transport_queues(void) {}
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len)
 {
     (void)report_id;

@@ -305,7 +305,7 @@ static usb_identity_probe_result_t usb_identity_probe_result;
 
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
 static bool dual_chip_dse_link_active;
-static uint8_t dual_chip_dse_link_bda[6];
+static volatile uint32_t dual_chip_bt_generation;
 #endif
 
 #if CONFIG_M61_DS5_AUTO_START
@@ -1353,31 +1353,33 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
 static void dual_chip_bt_state_callback(uint32_t flags,
                                         const uint8_t bda[6],
                                         uint16_t state_seq,
+                                        uint32_t generation,
                                         void *ctx)
 {
     bool link_active =
         (flags & (DS5_DUAL_BT_STATE_CONTROL_OPEN |
                   DS5_DUAL_BT_STATE_INTERRUPT_OPEN)) != 0U;
-    bool bda_changed = link_active &&
-                       memcmp(dual_chip_dse_link_bda, bda, 6U) != 0;
+    bool generation_changed = generation != dual_chip_bt_generation;
+    bool disconnected = !link_active && dual_chip_dse_link_active;
 
+    (void)bda;
     (void)ctx;
 
-    if ((link_active && (!dual_chip_dse_link_active || bda_changed)) ||
-        (!link_active && dual_chip_dse_link_active)) {
+    if (generation_changed || disconnected) {
         m61_ds5_dse_reset();
-        printf("DSE probe state reset on ESP32 BT generation seq=%u active=%u bda_changed=%u\r\n",
+        m61_usb_gamepad_reset_feature_cache();
+        m61_usb_gamepad_reset_transport_queues();
+        hidp_usb_output_pending = false;
+        hidp_mic_status_known = false;
+        printf("DSE/USB bridge state reset on ESP32 BT generation=%lu seq=%u active=%u disconnected=%u\r\n",
+               (unsigned long)generation,
                (unsigned int)state_seq,
                link_active ? 1U : 0U,
-               bda_changed ? 1U : 0U);
+               disconnected ? 1U : 0U);
     }
 
+    dual_chip_bt_generation = generation;
     dual_chip_dse_link_active = link_active;
-    if (link_active) {
-        memcpy(dual_chip_dse_link_bda, bda, 6U);
-    } else {
-        memset(dual_chip_dse_link_bda, 0, sizeof(dual_chip_dse_link_bda));
-    }
 }
 
 static void dual_chip_input_callback(const uint8_t *payload,
@@ -2124,6 +2126,9 @@ static void usb_hid_bridge_task(void *pvParameters)
     uint8_t pending_haptics[DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS][M61_DS5_HAPTICS_BLOCK_LEN];
     uint8_t pending_speaker_count = 0;
     uint8_t pending_haptics_count = 0;
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+    uint32_t observed_bt_generation = dual_chip_bt_generation;
+#endif
 
     (void)pvParameters;
 
@@ -2142,6 +2147,14 @@ static void usb_hid_bridge_task(void *pvParameters)
         bool speaker_active = m61_usb_gamepad_audio_speaker_active();
         bool bt_mic_active = host_mic_active && !speaker_active;
 
+#if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
+        if (observed_bt_generation != dual_chip_bt_generation) {
+            pending_speaker_count = 0;
+            pending_haptics_count = 0;
+            hidp_usb_output_pending = false;
+            observed_bt_generation = dual_chip_bt_generation;
+        }
+#endif
         process_controller_inactivity_disconnect();
 
         if (!speaker_active) {

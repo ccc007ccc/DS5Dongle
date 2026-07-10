@@ -146,6 +146,12 @@ typedef struct {
     void *feature_cb_ctx;
     m61_esp32_transport_bt_state_cb_t bt_state_cb;
     void *bt_state_cb_ctx;
+    bool peer_bt_state_seen;
+    bool peer_bt_active;
+    uint8_t peer_bt_bda[6];
+    uint16_t peer_bt_state_seq;
+    uint32_t peer_generation;
+    bool hello_response_expected;
     m61_esp32_transport_stats_t stats;
 } m61_esp32_transport_state_t;
 
@@ -369,6 +375,53 @@ static bool recovery_cooldown_elapsed(uint32_t now_us)
     return (now_us - s_transport.stats.last_recovery_local_us) >= cooldown_us;
 }
 
+static void invalidate_peer_generation(void)
+{
+    m61_esp32_transport_bt_state_cb_t state_cb;
+    void *state_cb_ctx;
+    uint32_t generation;
+    uint8_t empty_bda[6] = {0};
+    uintptr_t irq_flags = bflb_irq_save();
+
+    s_transport.peer_generation++;
+    generation = s_transport.peer_generation;
+    s_transport.peer_bt_state_seen = false;
+    s_transport.peer_bt_active = false;
+    s_transport.hello_response_expected = false;
+    memset(s_transport.peer_bt_bda, 0, sizeof(s_transport.peer_bt_bda));
+    s_transport.peer_bt_state_seq = 0;
+
+    s_transport.stats.rx_hello = 0;
+    s_transport.stats.peer_role = 0;
+    s_transport.stats.peer_protocol_version = 0;
+    s_transport.stats.peer_max_payload = 0;
+    s_transport.stats.peer_spi_mtu = 0;
+    s_transport.stats.peer_tx_queue_depth = 0;
+    s_transport.stats.peer_capabilities = 0;
+    s_transport.stats.rx_flow_credit = 0;
+    s_transport.stats.last_credit_free = 0;
+    s_transport.stats.last_credit_depth = 0;
+    s_transport.stats.last_credit_bt_ready = 0;
+    s_transport.stats.peer_bt_flags = 0;
+    s_transport.stats.peer_bt_last_error = 0;
+    s_transport.stats.peer_bt_rssi = 0;
+    s_transport.stats.peer_bt_bringup_attempts = 0;
+    s_transport.stats.peer_bt_reconnect_failures = 0;
+    s_transport.stats.peer_bt_control_mtu = 0;
+    s_transport.stats.peer_bt_interrupt_mtu = 0;
+    memset(s_transport.stats.peer_bt_bda, 0,
+           sizeof(s_transport.stats.peer_bt_bda));
+    s_transport.stats.peer_bt_state_seq = 0;
+    s_transport.stats.peer_generation = generation;
+    state_cb = s_transport.bt_state_cb;
+    state_cb_ctx = s_transport.bt_state_cb_ctx;
+    bflb_irq_restore(irq_flags);
+
+    if (state_cb != NULL) {
+        state_cb(0, empty_bda, 0, generation, state_cb_ctx);
+    }
+}
+
 static void perform_recovery(uint8_t reason)
 {
     int hello_err;
@@ -396,6 +449,7 @@ static void perform_recovery(uint8_t reason)
 
     s_transport.recovering = true;
     s_transport.ready = false;
+    invalidate_peer_generation();
     s_transport.time_sync_valid = false;
     s_transport.stats.time_sync_valid = 0;
     s_transport.stats.recovery_attempts++;
@@ -611,6 +665,10 @@ static void handle_rx_input(const uint8_t *payload, size_t payload_len)
     dualsense_state_t state = { 0 };
     dualsense_parse_result_t parse = { 0 };
 
+    if (!peer_link_ready()) {
+        return;
+    }
+
     if (payload == NULL || payload_len == 0) {
         s_transport.stats.frame_errors++;
         return;
@@ -647,10 +705,20 @@ static void handle_rx_input(const uint8_t *payload, size_t payload_len)
 static void handle_rx_hello(const uint8_t *payload, size_t payload_len)
 {
     ds5_dual_hello_t hello;
+    bool expected_response;
 
     if (!ds5_dual_hello_decode(payload, payload_len, &hello)) {
         s_transport.stats.frame_errors++;
         return;
+    }
+
+    expected_response = s_transport.hello_response_expected;
+    s_transport.hello_response_expected = false;
+    if (s_transport.stats.rx_hello > 0U && !expected_response) {
+        invalidate_peer_generation();
+    } else if (s_transport.peer_generation == 0U) {
+        s_transport.peer_generation = 1U;
+        s_transport.stats.peer_generation = 1U;
     }
 
     s_transport.stats.rx_hello++;
@@ -705,11 +773,38 @@ static void handle_rx_time_sync(const uint8_t *payload, size_t payload_len)
 static void handle_rx_bt_state(const uint8_t *payload, size_t payload_len)
 {
     ds5_dual_bt_state_t state;
+    bool active;
+    bool bda_changed;
+    bool sequence_discontinuity;
+    uint16_t sequence_delta;
 
     if (!ds5_dual_bt_state_decode(payload, payload_len, &state)) {
         s_transport.stats.frame_errors++;
         return;
     }
+    if (!peer_link_ready()) {
+        return;
+    }
+
+    active = (state.flags & (DS5_DUAL_BT_STATE_CONTROL_OPEN |
+                             DS5_DUAL_BT_STATE_INTERRUPT_OPEN)) != 0U;
+    bda_changed = active && s_transport.peer_bt_active &&
+                  memcmp(s_transport.peer_bt_bda, state.bda,
+                         sizeof(state.bda)) != 0;
+    sequence_delta = (uint16_t)(state.state_seq -
+                                s_transport.peer_bt_state_seq);
+    sequence_discontinuity = s_transport.peer_bt_state_seen &&
+                             s_transport.peer_bt_active && active &&
+                             sequence_delta != 0U &&
+                             sequence_delta != 1U;
+    if (active && (!s_transport.peer_bt_active || bda_changed ||
+                   sequence_discontinuity)) {
+        s_transport.peer_generation++;
+    }
+    s_transport.peer_bt_state_seen = true;
+    s_transport.peer_bt_active = active;
+    memcpy(s_transport.peer_bt_bda, state.bda, sizeof(state.bda));
+    s_transport.peer_bt_state_seq = state.state_seq;
 
     s_transport.stats.rx_bt_state++;
     s_transport.stats.peer_bt_flags = state.flags;
@@ -721,10 +816,12 @@ static void handle_rx_bt_state(const uint8_t *payload, size_t payload_len)
     s_transport.stats.peer_bt_interrupt_mtu = state.interrupt_mtu;
     memcpy(s_transport.stats.peer_bt_bda, state.bda, sizeof(state.bda));
     s_transport.stats.peer_bt_state_seq = state.state_seq;
+    s_transport.stats.peer_generation = s_transport.peer_generation;
     if (s_transport.bt_state_cb != NULL) {
         s_transport.bt_state_cb(state.flags,
                                 state.bda,
                                 state.state_seq,
+                                s_transport.peer_generation,
                                 s_transport.bt_state_cb_ctx);
     }
     note_event(M61_ESP32_EVENT_BT_STATE_RX,
@@ -826,12 +923,12 @@ static void process_rx_frame(const uint8_t *frame, size_t frame_len)
         handle_rx_input(payload, header.length);
         break;
     case DS5_DUAL_MSG_BT_RX_MIC_OPUS:
-        if (header.length > 0) {
+        if (peer_link_ready() && header.length > 0) {
             m61_usb_gamepad_submit_mic_opus(payload, header.length);
         }
         break;
     case DS5_DUAL_MSG_BT_RX_FEATURE_REPORT:
-        if (header.length >= 1U) {
+        if (peer_link_ready() && header.length >= 1U) {
             m61_usb_gamepad_store_feature_report(payload[0],
                                                  payload + 1,
                                                  header.length - 1U);
@@ -846,6 +943,9 @@ static void process_rx_frame(const uint8_t *frame, size_t frame_len)
     case DS5_DUAL_MSG_FLOW_CREDIT: {
         ds5_dual_flow_credit_t credit;
 
+        if (!peer_link_ready()) {
+            break;
+        }
         if (ds5_dual_flow_credit_decode(payload, header.length, &credit)) {
             uint8_t prev_free = s_transport.stats.last_credit_free;
             uint8_t prev_depth = s_transport.stats.last_credit_depth;
@@ -1318,6 +1418,7 @@ static int send_hello(void)
         return -EINVAL;
     }
 
+    s_transport.hello_response_expected = true;
     err = send_payload(DS5_DUAL_MSG_HELLO,
                        DS5_DUAL_FLAG_RELIABLE,
                        DS5_DUAL_CHANNEL_CTRL,
@@ -1327,6 +1428,8 @@ static int send_hello(void)
                        sizeof(payload));
     if (err == 0) {
         s_transport.stats.tx_hello++;
+    } else {
+        s_transport.hello_response_expected = false;
     }
     return err;
 }
