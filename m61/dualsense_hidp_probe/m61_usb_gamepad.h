@@ -40,6 +40,7 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len);
 bool m61_usb_gamepad_audio_mic_enabled(void);
 bool m61_usb_gamepad_audio_in_active(void);
 bool m61_usb_gamepad_audio_speaker_active(void);
+bool m61_usb_gamepad_remote_wakeup(void);
 bool m61_usb_gamepad_ready(void);
 bool m61_usb_gamepad_configured(void);
 bool m61_usb_gamepad_busy(void);

@@ -1079,12 +1079,16 @@ def test_c_source_contract() -> None:
         "opus_decode(decoder",
         "xTaskCreateStatic(audio_codec_task",
         "process_audio_speaker(audio_out_buffer, nbytes)",
-        "AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM",
-        "resample_speaker_upstream_frame",
+        "#define AUDIO_SPEAKER_FRAME_SAMPLES 480",
+        "queue_speaker_frame(speaker_accum)",
         "m61_usb_gamepad_submit_mic_opus",
         "m61_usb_gamepad_audio_mic_enabled",
+        "m61_usb_gamepad_remote_wakeup",
         "m61_ds5_bridge_config_mic_enabled",
         "m61_ds5_bridge_config_speaker_enabled",
+        "m61_ds5_bridge_config_polling_interval",
+        "config_descriptor_runtime[offset + 6U] = interval",
+        "config_descriptor_runtime[7] |= USB_CONFIG_REMOTE_WAKEUP",
         "m61_usb_gamepad_take_speaker_opus",
         "AUDIO_IN_STREAM_PACKET_SIZE",
         "audio_mic_usb_nonzero_packets",
@@ -1102,6 +1106,11 @@ def test_c_source_contract() -> None:
     ]
     for snippet in m61_audio_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
+    assert "AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM" not in m61_usb_source
+    assert "resample_speaker_upstream_frame" not in m61_usb_source
+    assert "USB remote wake requested by controller input" in m61_main_source
+    assert "state->dpad != dualsense_wake_dpad" in m61_main_source
+    assert "state->buttons != dualsense_wake_buttons" in m61_main_source
     m61_bridge_snippets = [
         "bt_mic_active",
         "host_mic_active && !speaker_active",

@@ -71,7 +71,11 @@ Wire compatibility and persistence are implemented. These configuration
 effects are not yet complete and must not be reported as finished:
 
 - `inactive_time` disconnect policy
-- `polling_rate_mode` USB scheduling policy
 - `ps_shortcut_enabled` keyboard shortcut path
-- `enable_wake` remote-wakeup descriptors and behavior
 - full `controller_mode` DS5/DSE USB identity switching
+- full Windows `enable_wake` support, including BOS/MS OS 2.0 selective suspend
+
+`polling_rate_mode` updates the HID IN/OUT endpoint interval on USB reconnect.
+`enable_wake` currently controls the remote-wakeup descriptor bit and sends a
+CherryUSB remote wake request on controller button/D-pad activity while
+suspended. The Windows selective-suspend descriptor path remains incomplete.

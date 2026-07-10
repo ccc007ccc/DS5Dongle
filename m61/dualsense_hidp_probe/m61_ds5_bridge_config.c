@@ -317,6 +317,18 @@ uint8_t m61_ds5_bridge_config_audio_buffer_length(void)
     return s_config.audio_buffer_length;
 }
 
+uint8_t m61_ds5_bridge_config_polling_interval(void)
+{
+    switch (s_config.polling_rate_mode) {
+    case 0:
+        return 4;
+    case 1:
+        return 2;
+    default:
+        return 1;
+    }
+}
+
 bool m61_ds5_bridge_config_mic_enabled(void)
 {
     return s_config.mic_select != M61_DS5_AUDIO_SELECT_DISABLED;
@@ -347,6 +359,11 @@ bool m61_ds5_bridge_config_speaker_uses_headset(bool headset_connected)
 bool m61_ds5_bridge_config_usb_serial_enabled(void)
 {
     return s_config.enable_usb_sn != 0U;
+}
+
+bool m61_ds5_bridge_config_wake_enabled(void)
+{
+    return s_config.enable_wake != 0U;
 }
 
 bool m61_ds5_bridge_config_dse_enabled(void)

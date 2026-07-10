@@ -112,5 +112,6 @@ READY IO16↔GPIO32,IRQ IO17↔GPIO13);M61 原生 USB 注意事项见
 
 - `docs/REBUILD_PLAN.md` — 本次重建的方案与验收标准
 - `docs/PRIVATE_PROTOCOL.md` — 0xF6~0xF9、Config_body 与 flash 格式
+- `docs/AUDIO_PIPELINE.md` — 48 kHz/480 帧直通与上游 512→480 差异
 - `docs/DUALSENSE_REPORT_31.md` — DualSense 0x31 报文结构参考
 - `docs/archive/` — 旧阶段文档,仅供考古,内容与现状可能不符

@@ -266,6 +266,9 @@ static uint32_t hidp_audio_control_seen_volume;
 static uint32_t hidp_audio_control_seen_mute;
 static bool usb_start_after_dualsense_done;
 static bool dualsense_headphones_connected;
+static bool dualsense_wake_input_valid;
+static uint8_t dualsense_wake_dpad;
+static uint32_t dualsense_wake_buttons;
 static uint8_t auto_bringup_attempts;
 static uint8_t auto_saved_addr_attempts;
 static TickType_t br_connected_tick;
@@ -354,6 +357,25 @@ static bool ds5_bt_transport_ready(void)
 #endif
 }
 
+static void maybe_remote_wake_on_input(const dualsense_state_t *state)
+{
+    bool changed;
+
+    if (state == NULL) {
+        return;
+    }
+    changed = !dualsense_wake_input_valid ||
+              state->dpad != dualsense_wake_dpad ||
+              state->buttons != dualsense_wake_buttons;
+    dualsense_wake_input_valid = true;
+    dualsense_wake_dpad = state->dpad;
+    dualsense_wake_buttons = state->buttons;
+
+    if (changed && m61_usb_gamepad_remote_wakeup()) {
+        printf("USB remote wake requested by controller input\r\n");
+    }
+}
+
 static void auto_schedule_retry(uint32_t delay_ms)
 {
     auto_sequence_started = false;
@@ -387,6 +409,9 @@ static void auto_reset_link_state(void)
     hidp_next_mic_status_tick = 0;
     hidp_next_audio_report_tick = 0;
     dualsense_headphones_connected = false;
+    dualsense_wake_input_valid = false;
+    dualsense_wake_dpad = 0;
+    dualsense_wake_buttons = 0;
     auto_bringup_attempts = 0;
     auto_next_hidp_tick = 0;
     auto_next_bringup_tick = 0;
@@ -1161,6 +1186,7 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
         if (state.is_full_report) {
             dualsense_headphones_connected = state.headphones;
         }
+        maybe_remote_wake_on_input(&state);
         if (state.is_full_report && parse.payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN) {
             m61_usb_gamepad_send_report01(buf->data + parse.payload_offset,
                                           M61_DS5_USB_INPUT_PAYLOAD_LEN);
@@ -1217,6 +1243,7 @@ static void dual_chip_input_callback(const uint8_t *payload,
     if (state->is_full_report) {
         dualsense_headphones_connected = state->headphones;
     }
+    maybe_remote_wake_on_input(state);
     if (state->is_full_report &&
         parse->payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN &&
         parse->payload_offset + M61_DS5_USB_INPUT_PAYLOAD_LEN <= payload_len) {
