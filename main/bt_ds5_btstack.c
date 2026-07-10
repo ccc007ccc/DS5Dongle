@@ -1207,7 +1207,7 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
                 s_abort_link = true;
                 request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
             } else {
-                hci_send_cmd(&hci_authentication_requested, s_acl_handle);
+                gap_request_security_level(s_acl_handle, LEVEL_2);
             }
         } else {
             if (!connection_was_pending) {
@@ -1252,10 +1252,8 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         const hci_con_handle_t handle =
             hci_event_authentication_complete_get_connection_handle(packet);
         ESP_LOGI(TAG, "Authentication complete status=0x%02X", status);
-        if (status != ERROR_CODE_SUCCESS) {
+        if (status != ERROR_CODE_SUCCESS && !s_abort_link) {
             recover_security_failure(handle, status, "authentication");
-        } else {
-            hci_send_cmd(&hci_set_connection_encryption, handle, 1);
         }
         break;
     }
@@ -1266,13 +1264,11 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             hci_event_encryption_change_get_encryption_enabled(packet);
         ESP_LOGI(TAG, "Encryption change status=0x%02X enabled=%u",
                  status, enabled);
-        if (status != ERROR_CODE_SUCCESS || !enabled) {
+        if ((status != ERROR_CODE_SUCCESS || !enabled) && !s_abort_link) {
             recover_security_failure(
                 hci_event_encryption_change_get_connection_handle(packet),
                 status,
                 "encryption");
-        } else if (s_new_pair) {
-            open_hid_channels("encryption-change");
         }
         break;
     }
@@ -1286,13 +1282,34 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
             hci_event_encryption_change_v2_get_encryption_key_size(packet);
         ESP_LOGI(TAG, "Encryption change v2 status=0x%02X enabled=%u key_size=%u",
                  status, enabled, key_size);
-        if (status != ERROR_CODE_SUCCESS || !enabled) {
+        if ((status != ERROR_CODE_SUCCESS || !enabled) && !s_abort_link) {
             recover_security_failure(
                 hci_event_encryption_change_v2_get_connection_handle(packet),
                 status,
                 "encryption-v2");
+        }
+        break;
+    }
+
+    case GAP_EVENT_SECURITY_LEVEL: {
+        const hci_con_handle_t handle =
+            gap_event_security_level_get_handle(packet);
+        const gap_security_level_t level =
+            (gap_security_level_t)
+                gap_event_security_level_get_security_level(packet);
+        const uint8_t status = gap_event_security_level_get_status(packet);
+        ESP_LOGI(TAG, "Security level status=0x%02X level=%u handle=0x%04X",
+                 status, (unsigned)level, handle);
+        if (handle != s_acl_handle) {
+            ESP_LOGW(TAG, "Ignore security event for stale handle=0x%04X", handle);
+            break;
+        }
+        if (status != ERROR_CODE_SUCCESS || level < LEVEL_2) {
+            if (!s_abort_link) {
+                recover_security_failure(handle, status, "security-level");
+            }
         } else if (s_new_pair) {
-            open_hid_channels("encryption-change-v2");
+            open_hid_channels("security-level");
         }
         break;
     }

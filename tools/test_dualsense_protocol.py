@@ -1350,7 +1350,11 @@ def test_c_source_contract() -> None:
         "l2cap_register_service(l2cap_packet_handler, PSM_HID_CONTROL",
         "hci_send_cmd(&hci_create_connection, s_current_addr,",
         "hci_send_cmd(&hci_user_confirmation_request_reply, addr)",
-        "hci_send_cmd(&hci_set_connection_encryption, handle, 1)",
+        "gap_request_security_level(s_acl_handle, LEVEL_2)",
+        "case GAP_EVENT_SECURITY_LEVEL:",
+        "gap_event_security_level_get_handle(packet)",
+        "gap_event_security_level_get_security_level(packet)",
+        "gap_event_security_level_get_status(packet)",
         "hci_send_cmd(&hci_accept_connection_request, s_current_addr, 0x01)",
         "case HCI_EVENT_INQUIRY_RESULT_WITH_RSSI:",
         "case HCI_EVENT_EXTENDED_INQUIRY_RESPONSE:",
@@ -1559,6 +1563,50 @@ def test_c_source_contract() -> None:
     ]
     assert "const bool retry_discovery = s_new_pair;" in security_recovery
     assert "set_reconnect_policy(true, retry_discovery);" in security_recovery
+    connection_complete = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case HCI_EVENT_CONNECTION_COMPLETE:"):
+        esp32_raw_hidp_source.index("case HCI_EVENT_USER_CONFIRMATION_REQUEST:")
+    ]
+    assert (
+        "gap_request_security_level(s_acl_handle, LEVEL_2);"
+        in connection_complete
+    )
+    assert "hci_authentication_requested" not in connection_complete
+    authentication_complete = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case HCI_EVENT_AUTHENTICATION_COMPLETE:"):
+        esp32_raw_hidp_source.index("case HCI_EVENT_ENCRYPTION_CHANGE:")
+    ]
+    assert (
+        "recover_security_failure(handle, status, \"authentication\");"
+        in authentication_complete
+    )
+    assert "!s_abort_link" in authentication_complete
+    assert "hci_set_connection_encryption" not in authentication_complete
+    encryption_events = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case HCI_EVENT_ENCRYPTION_CHANGE:"):
+        esp32_raw_hidp_source.index("case GAP_EVENT_SECURITY_LEVEL:")
+    ]
+    assert "recover_security_failure(" in encryption_events
+    assert "!s_abort_link" in encryption_events
+    assert "open_hid_channels" not in encryption_events
+    security_level = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case GAP_EVENT_SECURITY_LEVEL:"):
+        esp32_raw_hidp_source.index("case HCI_EVENT_CONNECTION_REQUEST:")
+    ]
+    for snippet in (
+        "gap_event_security_level_get_handle(packet)",
+        "gap_event_security_level_get_security_level(packet)",
+        "gap_event_security_level_get_status(packet)",
+        "handle != s_acl_handle",
+        "level < LEVEL_2",
+        "status != ERROR_CODE_SUCCESS",
+        "recover_security_failure(handle, status, \"security-level\");",
+        "s_new_pair",
+        "open_hid_channels(\"security-level\");",
+    ):
+        assert snippet in security_level
+    assert "hci_send_cmd(&hci_authentication_requested" not in esp32_raw_hidp_source
+    assert "hci_send_cmd(&hci_set_connection_encryption" not in esp32_raw_hidp_source
     l2cap_opened = esp32_raw_hidp_source[
         esp32_raw_hidp_source.index("case L2CAP_EVENT_CHANNEL_OPENED:"):
         esp32_raw_hidp_source.index("case L2CAP_EVENT_INCOMING_CONNECTION:")
