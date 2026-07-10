@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 from dataclasses import dataclass
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -24,6 +26,10 @@ REBOOT_ISP_COMMANDS = (
     "reboot uart",
 )
 REBOOT_ISP_BAUDS = (115200, 2000000, 460800)
+BL616_CLEAR_HBN_RSV2_COMMAND = bytes.fromhex("50 00 08 00 08 F1 00 20 00 00 00 00")
+BL616_RESET_COMMAND = bytes.fromhex("21 00 00 00")
+BL616_LOADER_ACK = b"OK"
+BL616_LOADER_ACK_TIMEOUT_MS = 1000
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,107 @@ def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
     return True
 
 
+def read_exact(ser: serial.Serial, size: int, timeout_ms: int) -> bytes:
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    data = bytearray()
+    while len(data) < size and time.monotonic() < deadline:
+        chunk = ser.read(size - len(data))
+        if chunk:
+            data.extend(chunk)
+        else:
+            time.sleep(0.01)
+    return bytes(data)
+
+
+def exit_bl616_uart_loader(
+    port: str,
+    baud: int,
+    timeout_ms: int = BL616_LOADER_ACK_TIMEOUT_MS,
+    serial_factory=serial.Serial,
+) -> bool:
+    """Clear the retained BL616 ISP selection, then reset into flash."""
+
+    print(f"clearing BL616 UART loader boot status on {port} @ {baud}")
+    try:
+        with serial_factory(port, baudrate=baud, timeout=0.05, rtscts=False, dsrdtr=False) as ser:
+            ser.setDTR(False)
+            ser.setRTS(False)
+            time.sleep(0.05)
+            ser.reset_input_buffer()
+
+            clear_written = ser.write(BL616_CLEAR_HBN_RSV2_COMMAND)
+            if clear_written != len(BL616_CLEAR_HBN_RSV2_COMMAND):
+                print(
+                    "error: incomplete BL616 HBN_RSV2 clear command write; reset not sent",
+                    file=sys.stderr,
+                )
+                return False
+            ser.flush()
+            clear_ack = read_exact(ser, len(BL616_LOADER_ACK), timeout_ms)
+            if clear_ack != BL616_LOADER_ACK:
+                print(
+                    "error: BL616 loader did not acknowledge HBN_RSV2 clear; "
+                    f"expected {BL616_LOADER_ACK!r}, received {clear_ack!r}; reset not sent",
+                    file=sys.stderr,
+                )
+                return False
+
+            reset_written = ser.write(BL616_RESET_COMMAND)
+            if reset_written != len(BL616_RESET_COMMAND):
+                print("error: incomplete BL616 reset command write", file=sys.stderr)
+                return False
+            ser.flush()
+            try:
+                reset_ack = read_exact(ser, len(BL616_LOADER_ACK), timeout_ms)
+            except serial.SerialException as exc:
+                print(f"BL616 reset disconnected the loader serial port: {exc}")
+                return True
+            if reset_ack != BL616_LOADER_ACK:
+                print(
+                    "error: BL616 loader did not acknowledge reset; "
+                    f"expected {BL616_LOADER_ACK!r}, received {reset_ack!r}",
+                    file=sys.stderr,
+                )
+                return False
+    except serial.SerialException as exc:
+        print(f"error: unable to exit BL616 UART loader on {port}: {exc}", file=sys.stderr)
+        return False
+
+    print("BL616 UART loader boot status cleared; reset acknowledged")
+    return True
+
+
+def make_flash_config(
+    source: Path,
+    app_directory: Path,
+    build_dir: Path,
+    reboot_isp: bool,
+) -> str:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    with source.open("r", encoding="utf-8") as config_file:
+        parser.read_file(config_file)
+
+    default_build_dir = app_directory / "build"
+    if build_dir != default_build_dir:
+        rel_build_dir = build_dir.relative_to(app_directory).as_posix()
+        old_prefix = "./build/build_out/"
+        new_prefix = f"./{rel_build_dir}/build_out/"
+        for section in parser.sections():
+            for option, value in parser.items(section):
+                if old_prefix in value:
+                    parser.set(section, option, value.replace(old_prefix, new_prefix))
+
+    if reboot_isp:
+        if not parser.has_section("cfg") or not parser.has_option("cfg", "boot2_isp_mode"):
+            raise ValueError(f"missing [cfg] boot2_isp_mode in {source}")
+        parser.set("cfg", "boot2_isp_mode", "1")
+
+    output = io.StringIO()
+    parser.write(output)
+    return output.getvalue()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", choices=sorted(FIRMWARE_APPS), default="bridge", help="M61 firmware app")
@@ -165,10 +272,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"run: {app.build_command}", file=sys.stderr)
             return 1
 
-    if build_dir != app.directory / "build":
-        rel_build_dir = build_dir.relative_to(app.directory).as_posix()
-        config_text = flash_config.read_text(encoding="utf-8")
-        config_text = config_text.replace("./build/build_out/", f"./{rel_build_dir}/build_out/")
+    if build_dir != app.directory / "build" or args.reboot_isp:
+        try:
+            config_text = make_flash_config(
+                flash_config,
+                app.directory,
+                build_dir,
+                args.reboot_isp,
+            )
+        except (OSError, ValueError, configparser.Error) as exc:
+            print(f"invalid flash config: {exc}", file=sys.stderr)
+            return 1
         tmp = tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
@@ -201,12 +315,18 @@ def main(argv: list[str] | None = None) -> int:
         f"--chipname={args.chip}",
         f"--config={flash_config.name}",
     ]
-    if not args.no_reset:
+    managed_loader_exit = args.reboot_isp and not args.no_reset
+    if not args.no_reset and not args.reboot_isp:
         cmd.append("--reset")
 
     print("running:", " ".join(cmd))
     try:
-        return subprocess.call(cmd, cwd=app.directory)
+        result = subprocess.call(cmd, cwd=app.directory)
+        if result != 0:
+            return result
+        if managed_loader_exit and not exit_bl616_uart_loader(args.port, args.baud):
+            return 1
+        return 0
     finally:
         if generated_flash_config is not None:
             try:

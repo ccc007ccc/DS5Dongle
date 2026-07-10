@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         ("M61 inactivity policy", [sys.executable, "tools/test_m61_inactivity.py"]),
         ("M61 PS shortcut policy", [sys.executable, "tools/test_m61_ps_shortcut.py"]),
         ("M61 wake descriptors", [sys.executable, "tools/test_m61_wake_descriptors.py"]),
+        ("M61 flash flow", [sys.executable, "tools/test_m61_flash_flow.py"]),
         ("stage-1 log checker self-test", [sys.executable, "tools/test_stage1_log_checker.py"]),
         ("M61 HIDP log checker self-test", [sys.executable, "tools/test_m61_hidp_log_checker.py"]),
         ("dual-chip log checker self-test", [sys.executable, "tools/check_dual_chip_log.py", "--self-test"]),
