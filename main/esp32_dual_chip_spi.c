@@ -94,6 +94,8 @@ static uint8_t s_response_head;
 static uint8_t s_response_count;
 static uint32_t s_reject_log_count;
 static uint32_t s_transaction_log_count;
+static uint32_t s_zero_transaction_count;
+static uint32_t s_short_response_count;
 static uint64_t s_output_gpio_configured_mask;
 DMA_ATTR static uint8_t s_spi_rx_buf[DS5_DUAL_CHIP_SPI_TRANSACTION_LEN];
 DMA_ATTR static uint8_t s_spi_tx_buf[DS5_DUAL_CHIP_SPI_TRANSACTION_LEN];
@@ -288,6 +290,13 @@ static void log_transaction_diag(const uint8_t *frame,
     uint32_t log_count = ++s_transaction_log_count;
     size_t dump_len = rx_len < 32U ? rx_len : 32U;
 
+    if (trans_bits == 0U) {
+        uint32_t zero_count = ++s_zero_transaction_count;
+
+        if (zero_count > 4U && (zero_count % 4096U) != 0U) {
+            return;
+        }
+    }
     if (log_count > 24U && (log_count % 64U) != 0U) {
         return;
     }
@@ -1006,15 +1015,26 @@ static void spi_task(void *arg)
             continue;
         }
 
+        size_t rx_len = (size_t)(trans.trans_len / 8U);
+        bool response_complete =
+            !had_response || trans.trans_len >= (response_len * 8U);
         if (had_response) {
-            s_stats.spi_tx_frames++;
-            finish_response_transaction(&response_item, true);
-            (void)response_len;
+            if (response_complete) {
+                s_stats.spi_tx_frames++;
+            } else {
+                uint32_t short_count = ++s_short_response_count;
+
+                if (short_count <= 4U || (short_count % 256U) == 0U) {
+                    ESP_LOGW(TAG,
+                             "SPI response retained: clocked_bits=%u needed_bits=%u count=%u",
+                             (unsigned)trans.trans_len,
+                             (unsigned)(response_len * 8U),
+                             (unsigned)short_count);
+                }
+            }
+            finish_response_transaction(&response_item, response_complete);
         }
 
-        size_t rx_len = trans.trans_len > 0 ?
-            (size_t)(trans.trans_len / 8U) :
-            sizeof(s_spi_rx_buf);
         log_transaction_diag(s_spi_rx_buf, rx_len, trans.trans_len, had_response);
         if (rx_len >= DS5_DUAL_SPI_HEADER_LEN &&
             s_spi_rx_buf[0] != 0 &&

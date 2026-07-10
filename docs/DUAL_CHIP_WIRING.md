@@ -167,6 +167,7 @@ Common early failures:
 | `ready=0` or no `M61 ESP32 dual-chip SPI transport ready` | ESP_READY not wired, ESP32 not flashed with the left-side profile, or SPI pins mismatch |
 | `hello_rx=0` | SCLK/MOSI/MISO/CS wiring or SPI mode is wrong |
 | `tsync_rx=0` or `sync=0` | SPI transactions work intermittently or ESP32 task is not responding |
+| ESP32 logs occasional `bits=0` | A CS pulse completed without clocks. Current firmware treats it as a zero-length transaction and retains any queued response; old firmware incorrectly reported 692 received bytes and could discard the response. |
 | `stats_rx=0` | M61 can transmit but cannot clock back queued ESP32 responses |
 | `credit=0` | ESP32 has not emitted FLOW_CREDIT yet, or IRQ/readback path is not active |
 | `crc` or `spi_crc` grows | wire length, ground, clock rate, or pin mapping problem |
