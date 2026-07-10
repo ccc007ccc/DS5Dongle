@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import struct
 import sys
 
 
@@ -99,6 +100,8 @@ DS5_DUAL_BT_STATE_SDP_READY = 0x00000004
 DS5_DUAL_BT_STATE_CONTROL_OPEN = 0x00000008
 DS5_DUAL_BT_STATE_INTERRUPT_OPEN = 0x00000010
 DS5_DUAL_BT_STATE_FULL_REPORT = 0x00000020
+UPSTREAM_CONFIG_MAGIC = 0x66CCFF00
+UPSTREAM_CONFIG_BODY_LEN = 20
 
 BUTTON_SQUARE = 1 << 0
 BUTTON_CROSS = 1 << 1
@@ -690,6 +693,40 @@ def test_output_vectors() -> None:
     assert int.from_bytes(headset_report[-4:], "little") == dualsense_output_crc32(headset_report[:-4])
 
 
+def test_upstream_config_vectors() -> None:
+    body = struct.pack(
+        "<Bf15B",
+        5,
+        1.0,
+        100,
+        100,
+        2,
+        30,
+        0,
+        1,
+        64,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    assert len(body) == UPSTREAM_CONFIG_BODY_LEN
+    assert body.hex() == "050000803f6464021e0001400200000000000000"
+    crc = dualsense_output_crc32(body)
+    assert crc == 0x457C81FC
+
+    storage = struct.pack("<IIH", UPSTREAM_CONFIG_MAGIC, crc, len(body)) + body + b"\0\0"
+    assert len(storage) == 32
+    assert int.from_bytes(storage[0:4], "little") == UPSTREAM_CONFIG_MAGIC
+    assert int.from_bytes(storage[4:8], "little") == crc
+    assert int.from_bytes(storage[8:10], "little") == UPSTREAM_CONFIG_BODY_LEN
+    assert storage[10:30] == body
+
+
 def test_dual_chip_spi_vectors() -> None:
     hello_caps = (
         DS5_DUAL_CAP_USB_DS5_GADGET
@@ -1113,11 +1150,18 @@ def test_c_source_contract() -> None:
 
     m61_bridge_config_snippets = [
         "M61_DS5_BRIDGE_CONFIG_VERSION 5U",
+        "M61_DS5_BRIDGE_CONFIG_MAGIC 0x66CCFF00UL",
         "m61_ds5_bridge_config_body_t",
         "CONFIG_M61_DS5_BRIDGE_AUDIO_BUFFER_LENGTH",
         "CONFIG_M61_DS5_BRIDGE_CONTROLLER_MODE",
-        "CONFIG_M61_DS5_BRIDGE_DISABLE_MIC",
-        "CONFIG_M61_DS5_BRIDGE_DISABLE_SPEAKER",
+        "CONFIG_M61_DS5_BRIDGE_MIC_SELECT",
+        "CONFIG_M61_DS5_BRIDGE_SPEAKER_SELECT",
+        "uint8_t mic_select;",
+        "uint8_t speaker_select;",
+        "m61_ds5_bridge_config_storage_t",
+        "sizeof(m61_ds5_bridge_config_body_t) == 20U",
+        "config_body_crc(&saved.body)",
+        "migrated legacy body-only config",
         "M61_DS5_BRIDGE_CONFIG_KEY \"ds5_bridge_cfg\"",
         "ef_get_env_blob(M61_DS5_BRIDGE_CONFIG_KEY",
         "ef_set_env_blob(M61_DS5_BRIDGE_CONFIG_KEY",
@@ -1126,6 +1170,7 @@ def test_c_source_contract() -> None:
         "m61_ds5_bridge_config_haptics_gain_q8",
         "payload[DS5_STATE_FLAGS1] |= DS5_STATE_ALLOW_MOTOR_POWER_LEVEL;",
         "payload[DS5_STATE_FLAGS1] |= DS5_STATE_ALLOW_AUDIO_CONTROL2;",
+        "payload[DS5_STATE_FLAGS0] |= DS5_STATE_ALLOW_AUDIO_CONTROL;",
         "payload[DS5_STATE_FLAGS0] &= (uint8_t)~(DS5_STATE_ALLOW_HEADPHONE_VOLUME",
     ]
     combined_bridge_config_source = "\n".join([m61_bridge_config_header, m61_bridge_config_source])
@@ -1343,6 +1388,7 @@ def test_c_source_contract() -> None:
 def main() -> int:
     test_vectors()
     test_output_vectors()
+    test_upstream_config_vectors()
     test_dual_chip_spi_vectors()
     test_c_source_contract()
     print("DualSense protocol vectors passed.")

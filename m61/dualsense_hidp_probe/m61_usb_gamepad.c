@@ -127,6 +127,7 @@ typedef struct {
 static const uint8_t device_descriptor[] = {
     USB_DEVICE_DESCRIPTOR_INIT(USB_2_0, 0x00, 0x00, 0x00, USBD_VID, USBD_PID, 0x0100, 0x01)
 };
+static uint8_t device_descriptor_runtime[sizeof(device_descriptor)];
 
 static const uint8_t dualsense_report_desc[HID_DUALSENSE_REPORT_DESC_SIZE] = {
     0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x85, 0x01,
@@ -439,6 +440,9 @@ static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(
 static TaskHandle_t audio_codec_task_handle;
 static TaskHandle_t usb_reconnect_task_handle;
 static m61_usb_gamepad_host_report_t pending_host_report;
+
+static void queue_host_report(uint8_t report_id, uint8_t report_type,
+                              const uint8_t *data, uint32_t len);
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
 
@@ -1151,7 +1155,12 @@ static const uint8_t *device_descriptor_callback(uint8_t speed)
 {
     usb_diag.device_desc++;
     usb_diag.last_speed = speed;
-    return device_descriptor;
+    memcpy(device_descriptor_runtime, device_descriptor,
+           sizeof(device_descriptor_runtime));
+    if (!m61_ds5_bridge_config_usb_serial_enabled()) {
+        device_descriptor_runtime[16] = 0;
+    }
+    return device_descriptor_runtime;
 }
 
 static const uint8_t *config_descriptor_callback(uint8_t speed)
@@ -1334,6 +1343,14 @@ static bool set_bridge_config_report(uint8_t report_id, const uint8_t *report, u
     switch (payload[0]) {
         case 0x01:
             m61_ds5_bridge_config_set_raw(payload + 1, payload_len - 1U);
+            {
+                uint8_t state[DS5_USB_SET_STATE_LEN];
+
+                m61_ds5_bridge_config_make_controller_state(state,
+                                                            sizeof(state));
+                queue_host_report(0x02, HID_REPORT_OUTPUT,
+                                  state, sizeof(state));
+            }
             printf("[Config] bridge config updated from HID report\r\n");
             break;
         case 0x02:

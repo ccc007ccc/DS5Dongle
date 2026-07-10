@@ -69,9 +69,10 @@
   `0x03` tud_disconnect/tud_connect。
 - Flash `Config`:`magic 0x66ccff00` + `version` + `crc32(body)` + `size` + body。
 
-当前审计结论:命令号已存在,但配置体字段语义与 flash 封装尚未达标。
-旧实现的 `disable_mic/disable_speaker` 必须替换成上游
-`mic_select/speaker_select`,EasyFlash 存储也必须加入 `Config` 头和 CRC 校验。
+当前实现已完成线格式修复:`Config_body` 为 20 字节,
+`mic_select/speaker_select` 恢复为 0..3,EasyFlash 使用 32 字节 `Config`
+封装并校验 magic/size/A2-seed CRC32;旧 body-only 配置会自动迁移。
+字段行为的剩余缺口见 `docs/PRIVATE_PROTOCOL.md`。
 
 ## 保留 / 重建边界
 

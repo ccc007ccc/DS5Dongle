@@ -14,8 +14,10 @@
 
 #define DS5_STATE_FLAGS0 0
 #define DS5_STATE_FLAGS1 1
+#define DS5_STATE_AUDIO_CONTROL 7
 #define DS5_STATE_MOTOR_POWER_LEVEL 36
 #define DS5_STATE_AUDIO_CONTROL2 37
+#define DS5_STATE_ALLOW_AUDIO_CONTROL 0x80
 #define DS5_STATE_ALLOW_HEADPHONE_VOLUME 0x10
 #define DS5_STATE_ALLOW_SPEAKER_VOLUME 0x20
 #define DS5_STATE_ALLOW_MIC_VOLUME 0x40
@@ -23,6 +25,40 @@
 #define DS5_STATE_ALLOW_AUDIO_MUTE 0x02
 #define DS5_STATE_ALLOW_MOTOR_POWER_LEVEL 0x40
 #define DS5_STATE_ALLOW_AUDIO_CONTROL2 0x80
+
+typedef struct {
+    uint32_t magic;
+    uint32_t crc32;
+    uint16_t size;
+    m61_ds5_bridge_config_body_t body;
+} m61_ds5_bridge_config_storage_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t config_version;
+    float haptics_gain;
+    uint8_t speaker_volume;
+    uint8_t headset_volume;
+    uint8_t speaker_gain;
+    uint8_t inactive_time;
+    uint8_t disable_pico_led;
+    uint8_t polling_rate_mode;
+    uint8_t audio_buffer_length;
+    uint8_t controller_mode;
+    uint8_t enable_usb_sn;
+    uint8_t ps_shortcut_enabled;
+    uint8_t disable_mic;
+    uint8_t disable_speaker;
+    uint8_t enable_wake;
+    uint8_t trigger_reduce;
+    uint8_t lock_volume;
+} legacy_bridge_config_body_t;
+
+_Static_assert(sizeof(m61_ds5_bridge_config_body_t) == 20U,
+               "Config_body must stay byte-compatible with awalol/DS5Dongle");
+_Static_assert(offsetof(m61_ds5_bridge_config_storage_t, body) == 10U,
+               "Config body offset must match awalol/DS5Dongle");
+_Static_assert(sizeof(m61_ds5_bridge_config_storage_t) == 32U,
+               "Config storage layout must include the upstream alignment");
 
 static m61_ds5_bridge_config_body_t s_config;
 static uint16_t s_haptics_gain_q8 = HAPTICS_GAIN_Q8;
@@ -35,6 +71,25 @@ static uint8_t clamp_u8(uint8_t value, uint8_t min_value, uint8_t max_value, uin
 static uint8_t bool_u8(uint8_t value, uint8_t fallback)
 {
     return value > 1U ? fallback : value;
+}
+
+static uint32_t config_crc32(const uint8_t *data, size_t len)
+{
+    uint32_t crc = ~0xEADA2D49UL;
+
+    while (len-- > 0U) {
+        crc ^= *data++;
+        for (uint8_t bit = 0; bit < 8U; bit++) {
+            crc = (crc >> 1) ^
+                  (0xEDB88320UL & (0UL - (crc & 1UL)));
+        }
+    }
+    return ~crc;
+}
+
+static uint32_t config_body_crc(const m61_ds5_bridge_config_body_t *body)
+{
+    return config_crc32((const uint8_t *)body, sizeof(*body));
 }
 
 static float read_haptics_gain(const m61_ds5_bridge_config_body_t *body)
@@ -90,8 +145,8 @@ static void config_defaults(m61_ds5_bridge_config_body_t *body)
     body->controller_mode = CONFIG_M61_DS5_BRIDGE_CONTROLLER_MODE;
     body->enable_usb_sn = CONFIG_M61_DS5_BRIDGE_ENABLE_USB_SN;
     body->ps_shortcut_enabled = CONFIG_M61_DS5_BRIDGE_PS_SHORTCUT_ENABLED;
-    body->disable_mic = CONFIG_M61_DS5_BRIDGE_DISABLE_MIC;
-    body->disable_speaker = CONFIG_M61_DS5_BRIDGE_DISABLE_SPEAKER;
+    body->mic_select = CONFIG_M61_DS5_BRIDGE_MIC_SELECT;
+    body->speaker_select = CONFIG_M61_DS5_BRIDGE_SPEAKER_SELECT;
     body->enable_wake = CONFIG_M61_DS5_BRIDGE_ENABLE_WAKE;
     body->trigger_reduce = CONFIG_M61_DS5_BRIDGE_TRIGGER_REDUCE;
     body->lock_volume = CONFIG_M61_DS5_BRIDGE_LOCK_VOLUME;
@@ -121,8 +176,8 @@ static void config_validate(m61_ds5_bridge_config_body_t *body)
     body->controller_mode = clamp_u8(body->controller_mode, 0, 2, CONFIG_M61_DS5_BRIDGE_CONTROLLER_MODE);
     body->enable_usb_sn = bool_u8(body->enable_usb_sn, CONFIG_M61_DS5_BRIDGE_ENABLE_USB_SN);
     body->ps_shortcut_enabled = bool_u8(body->ps_shortcut_enabled, CONFIG_M61_DS5_BRIDGE_PS_SHORTCUT_ENABLED);
-    body->disable_mic = bool_u8(body->disable_mic, CONFIG_M61_DS5_BRIDGE_DISABLE_MIC);
-    body->disable_speaker = bool_u8(body->disable_speaker, CONFIG_M61_DS5_BRIDGE_DISABLE_SPEAKER);
+    body->mic_select = clamp_u8(body->mic_select, 0, 3, CONFIG_M61_DS5_BRIDGE_MIC_SELECT);
+    body->speaker_select = clamp_u8(body->speaker_select, 0, 3, CONFIG_M61_DS5_BRIDGE_SPEAKER_SELECT);
     body->enable_wake = bool_u8(body->enable_wake, CONFIG_M61_DS5_BRIDGE_ENABLE_WAKE);
     body->trigger_reduce = clamp_u8(body->trigger_reduce, 0, 10, CONFIG_M61_DS5_BRIDGE_TRIGGER_REDUCE);
     body->lock_volume = bool_u8(body->lock_volume, CONFIG_M61_DS5_BRIDGE_LOCK_VOLUME);
@@ -141,20 +196,45 @@ void m61_ds5_bridge_config_init(void)
 
 #if defined(CONFIG_BT_SETTINGS)
     size_t saved_len = 0;
-    m61_ds5_bridge_config_body_t saved = s_config;
+    m61_ds5_bridge_config_storage_t saved = {0};
     size_t read_len = ef_get_env_blob(M61_DS5_BRIDGE_CONFIG_KEY,
                                       (uint8_t *)&saved,
                                       sizeof(saved),
                                       &saved_len);
-    if (read_len == sizeof(saved) && saved_len == sizeof(saved)) {
-        s_config = saved;
+    if (read_len == sizeof(saved) && saved_len == sizeof(saved) &&
+        saved.magic == M61_DS5_BRIDGE_CONFIG_MAGIC &&
+        saved.size == sizeof(saved.body) &&
+        saved.crc32 == config_body_crc(&saved.body)) {
+        s_config = saved.body;
         config_validate(&s_config);
-        printf("[Config] bridge config loaded len=%u\r\n", (unsigned int)read_len);
+        printf("[Config] upstream config loaded len=%u crc=%08lx\r\n",
+               (unsigned int)read_len,
+               (unsigned long)saved.crc32);
+    } else if (read_len == sizeof(legacy_bridge_config_body_t) &&
+               saved_len == sizeof(legacy_bridge_config_body_t)) {
+        const legacy_bridge_config_body_t *legacy =
+            (const legacy_bridge_config_body_t *)&saved;
+
+        memcpy(&s_config, legacy, sizeof(s_config));
+        s_config.mic_select = legacy->disable_mic
+                                  ? M61_DS5_AUDIO_SELECT_DISABLED
+                                  : M61_DS5_AUDIO_SELECT_AUTO;
+        s_config.speaker_select = legacy->disable_speaker
+                                      ? M61_DS5_AUDIO_SELECT_DISABLED
+                                      : M61_DS5_AUDIO_SELECT_AUTO;
+        config_validate(&s_config);
+        printf("[Config] migrated legacy body-only config len=%u\r\n",
+               (unsigned int)read_len);
+        (void)m61_ds5_bridge_config_save();
     } else if (read_len > 0U || saved_len > 0U) {
-        printf("[Config] bridge config ignored len=%u saved=%u expected=%u\r\n",
+        printf("[Config] invalid config ignored len=%u saved=%u expected=%u magic=%08lx size=%u crc=%08lx/%08lx\r\n",
                (unsigned int)read_len,
                (unsigned int)saved_len,
-               (unsigned int)sizeof(saved));
+               (unsigned int)sizeof(saved),
+               (unsigned long)saved.magic,
+               (unsigned int)saved.size,
+               (unsigned long)saved.crc32,
+               (unsigned long)config_body_crc(&saved.body));
     }
 #endif
 }
@@ -174,23 +254,24 @@ void m61_ds5_bridge_config_set_raw(const uint8_t *data, size_t len)
 
     copy_len = len < sizeof(s_config) ? len : sizeof(s_config);
     memcpy(&s_config, data, copy_len);
-    if (copy_len < sizeof(s_config)) {
-        m61_ds5_bridge_config_body_t defaults;
-
-        config_defaults(&defaults);
-        memcpy(((uint8_t *)&s_config) + copy_len,
-               ((const uint8_t *)&defaults) + copy_len,
-               sizeof(s_config) - copy_len);
-    }
     config_validate(&s_config);
 }
 
 bool m61_ds5_bridge_config_save(void)
 {
 #if defined(CONFIG_BT_SETTINGS)
+    m61_ds5_bridge_config_storage_t stored = {0};
+    m61_ds5_bridge_config_storage_t verify = {0};
+    size_t verify_saved_len = 0;
+    size_t verify_read_len;
+
+    stored.magic = M61_DS5_BRIDGE_CONFIG_MAGIC;
+    stored.size = sizeof(stored.body);
+    stored.body = s_config;
+    stored.crc32 = config_body_crc(&stored.body);
     EfErrCode err = ef_set_env_blob(M61_DS5_BRIDGE_CONFIG_KEY,
-                                    (const uint8_t *)&s_config,
-                                    sizeof(s_config));
+                                    (const uint8_t *)&stored,
+                                    sizeof(stored));
     if (err == EF_NO_ERR) {
         err = ef_save_env();
     }
@@ -198,7 +279,27 @@ bool m61_ds5_bridge_config_save(void)
         printf("[Config] bridge config save failed: %d\r\n", err);
         return false;
     }
-    printf("[Config] bridge config saved\r\n");
+    verify_read_len = ef_get_env_blob(M61_DS5_BRIDGE_CONFIG_KEY,
+                                      (uint8_t *)&verify,
+                                      sizeof(verify),
+                                      &verify_saved_len);
+    if (verify_read_len != sizeof(verify) ||
+        verify_saved_len != sizeof(verify) ||
+        verify.magic != stored.magic ||
+        verify.size != stored.size ||
+        verify.crc32 != stored.crc32 ||
+        verify.crc32 != config_body_crc(&verify.body) ||
+        memcmp(&verify.body, &stored.body, sizeof(stored.body)) != 0) {
+        printf("[Config] bridge config verify failed read=%u saved=%u crc=%08lx/%08lx\r\n",
+               (unsigned int)verify_read_len,
+               (unsigned int)verify_saved_len,
+               (unsigned long)verify.crc32,
+               (unsigned long)stored.crc32);
+        return false;
+    }
+    printf("[Config] upstream config saved len=%u crc=%08lx\r\n",
+           (unsigned int)sizeof(stored),
+           (unsigned long)stored.crc32);
     return true;
 #else
     printf("[Config] bridge config save unavailable: EasyFlash disabled\r\n");
@@ -218,12 +319,34 @@ uint8_t m61_ds5_bridge_config_audio_buffer_length(void)
 
 bool m61_ds5_bridge_config_mic_enabled(void)
 {
-    return s_config.disable_mic == 0U;
+    return s_config.mic_select != M61_DS5_AUDIO_SELECT_DISABLED;
 }
 
 bool m61_ds5_bridge_config_speaker_enabled(void)
 {
-    return s_config.disable_speaker == 0U;
+    return s_config.speaker_select != M61_DS5_AUDIO_SELECT_DISABLED;
+}
+
+uint8_t m61_ds5_bridge_config_mic_select(void)
+{
+    return s_config.mic_select;
+}
+
+uint8_t m61_ds5_bridge_config_speaker_select(void)
+{
+    return s_config.speaker_select;
+}
+
+bool m61_ds5_bridge_config_speaker_uses_headset(bool headset_connected)
+{
+    return s_config.speaker_select == M61_DS5_AUDIO_SELECT_HEADSET ||
+           (s_config.speaker_select == M61_DS5_AUDIO_SELECT_AUTO &&
+            headset_connected);
+}
+
+bool m61_ds5_bridge_config_usb_serial_enabled(void)
+{
+    return s_config.enable_usb_sn != 0U;
 }
 
 bool m61_ds5_bridge_config_dse_enabled(void)
@@ -231,7 +354,8 @@ bool m61_ds5_bridge_config_dse_enabled(void)
     return s_config.controller_mode != M61_DS5_CONTROLLER_MODE_DS5;
 }
 
-void m61_ds5_bridge_config_apply_usb_set_state(uint8_t *payload, size_t len)
+static void apply_controller_state(uint8_t *payload, size_t len,
+                                   bool force_mic_select)
 {
     if (payload == NULL || len < DS5_USB_SET_STATE_LEN) {
         return;
@@ -249,6 +373,12 @@ void m61_ds5_bridge_config_apply_usb_set_state(uint8_t *payload, size_t len)
             (uint8_t)((payload[DS5_STATE_AUDIO_CONTROL2] & 0xF8U) |
                       (s_config.speaker_gain & 0x07U));
     }
+    if (force_mic_select || s_config.mic_select != M61_DS5_AUDIO_SELECT_AUTO) {
+        payload[DS5_STATE_FLAGS0] |= DS5_STATE_ALLOW_AUDIO_CONTROL;
+        payload[DS5_STATE_AUDIO_CONTROL] =
+            (uint8_t)((payload[DS5_STATE_AUDIO_CONTROL] & 0xFCU) |
+                      (s_config.mic_select & 0x03U));
+    }
     if (s_config.lock_volume) {
         payload[DS5_STATE_FLAGS0] &= (uint8_t)~(DS5_STATE_ALLOW_HEADPHONE_VOLUME |
                                                 DS5_STATE_ALLOW_SPEAKER_VOLUME |
@@ -256,4 +386,18 @@ void m61_ds5_bridge_config_apply_usb_set_state(uint8_t *payload, size_t len)
         payload[DS5_STATE_FLAGS1] &= (uint8_t)~(DS5_STATE_ALLOW_AUDIO_MUTE |
                                                 DS5_STATE_ALLOW_MUTE_LIGHT);
     }
+}
+
+void m61_ds5_bridge_config_apply_usb_set_state(uint8_t *payload, size_t len)
+{
+    apply_controller_state(payload, len, false);
+}
+
+void m61_ds5_bridge_config_make_controller_state(uint8_t *payload, size_t len)
+{
+    if (payload == NULL || len < DS5_USB_SET_STATE_LEN) {
+        return;
+    }
+    memset(payload, 0, len);
+    apply_controller_state(payload, len, true);
 }

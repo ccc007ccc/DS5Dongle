@@ -43,10 +43,10 @@ DualSense ⇄(经典蓝牙 HIDP 0x11/0x13)⇄ ESP32 ⇄(SPI 私有帧协议)⇄ 
 
 ## 私有配置协议(USB HID Feature Report)
 
-`0xF6`~`0xF9` 的命令号和基本方向已经存在，但当前配置体和 flash 封装仍在
-按上游 `ea93fad` 重构，不能把现状视为已经逐字节兼容。已确认的旧实现错误包括
-把 `mic_select/speaker_select (0..3)` 写成布尔字段，以及缺失上游
-`magic + CRC32 + size + body` 的持久化封装。
+`0xF6`~`0xF9` 的 HID 线格式已按上游 `ea93fad` 对齐。`Config_body` 固定为
+20 字节，`mic_select/speaker_select` 均为 `0..3`;EasyFlash 中保存上游兼容的
+`magic + CRC32 + size + body` 32 字节封装，并自动迁移旧版 20 字节布尔配置。
+字段布局、CRC 向量和仍待实现的高级功能见 `docs/PRIVATE_PROTOCOL.md`。
 
 | Report | 方向 | 含义 |
 |--------|------|------|
@@ -111,5 +111,6 @@ READY IO16↔GPIO32,IRQ IO17↔GPIO13);M61 原生 USB 注意事项见
 ## 文档
 
 - `docs/REBUILD_PLAN.md` — 本次重建的方案与验收标准
+- `docs/PRIVATE_PROTOCOL.md` — 0xF6~0xF9、Config_body 与 flash 格式
 - `docs/DUALSENSE_REPORT_31.md` — DualSense 0x31 报文结构参考
 - `docs/archive/` — 旧阶段文档,仅供考古,内容与现状可能不符

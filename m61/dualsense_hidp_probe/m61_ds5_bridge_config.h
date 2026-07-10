@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 #define M61_DS5_BRIDGE_CONFIG_VERSION 5U
+#define M61_DS5_BRIDGE_CONFIG_MAGIC 0x66CCFF00UL
 
 #ifndef CONFIG_M61_DS5_BRIDGE_HAPTICS_GAIN_Q8
 #define CONFIG_M61_DS5_BRIDGE_HAPTICS_GAIN_Q8 256
@@ -16,10 +17,6 @@ extern "C" {
 
 #ifndef HAPTICS_GAIN_Q8
 #define HAPTICS_GAIN_Q8 CONFIG_M61_DS5_BRIDGE_HAPTICS_GAIN_Q8
-#endif
-
-#ifndef CONFIG_M61_DS5_MIC_DEFAULT_ENABLED
-#define CONFIG_M61_DS5_MIC_DEFAULT_ENABLED 1
 #endif
 
 #ifndef CONFIG_M61_DS5_BRIDGE_SPEAKER_VOLUME
@@ -51,23 +48,19 @@ extern "C" {
 #endif
 
 #ifndef CONFIG_M61_DS5_BRIDGE_ENABLE_USB_SN
-#define CONFIG_M61_DS5_BRIDGE_ENABLE_USB_SN 1
+#define CONFIG_M61_DS5_BRIDGE_ENABLE_USB_SN 0
 #endif
 
 #ifndef CONFIG_M61_DS5_BRIDGE_PS_SHORTCUT_ENABLED
 #define CONFIG_M61_DS5_BRIDGE_PS_SHORTCUT_ENABLED 0
 #endif
 
-#ifndef CONFIG_M61_DS5_BRIDGE_DISABLE_MIC
-#if CONFIG_M61_DS5_MIC_DEFAULT_ENABLED
-#define CONFIG_M61_DS5_BRIDGE_DISABLE_MIC 0
-#else
-#define CONFIG_M61_DS5_BRIDGE_DISABLE_MIC 1
-#endif
+#ifndef CONFIG_M61_DS5_BRIDGE_MIC_SELECT
+#define CONFIG_M61_DS5_BRIDGE_MIC_SELECT 0
 #endif
 
-#ifndef CONFIG_M61_DS5_BRIDGE_DISABLE_SPEAKER
-#define CONFIG_M61_DS5_BRIDGE_DISABLE_SPEAKER 0
+#ifndef CONFIG_M61_DS5_BRIDGE_SPEAKER_SELECT
+#define CONFIG_M61_DS5_BRIDGE_SPEAKER_SELECT 0
 #endif
 
 #ifndef CONFIG_M61_DS5_BRIDGE_ENABLE_WAKE
@@ -88,6 +81,13 @@ typedef enum {
     M61_DS5_CONTROLLER_MODE_AUTO = 2,
 } m61_ds5_controller_mode_t;
 
+typedef enum {
+    M61_DS5_AUDIO_SELECT_AUTO = 0,
+    M61_DS5_AUDIO_SELECT_BUILTIN = 1,
+    M61_DS5_AUDIO_SELECT_HEADSET = 2,
+    M61_DS5_AUDIO_SELECT_DISABLED = 3,
+} m61_ds5_audio_select_t;
+
 typedef struct __attribute__((packed)) {
     uint8_t config_version;
     float haptics_gain;
@@ -101,8 +101,8 @@ typedef struct __attribute__((packed)) {
     uint8_t controller_mode;
     uint8_t enable_usb_sn;
     uint8_t ps_shortcut_enabled;
-    uint8_t disable_mic;
-    uint8_t disable_speaker;
+    uint8_t mic_select;
+    uint8_t speaker_select;
     uint8_t enable_wake;
     uint8_t trigger_reduce;
     uint8_t lock_volume;
@@ -118,8 +118,13 @@ uint16_t m61_ds5_bridge_config_haptics_gain_q8(void);
 uint8_t m61_ds5_bridge_config_audio_buffer_length(void);
 bool m61_ds5_bridge_config_mic_enabled(void);
 bool m61_ds5_bridge_config_speaker_enabled(void);
+uint8_t m61_ds5_bridge_config_mic_select(void);
+uint8_t m61_ds5_bridge_config_speaker_select(void);
+bool m61_ds5_bridge_config_speaker_uses_headset(bool headset_connected);
+bool m61_ds5_bridge_config_usb_serial_enabled(void);
 bool m61_ds5_bridge_config_dse_enabled(void);
 void m61_ds5_bridge_config_apply_usb_set_state(uint8_t *payload, size_t len);
+void m61_ds5_bridge_config_make_controller_state(uint8_t *payload, size_t len);
 
 #ifdef __cplusplus
 }

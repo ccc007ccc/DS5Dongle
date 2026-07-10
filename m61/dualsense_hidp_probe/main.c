@@ -2054,7 +2054,8 @@ static void usb_hid_bridge_task(void *pvParameters)
                                        haptics1,
                                        speaker0,
                                        speaker1,
-                                       dualsense_headphones_connected,
+                                       m61_ds5_bridge_config_speaker_uses_headset(
+                                           dualsense_headphones_connected),
                                        bt_mic_active) == 0) {
                 pending_haptics_count = 0;
                 if (send_speaker) {
@@ -2756,7 +2757,7 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 1],
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 2]);
         const m61_ds5_bridge_config_body_t *bridge_cfg = m61_ds5_bridge_config_get();
-        printf("bridge_cfg ver=%u haptics_q8=%u spk_vol=%u headset_vol=%u spk_gain=%u inactive_min=%u poll=%u buf_len=%u mode=%u usb_sn=%u ps_shortcut=%u disable_mic=%u disable_speaker=%u wake=%u trigger_reduce=%u lock_volume=%u\r\n",
+        printf("bridge_cfg ver=%u haptics_q8=%u spk_vol=%u headset_vol=%u spk_gain=%u inactive_min=%u poll=%u buf_len=%u mode=%u usb_sn=%u ps_shortcut=%u mic_select=%u speaker_select=%u wake=%u trigger_reduce=%u lock_volume=%u\r\n",
                (unsigned int)bridge_cfg->config_version,
                (unsigned int)m61_ds5_bridge_config_haptics_gain_q8(),
                (unsigned int)bridge_cfg->speaker_volume,
@@ -2768,8 +2769,8 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)bridge_cfg->controller_mode,
                (unsigned int)bridge_cfg->enable_usb_sn,
                (unsigned int)bridge_cfg->ps_shortcut_enabled,
-               (unsigned int)bridge_cfg->disable_mic,
-               (unsigned int)bridge_cfg->disable_speaker,
+               (unsigned int)bridge_cfg->mic_select,
+               (unsigned int)bridge_cfg->speaker_select,
                (unsigned int)bridge_cfg->enable_wake,
                (unsigned int)bridge_cfg->trigger_reduce,
                (unsigned int)bridge_cfg->lock_volume);
