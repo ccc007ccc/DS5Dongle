@@ -1491,6 +1491,9 @@ def test_c_source_contract() -> None:
         "apply_reconnect_visibility();\n        break;"
     ), "empty inquiry cycles must stop scanning and retain page visibility"
     assert "schedule_inquiry_retry" not in esp32_raw_hidp_source
+    assert "gap_set_class_of_device(0x000508)" not in esp32_raw_hidp_source, (
+        "the dongle must retain BTstack's host CoD instead of advertising as a gamepad"
+    )
     acl_create = esp32_raw_hidp_source[
         esp32_raw_hidp_source.index("static void try_send_acl_create(void)\n{"):
         esp32_raw_hidp_source.index("static void create_connection_to(")
@@ -1550,6 +1553,24 @@ def test_c_source_contract() -> None:
     assert incoming_request.index("s_acl_accept_requested = true;") < (
         incoming_request.index("try_send_acl_accept();")
     ), "incoming ACL acceptance must use the deferred checked-send path"
+    security_recovery = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("static void recover_security_failure("):
+        esp32_raw_hidp_source.index("/* -------------------------------------------------------- HCI handler")
+    ]
+    assert "const bool retry_discovery = s_new_pair;" in security_recovery
+    assert "set_reconnect_policy(true, retry_discovery);" in security_recovery
+    l2cap_opened = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case L2CAP_EVENT_CHANNEL_OPENED:"):
+        esp32_raw_hidp_source.index("case L2CAP_EVENT_INCOMING_CONNECTION:")
+    ]
+    assert "set_reconnect_policy(true, false);" in l2cap_opened
+    assert "status != L2CAP_CONNECTION_BASEBAND_DISCONNECT" in l2cap_opened
+    disconnection_complete = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case HCI_EVENT_DISCONNECTION_COMPLETE:"):
+        esp32_raw_hidp_source.index("case GAP_EVENT_RSSI_MEASUREMENT:")
+    ]
+    assert "hci_event_disconnection_complete_get_status(packet)" in disconnection_complete
+    assert "if (status != ERROR_CODE_SUCCESS)" in disconnection_complete
     assert not re.search(
         r"HCI_OPCODE_HCI_INQUIRY_CANCEL\s*\)\s*\{\s*s_inquiring\s*=\s*false",
         esp32_raw_hidp_source,

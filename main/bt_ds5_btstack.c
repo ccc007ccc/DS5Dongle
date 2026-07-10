@@ -1004,6 +1004,7 @@ static void recover_security_failure(hci_con_handle_t handle,
                                      uint8_t status,
                                      const char *stage)
 {
+    const bool retry_discovery = s_new_pair;
     const int32_t error = status != ERROR_CODE_SUCCESS ?
                           -(int32_t)status : -EACCES;
 
@@ -1014,7 +1015,7 @@ static void recover_security_failure(hci_con_handle_t handle,
     s_new_pair = false;
     s_abort_link = true;
     s_forget_pending = false;
-    set_reconnect_policy(true, true);
+    set_reconnect_policy(true, retry_discovery);
     state_publish_locked_fields(0,
                                 DS5_DUAL_BT_STATE_CONTROL_OPEN |
                                 DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
@@ -1340,10 +1341,22 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         break;
     }
 
-    case HCI_EVENT_DISCONNECTION_COMPLETE:
-        handle_disconnected(
-            hci_event_disconnection_complete_get_reason(packet));
+    case HCI_EVENT_DISCONNECTION_COMPLETE: {
+        const uint8_t status =
+            hci_event_disconnection_complete_get_status(packet);
+        const uint8_t reason =
+            hci_event_disconnection_complete_get_reason(packet);
+        if (status != ERROR_CODE_SUCCESS) {
+            ESP_LOGW(TAG,
+                     "Disconnection complete failed status=0x%02X reason=0x%02X",
+                     status, reason);
+            s_hci_disconnect_pending = false;
+            state_publish_locked_fields(0, 0, -(int32_t)status);
+            break;
+        }
+        handle_disconnected(reason);
         break;
+    }
 
     case GAP_EVENT_RSSI_MEASUREMENT: {
         const hci_con_handle_t handle =
@@ -1406,10 +1419,16 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
             s_device_found = false;
             s_abort_link = true;
             s_forget_pending = false;
-            set_reconnect_policy(true, true);
+            /* Match upstream ownership after a failed HID open: do not keep
+             * paging a bonded controller. Leave page scan enabled so the
+             * controller can reconnect and initiate its HID channels. */
+            set_reconnect_policy(true, false);
             state_publish_locked_fields(0, DS5_DUAL_BT_STATE_CONNECTING,
                                         -status);
-            request_acl_disconnect(ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+            if (status != L2CAP_CONNECTION_BASEBAND_DISCONNECT) {
+                request_acl_disconnect(
+                    ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION);
+            }
             break;
         }
         if (psm == PSM_HID_CONTROL) {
@@ -1659,7 +1678,6 @@ static void btstack_task(void *arg)
     gap_set_page_scan_activity(0x0012, 0x0012); /* 11.25 ms interlaced */
     gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED);
     gap_set_local_name("DS5Dongle");
-    gap_set_class_of_device(0x000508);
     gap_connectable_control(1);
     gap_discoverable_control(1);
 
