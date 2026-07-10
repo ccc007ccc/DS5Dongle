@@ -1361,6 +1361,7 @@ def test_c_source_contract() -> None:
         "DS5_INQUIRY_RETRY_MS 250",
         "static void inquiry_retry_handler(btstack_timer_source_t *ts)",
         "schedule_inquiry_retry();",
+        "raw/GAP duplicate completion from the prior inquiry",
         "handle_inquiry_result(event_type, packet)",
         "Auto connect: inquiry + incoming page",
         "static bool s_acl_pending;",
@@ -1480,6 +1481,13 @@ def test_c_source_contract() -> None:
         r"schedule_inquiry_retry\(\);",
         esp32_raw_hidp_source,
     ), "only transient inquiry command-disallowed failures should auto-retry"
+    inquiry_complete_block = esp32_raw_hidp_source[
+        esp32_raw_hidp_source.index("case GAP_EVENT_INQUIRY_COMPLETE:"):
+        esp32_raw_hidp_source.index("case HCI_EVENT_COMMAND_STATUS:")
+    ]
+    assert inquiry_complete_block.rstrip().endswith(
+        "schedule_inquiry_retry();\n        break;"
+    ), "empty inquiry cycles must defer restart past duplicate completion events"
     assert not re.search(
         r"HCI_OPCODE_HCI_INQUIRY_CANCEL\s*\)\s*\{\s*s_inquiring\s*=\s*false",
         esp32_raw_hidp_source,

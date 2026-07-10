@@ -793,8 +793,10 @@ static void hci_packet_handler(uint8_t packet_type, uint16_t channel,
         }
         /* Keep accepting controller-initiated pages while repeating inquiry.
          * This is essential when our saved link key is stale and the user has
-         * put the controller back into PS+Create pairing mode. */
-        start_inquiry();
+         * put the controller back into PS+Create pairing mode. Defer the next
+         * inquiry so a raw/GAP duplicate completion from the prior inquiry is
+         * ignored while s_inquiring is still false. */
+        schedule_inquiry_retry();
         break;
 
     case HCI_EVENT_COMMAND_STATUS: {
