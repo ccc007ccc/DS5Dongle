@@ -9,6 +9,7 @@
 #include "dualsense_output.h"
 #include "dualsense_parser.h"
 #include "m61_audio_epoch.h"
+#include "m61_bt_tx_scheduler.h"
 #include "m61_usb_gamepad.h"
 
 #include "FreeRTOS.h"
@@ -191,6 +192,7 @@ static struct bflb_device_s *uart0;
 static TaskHandle_t app_start_handle;
 static TaskHandle_t auto_task_handle;
 static TaskHandle_t led_task_handle;
+static TaskHandle_t bridge_task_handle;
 
 static struct bt_br_discovery_result discovery_results[HIDP_DISCOVERY_SLOTS];
 static struct bt_conn *default_conn;
@@ -224,14 +226,11 @@ static uint32_t hidp_audio_reports_sent;
 static uint32_t hidp_audio_status_reports_sent;
 static uint32_t hidp_audio_send_errors;
 static uint32_t hidp_audio_not_connected;
-static uint32_t hidp_audio_stale_dropped;
 static int hidp_audio_last_error;
 static uint32_t hidp_usb_output_reports_forwarded;
 static uint32_t hidp_usb_output_reports_coalesced;
 static uint32_t hidp_usb_output_reports_failed;
 static int hidp_usb_output_last_error;
-static m61_usb_gamepad_host_report_t hidp_usb_output_latest;
-static bool hidp_usb_output_pending;
 static TickType_t hidp_usb_output_next_tick;
 static bool hidp_mic_status_known;
 static bool hidp_last_mic_active;
@@ -253,6 +252,7 @@ static bool hid_control_prepare_pending;
 static bool hid_interrupt_prepare_pending;
 static bool disconnect_cleanup_scheduled;
 static TickType_t disconnect_cleanup_tick;
+static m61_bt_tx_scheduler_t hidp_tx_scheduler;
 
 #if CONFIG_M61_DS5_AUTO_START
 static bool auto_start_enabled = true;
@@ -304,6 +304,16 @@ static bool tick_due(TickType_t now, TickType_t due)
     return (int32_t)(now - due) >= 0;
 }
 
+static uint32_t hidp_tx_realtime_stale_count(void)
+{
+    uintptr_t flags = bflb_irq_save();
+    uint32_t stale =
+        hidp_tx_scheduler.metrics.classes[M61_BT_TX_CLASS_REALTIME].stale;
+
+    bflb_irq_restore(flags);
+    return stale;
+}
+
 static void auto_schedule_retry(uint32_t delay_ms)
 {
     auto_sequence_started = false;
@@ -323,7 +333,6 @@ static void auto_reset_link_state(void)
     hidp_mic_audio_reports = 0;
     hidp_audio_reports_sent = 0;
     hidp_audio_status_reports_sent = 0;
-    hidp_audio_stale_dropped = 0;
     hidp_audio_send_errors = 0;
     hidp_audio_not_connected = 0;
     hidp_audio_last_error = 0;
@@ -331,7 +340,6 @@ static void auto_reset_link_state(void)
     hidp_usb_output_reports_coalesced = 0;
     hidp_usb_output_reports_failed = 0;
     hidp_usb_output_last_error = 0;
-    hidp_usb_output_pending = false;
     hidp_usb_output_next_tick = 0;
     hidp_mic_status_known = false;
     hidp_last_mic_active = false;
@@ -1768,63 +1776,164 @@ static void usb_hid_bridge_task(void *pvParameters)
 {
     bool feature_pending = false;
     bool feature_set_pending = false;
-    bool audio_pending = false;
+    bool scheduler_link_ready = false;
     uint8_t pending_feature_report_id = 0;
     uint32_t pending_feature_requested_len = 0;
     m61_usb_gamepad_host_report_t pending_feature_set;
-    m61_audio_epoch_pair_t pending_audio_pair;
 
     (void)pvParameters;
 
     while (1) {
         TickType_t now = xTaskGetTickCount();
+        uint64_t now_us = bflb_mtimer_get_time_us();
+        uint32_t generation = m61_usb_gamepad_audio_generation();
         m61_usb_gamepad_host_report_t host_report;
+        m61_bt_tx_selection_t selection;
         uint8_t feature_reports_this_tick = 0;
         uint8_t host_reports_this_tick = 0;
         bool host_mic_active = m61_usb_gamepad_audio_in_active();
         bool speaker_active = m61_usb_gamepad_audio_speaker_active();
         bool bt_mic_active = host_mic_active && !speaker_active;
+        bool link_ready = hid_interrupt.connected;
+        uint32_t eligible_classes = 0;
 
         m61_usb_gamepad_realtime_task();
 
-        if (!audio_pending) {
-            audio_pending =
-                m61_audio_epoch_take_adjacent_pair(&pending_audio_pair);
+        if (hidp_tx_scheduler.generation != generation) {
+            m61_bt_tx_scheduler_reset_generation(&hidp_tx_scheduler,
+                                                  generation);
+            hidp_mic_status_known = false;
         }
-        if (audio_pending) {
-            uint64_t age_us = bflb_mtimer_get_time_us() -
-                              pending_audio_pair.first_captured_us;
-            int err = 0;
+        if (!link_ready && scheduler_link_ready) {
+            m61_bt_tx_scheduler_reset_generation(&hidp_tx_scheduler,
+                                                  generation);
+        }
+        scheduler_link_ready = link_ready;
 
-            if (pending_audio_pair.generation !=
-                m61_usb_gamepad_audio_generation()) {
-                audio_pending = false;
-            } else if (age_us > 64000U) {
-                hidp_audio_stale_dropped++;
-                audio_pending = false;
-            } else {
-                err = hidp_send_audio_pair(&pending_audio_pair,
-                                           dualsense_headphones_connected,
-                                           bt_mic_active);
-                if (err == 0 || (err != -ENOMEM && err != -EAGAIN)) {
-                    audio_pending = false;
-                }
+        while (1) {
+            m61_audio_epoch_pair_t pair;
+
+            if (!m61_audio_epoch_take_adjacent_pair(&pair)) {
+                break;
             }
-            if (audio_pending && (err == -ENOMEM || err == -EAGAIN)) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-                continue;
-            }
+            m61_bt_tx_scheduler_publish_realtime(&hidp_tx_scheduler, &pair);
         }
 
-        if (hid_interrupt.connected &&
+        if (link_ready &&
             (!hidp_mic_status_known ||
              hidp_last_mic_active != bt_mic_active ||
              (bt_mic_active && tick_due(now, hidp_next_mic_status_tick)))) {
-            if (hidp_send_audio_status_report(bt_mic_active) == 0) {
-                hidp_mic_status_known = true;
-                hidp_last_mic_active = bt_mic_active;
-                hidp_next_mic_status_tick =
-                    now + pdMS_TO_TICKS(CONFIG_M61_DS5_MIC_STATUS_REFRESH_MS);
+            if (!hidp_tx_scheduler.state32.pending ||
+                hidp_tx_scheduler.state32.payload.mic_active != bt_mic_active) {
+                m61_bt_tx_scheduler_publish_state32(&hidp_tx_scheduler,
+                                                     bt_mic_active,
+                                                     generation,
+                                                     now_us);
+            }
+        }
+
+        while (host_reports_this_tick < CONFIG_M61_DS5_HOST_REPORTS_PER_TICK &&
+               m61_usb_gamepad_take_host_report(&host_report)) {
+            if (host_report.report_type == HIDP_REPORT_TYPE_OUTPUT) {
+                if (hidp_tx_scheduler.state31.pending) {
+                    hidp_usb_output_reports_coalesced++;
+                }
+                m61_bt_tx_scheduler_publish_state31(
+                    &hidp_tx_scheduler,
+                    host_report.data,
+                    host_report.len,
+                    host_report.report_id == 0,
+                    generation,
+                    now_us);
+            } else {
+                pending_feature_set = host_report;
+                feature_set_pending = true;
+                host_reports_this_tick++;
+                break;
+            }
+            host_reports_this_tick++;
+        }
+
+        if (link_ready) {
+            eligible_classes = M61_BT_TX_CLASS_MASK(
+                                   M61_BT_TX_CLASS_REALTIME) |
+                               M61_BT_TX_CLASS_MASK(
+                                   M61_BT_TX_CLASS_STATE32);
+            if (tick_due(now, hidp_usb_output_next_tick)) {
+                eligible_classes |= M61_BT_TX_CLASS_MASK(
+                    M61_BT_TX_CLASS_STATE31);
+            }
+        }
+
+        if (m61_bt_tx_scheduler_select(&hidp_tx_scheduler,
+                                       now_us,
+                                       eligible_classes,
+                                       &selection)) {
+            int err = -ESTALE;
+
+            if (selection.generation !=
+                m61_usb_gamepad_audio_generation()) {
+                m61_bt_tx_scheduler_reset_generation(
+                    &hidp_tx_scheduler,
+                    m61_usb_gamepad_audio_generation());
+            } else if (m61_bt_tx_scheduler_selection_is_current(
+                           &hidp_tx_scheduler, &selection)) {
+                switch (selection.tx_class) {
+                case M61_BT_TX_CLASS_REALTIME:
+                    err = hidp_send_audio_pair(
+                        &selection.payload.realtime,
+                        dualsense_headphones_connected,
+                        bt_mic_active);
+                    break;
+                case M61_BT_TX_CLASS_STATE31:
+                    err = hidp_send_usb_output_report(
+                        selection.payload.state31.report,
+                        selection.payload.state31.len,
+                        selection.payload.state31.includes_id);
+                    break;
+                case M61_BT_TX_CLASS_STATE32:
+                    err = hidp_send_audio_status_report(
+                        selection.payload.state32.mic_active);
+                    break;
+                default:
+                    err = -EINVAL;
+                    break;
+                }
+
+                if (err == -ENOMEM || err == -EAGAIN) {
+                    m61_bt_tx_scheduler_finish(
+                        &hidp_tx_scheduler,
+                        &selection,
+                        M61_BT_TX_FINISH_RETRY);
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                    continue;
+                }
+
+                m61_bt_tx_scheduler_finish(
+                    &hidp_tx_scheduler,
+                    &selection,
+                    err == 0 ? M61_BT_TX_FINISH_SUCCESS
+                             : M61_BT_TX_FINISH_DROP);
+                if (selection.tx_class == M61_BT_TX_CLASS_STATE31) {
+                    if (err == 0) {
+                        hidp_usb_output_reports_forwarded++;
+                        hidp_usb_output_last_error = 0;
+                        hidp_usb_output_next_tick =
+                            now + pdMS_TO_TICKS(
+                                      CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS);
+                    } else {
+                        hidp_usb_output_reports_failed++;
+                        hidp_usb_output_last_error = err;
+                    }
+                } else if (selection.tx_class == M61_BT_TX_CLASS_STATE32 &&
+                           err == 0) {
+                    hidp_mic_status_known = true;
+                    hidp_last_mic_active =
+                        selection.payload.state32.mic_active;
+                    hidp_next_mic_status_tick =
+                        now + pdMS_TO_TICKS(
+                                  CONFIG_M61_DS5_MIC_STATUS_REFRESH_MS);
+                }
             }
         }
 
@@ -1859,23 +1968,6 @@ static void usb_hid_bridge_task(void *pvParameters)
             feature_reports_this_tick++;
         }
 
-        while (host_reports_this_tick < CONFIG_M61_DS5_HOST_REPORTS_PER_TICK &&
-               m61_usb_gamepad_take_host_report(&host_report)) {
-            if (host_report.report_type == HIDP_REPORT_TYPE_OUTPUT) {
-                if (hidp_usb_output_pending) {
-                    hidp_usb_output_reports_coalesced++;
-                }
-                hidp_usb_output_latest = host_report;
-                hidp_usb_output_pending = true;
-            } else {
-                pending_feature_set = host_report;
-                feature_set_pending = true;
-                host_reports_this_tick++;
-                break;
-            }
-            host_reports_this_tick++;
-        }
-
         if (feature_set_pending) {
             uint8_t report_id = pending_feature_set.report_id;
             const uint8_t *payload = pending_feature_set.data;
@@ -1896,25 +1988,6 @@ static void usb_hid_bridge_task(void *pvParameters)
                        (unsigned int)payload_len,
                        err);
                 feature_set_pending = false;
-            }
-        }
-
-        if (hidp_usb_output_pending &&
-            tick_due(now, hidp_usb_output_next_tick)) {
-            int err = hidp_send_usb_output_report(
-                hidp_usb_output_latest.data,
-                hidp_usb_output_latest.len,
-                hidp_usb_output_latest.report_id == 0);
-            if (err == 0) {
-                hidp_usb_output_reports_forwarded++;
-                hidp_usb_output_last_error = 0;
-                hidp_usb_output_pending = false;
-                hidp_usb_output_next_tick = now + pdMS_TO_TICKS(
-                    CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS);
-            } else if (err != -ENOMEM && err != -EAGAIN) {
-                hidp_usb_output_reports_failed++;
-                hidp_usb_output_last_error = err;
-                hidp_usb_output_pending = false;
             }
         }
 
@@ -2649,7 +2722,7 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)hidp_audio_reports_sent,
                (unsigned long)hidp_audio_status_reports_sent,
                (unsigned long)hidp_audio_send_errors,
-               (unsigned long)hidp_audio_stale_dropped,
+               (unsigned long)hidp_tx_realtime_stale_count(),
                (unsigned long)hidp_audio_not_connected,
                hidp_audio_last_error,
                m61_usb_gamepad_audio_mic_enabled() ? 1U : 0U,
@@ -2661,13 +2734,50 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS,
                (unsigned int)CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS,
                (unsigned int)CONFIG_M61_DS5_BT_AUDIO_ALLOC_TIMEOUT_MS);
-        printf("hidp_usb_output forwarded=%lu coalesced=%lu failed=%lu last_err=%d pending=%u min_interval_ms=%u\r\n",
-               (unsigned long)hidp_usb_output_reports_forwarded,
-               (unsigned long)hidp_usb_output_reports_coalesced,
-               (unsigned long)hidp_usb_output_reports_failed,
-               hidp_usb_output_last_error,
-               hidp_usb_output_pending ? 1U : 0U,
-               (unsigned int)CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS);
+        {
+            m61_bt_tx_metrics_t tx_metrics;
+            uintptr_t flags = bflb_irq_save();
+
+            m61_bt_tx_scheduler_get_metrics(&hidp_tx_scheduler, &tx_metrics);
+            bflb_irq_restore(flags);
+            printf("hidp_usb_output forwarded=%lu coalesced=%lu failed=%lu last_err=%d pending=%lu min_interval_ms=%u\r\n",
+                   (unsigned long)hidp_usb_output_reports_forwarded,
+                   (unsigned long)hidp_usb_output_reports_coalesced,
+                   (unsigned long)hidp_usb_output_reports_failed,
+                   hidp_usb_output_last_error,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].pending,
+                   (unsigned int)CONFIG_M61_DS5_USB_OUTPUT_MIN_INTERVAL_MS);
+            printf("hidp_tx rt=%lu/%lu pending=%lu replaced=%lu stale=%lu retry=%lu drop=%lu reject=%lu state31=%lu/%lu pending=%lu replaced=%lu retry=%lu drop=%lu reject=%lu state32=%lu/%lu pending=%lu replaced=%lu retry=%lu drop=%lu reject=%lu\r\n",
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].transmitted,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].accepted,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].pending,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].replaced,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].stale,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].retried,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].dropped,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_REALTIME].rejected,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].transmitted,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].accepted,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].pending,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].replaced,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].retried,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].dropped,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE31].rejected,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE32].transmitted,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE32].accepted,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE32].pending,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE32].replaced,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE32].retried,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE32].dropped,
+                   (unsigned long)tx_metrics.classes[M61_BT_TX_CLASS_STATE32].rejected);
+            printf("hidp_tx scheduler_bytes=%u selection_bytes=%u bridge_stack_hwm=%lu\r\n",
+                   (unsigned int)sizeof(hidp_tx_scheduler),
+                   (unsigned int)sizeof(m61_bt_tx_selection_t),
+                   bridge_task_handle
+                       ? (unsigned long)uxTaskGetStackHighWaterMark(
+                             bridge_task_handle)
+                       : 0UL);
+        }
         if (have_last_dualsense_addr) {
             print_addr("last DualSense ", &last_dualsense_addr);
         }
@@ -2949,6 +3059,8 @@ int main(void)
     printf("PHY RF init success\r\n");
 
     dualsense_output_init(&output_ctx);
+    m61_bt_tx_scheduler_init(&hidp_tx_scheduler,
+                             m61_usb_gamepad_audio_generation());
     hidp_channel_prepare(&hid_control);
     hidp_channel_prepare(&hid_interrupt);
 
@@ -2969,7 +3081,7 @@ int main(void)
                 1536,
                 NULL,
                 configMAX_PRIORITIES - 5,
-                NULL);
+                &bridge_task_handle);
     xTaskCreate(status_led_task,
                 "m61_led",
                 512,
