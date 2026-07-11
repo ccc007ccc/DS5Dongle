@@ -357,6 +357,78 @@ bool dualsense_output_make_report36_audio(dualsense_output_context_t *ctx,
     return true;
 }
 
+bool dualsense_output_make_audio_rt(dualsense_output_context_t *ctx,
+                                    const uint8_t *haptics0,
+                                    const uint8_t *haptics1,
+                                    const uint8_t *speaker_opus0,
+                                    const uint8_t *speaker_opus1,
+                                    size_t speaker_opus_len,
+                                    uint8_t speaker_block_id,
+                                    bool mic_active,
+                                    uint8_t audio_buffer_len,
+                                    uint8_t *report,
+                                    size_t report_len)
+{
+    bool have_haptics = haptics0 != NULL || haptics1 != NULL;
+    bool have_speaker = speaker_opus0 != NULL || speaker_opus1 != NULL;
+    size_t copy_len = speaker_opus_len;
+
+    if (ctx == NULL || report == NULL ||
+        report_len < DS5_OUTPUT_AUDIO_RT_BT_LEN ||
+        (!have_haptics && !have_speaker)) {
+        return false;
+    }
+    if (audio_buffer_len == 0) {
+        audio_buffer_len = 48;
+    }
+    if (copy_len > DS5_OUTPUT_SPEAKER_OPUS_LEN) {
+        copy_len = DS5_OUTPUT_SPEAKER_OPUS_LEN;
+    }
+
+    memset(report, 0, DS5_OUTPUT_AUDIO_RT_BT_LEN);
+    report[0] = DS5_OUTPUT_AUDIO_RT_BT_ID;
+    report[1] = (uint8_t)((ctx->sequence++ & 0x0F) << 4);
+    report[2] = DS5_OUTPUT_AUDIO_TAG;
+    report[3] = 6;
+    report[4] = mic_active ? 0x7F : 0x7E;
+    report[5] = audio_buffer_len;
+    report[6] = audio_buffer_len;
+    report[7] = audio_buffer_len;
+    report[8] = audio_buffer_len;
+    ctx->audio_packet_counter = (uint8_t)(ctx->audio_packet_counter + 2U);
+    report[9] = ctx->audio_packet_counter;
+
+    report[10] = 0xD2;
+    report[11] = DS5_OUTPUT_HAPTICS_BLOCK_LEN;
+    if (haptics0 != NULL) {
+        memcpy(report + 12, haptics0, DS5_OUTPUT_HAPTICS_BLOCK_LEN);
+    }
+    if (haptics1 != NULL) {
+        memcpy(report + 12 + DS5_OUTPUT_HAPTICS_BLOCK_LEN,
+               haptics1,
+               DS5_OUTPUT_HAPTICS_BLOCK_LEN);
+    }
+
+    if (have_speaker) {
+        if (speaker_block_id == 0) {
+            speaker_block_id = DS5_OUTPUT_SPEAKER_BLOCK_ID;
+        }
+        report[140] = (uint8_t)(speaker_block_id | 0xC0);
+        report[141] = DS5_OUTPUT_SPEAKER_OPUS_LEN;
+        if (speaker_opus0 != NULL) {
+            memcpy(report + 142, speaker_opus0, copy_len);
+        }
+        if (speaker_opus1 != NULL) {
+            memcpy(report + 142 + DS5_OUTPUT_SPEAKER_OPUS_LEN,
+                   speaker_opus1,
+                   copy_len);
+        }
+    }
+
+    fill_crc(report, DS5_OUTPUT_AUDIO_RT_BT_LEN);
+    return true;
+}
+
 bool dualsense_output_make_report32_audio_status(dualsense_output_context_t *ctx,
                                                  bool mic_active,
                                                  uint8_t audio_buffer_len,

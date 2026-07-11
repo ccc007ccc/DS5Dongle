@@ -4,12 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def wsl_path(path: Path) -> str:
+    resolved = path.resolve()
+    drive, tail = os.path.splitdrive(str(resolved))
+    if not drive:
+        return str(resolved).replace("\\", "/")
+    return f"/mnt/{drive[0].lower()}{tail.replace(chr(92), '/')}"
 
 
 def run_step(name: str, cmd: list[str]) -> int:
@@ -61,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         ("M61 USB Windows checker self-test", [sys.executable, "tools/check_m61_usb_windows.py", "--self-test"]),
         ("M61 USB hardware validator self-test", [sys.executable, "tools/validate_m61_usb_hardware.py", "--self-test"]),
         ("DS5 Windows desktop tester smoke", [sys.executable, "tools/ds5_windows_test_app.py", "--smoke-test"]),
+        ("M61 realtime memory gate self-test", [sys.executable, "tools/test_m61_realtime_memory.py"]),
     ]
 
     if not args.skip_pycompile:
@@ -76,14 +86,25 @@ def main(argv: list[str] | None = None) -> int:
         ])
 
     if args.include_m61_build:
+        m61_bridge_build = wsl_path(ROOT / "m61" / "esp32_prog_bridge" / "build.sh")
+        m61_hidp_build = wsl_path(ROOT / "m61" / "dualsense_hidp_probe" / "build.sh")
         steps.extend([
             (
                 "M61 ESP32 bridge build",
-                ["wsl", "bash", "/mnt/c/code/MCU/DS5Dongle/m61/esp32_prog_bridge/build.sh"],
+                ["wsl", "bash", m61_bridge_build],
             ),
             (
                 "M61 DualSense HIDP probe build",
-                ["wsl", "bash", "/mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh"],
+                ["wsl", "bash", m61_hidp_build],
+            ),
+            (
+                "M61 DualSense HIDP RAM gate",
+                [
+                    sys.executable,
+                    "tools/check_m61_realtime_memory.py",
+                    "m61/dualsense_hidp_probe/build/build_out/"
+                    "m61_dualsense_hidp_probe_bl616.elf",
+                ],
             ),
         ])
 

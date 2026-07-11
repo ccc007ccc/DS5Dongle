@@ -61,6 +61,8 @@ def main() -> int:
         "tools/validate_m61_hidp_hardware.py",
         "tools/validate_m61_usb_hardware.py",
         "tools/test_m61_hidp_log_checker.py",
+        "tools/check_m61_realtime_memory.py",
+        "tools/test_m61_realtime_memory.py",
         "tools/run_offline_checks.py",
     ]
     for path in required_files:

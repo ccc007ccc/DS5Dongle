@@ -1,4 +1,5 @@
 #include "m61_usb_gamepad.h"
+#include "m61_audio_epoch.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -54,6 +55,7 @@
 #define AUDIO_SPEAKER_CHANNELS 2
 #define AUDIO_SPEAKER_FRAME_SAMPLES 480
 #define AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM 480
+#define AUDIO_SPEAKER_OPUS_CHANNELS 1
 #define AUDIO_SPEAKER_FRAME_BYTES (AUDIO_SPEAKER_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS * AUDIO_BYTES_PER_SAMPLE)
 #define AUDIO_SPEAKER_QUEUE_DEPTH 2
 #define AUDIO_SPEAKER_OPUS_QUEUE_DEPTH 2
@@ -69,13 +71,13 @@
 #define CONFIG_M61_DS5_MIC_DEFAULT_ENABLED 1
 #endif
 #define AUDIO_CODEC_TASK_STACK_WORDS 8192
-#define AUDIO_CODEC_TASK_PRIORITY (configMAX_PRIORITIES - 6)
+#define AUDIO_CODEC_TASK_PRIORITY (configMAX_PRIORITIES - 4)
 #define AUDIO_OPUS_ENCODER_STATE_MAX 49152U
 #define AUDIO_OPUS_DECODER_STATE_MAX 24576U
 #define AUDIO_CODEC_DIAG_PERIOD_MS 1000U
 #define AUDIO_CODEC_ERR_STATE_TOO_SMALL -1001
 #define HAPTICS_DOWNSAMPLE_FACTOR 16
-#define HAPTICS_RESAMPLE_MODE_WDL_EQUIV 2
+#define HAPTICS_RESAMPLE_MODE_BOX_FILTER 3
 #ifndef HAPTICS_GAIN_Q8
 #define HAPTICS_GAIN_Q8 256
 #endif
@@ -367,12 +369,14 @@ static const uint8_t ds5_idle_payload[M61_DS5_USB_INPUT_PAYLOAD_LEN] = {
 static volatile bool usb_ready;
 static volatile bool usb_configured;
 static volatile bool usb_busy;
+static volatile bool usb_input_pending;
 static volatile bool usb_suspended;
 static volatile bool usb_out_armed;
 static volatile bool audio_out_open;
 static volatile bool audio_in_open;
 static volatile bool audio_in_busy;
 static volatile bool audio_codec_task_started;
+static volatile uint32_t audio_generation = 1;
 static volatile bool pending_feature_request_valid;
 static volatile bool pending_host_report_valid;
 static volatile bool usb_initialized;
@@ -444,9 +448,48 @@ static uintptr_t usb_lock(void)
     return bflb_irq_save();
 }
 
+static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src);
+
 static void usb_unlock(uintptr_t flags)
 {
     bflb_irq_restore(flags);
+}
+
+static void reset_audio_epochs(void)
+{
+    audio_generation++;
+    m61_audio_epoch_reset(audio_generation);
+}
+
+static void usb_input_pump(void)
+{
+    uintptr_t flags;
+    int ret;
+
+    flags = usb_lock();
+    if (!usb_input_pending || !usb_ready || !usb_configured || usb_busy ||
+        usb_suspended || !usb_device_is_configured(0)) {
+        usb_unlock(flags);
+        return;
+    }
+    usb_in_buffer[0] = M61_DS5_USB_INPUT_REPORT_ID;
+    memcpy(usb_in_buffer + 1, last_input_payload,
+           M61_DS5_USB_INPUT_PAYLOAD_LEN);
+    usb_input_pending = false;
+    usb_busy = true;
+    usb_unlock(flags);
+
+    ret = usbd_ep_start_write(0, HID_IN_EP, usb_in_buffer,
+                              M61_DS5_USB_INPUT_PAYLOAD_LEN + 1U);
+    flags = usb_lock();
+    if (ret == 0) {
+        usb_sent_count++;
+    } else {
+        usb_busy = false;
+        usb_input_pending = true;
+        usb_drop_count++;
+    }
+    usb_unlock(flags);
 }
 
 static int16_t read_i16_le(const uint8_t *data)
@@ -592,7 +635,7 @@ static void reset_haptics_accumulator(void)
     haptics_accum_nonzero = false;
 }
 
-static void flush_haptics_queue(void)
+static void __attribute__((unused)) flush_haptics_queue(void)
 {
     uintptr_t flags;
 
@@ -630,7 +673,7 @@ static void queue_haptics_block(const uint8_t *block, bool nonzero, uint8_t peak
     usb_unlock(flags);
 }
 
-static void flush_speaker_queues(void)
+static void __attribute__((unused)) flush_speaker_queues(void)
 {
     uintptr_t flags = usb_lock();
 
@@ -681,7 +724,7 @@ static void queue_speaker_frame(const int16_t *samples)
     usb_unlock(flags);
 }
 
-static bool take_speaker_frame(int16_t *samples)
+static bool __attribute__((unused)) take_speaker_frame(int16_t *samples)
 {
     bool valid;
     uintptr_t flags;
@@ -703,7 +746,7 @@ static bool take_speaker_frame(int16_t *samples)
     return valid;
 }
 
-static void queue_speaker_opus(const uint8_t *data, size_t len)
+static void __attribute__((unused)) queue_speaker_opus(const uint8_t *data, size_t len)
 {
     uintptr_t flags;
 
@@ -828,7 +871,7 @@ static void fill_audio_in_buffer(void)
     usb_unlock(flags);
 }
 
-static void process_audio_speaker(const uint8_t *data, uint32_t nbytes)
+static void __attribute__((unused)) process_audio_speaker(const uint8_t *data, uint32_t nbytes)
 {
     static int16_t resampled[AUDIO_SPEAKER_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS];
     uint32_t frames;
@@ -862,7 +905,7 @@ static void process_audio_speaker(const uint8_t *data, uint32_t nbytes)
     }
 }
 
-static void process_audio_haptics(const uint8_t *data, uint32_t nbytes)
+static void __attribute__((unused)) process_audio_haptics(const uint8_t *data, uint32_t nbytes)
 {
     uint32_t frames;
     bool speaker_packet;
@@ -956,7 +999,9 @@ static void audio_codec_task(void *pvParameters)
 {
     OpusEncoder *encoder = NULL;
     OpusDecoder *decoder = NULL;
-    static int16_t speaker_frame[AUDIO_SPEAKER_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS];
+    static m61_audio_epoch_encode_job_t speaker_job;
+    static int16_t speaker_frame[AUDIO_SPEAKER_FRAME_SAMPLES *
+                                 AUDIO_SPEAKER_OPUS_CHANNELS];
     static uint8_t speaker_opus[M61_DS5_SPEAKER_OPUS_LEN];
     static uint8_t mic_opus[M61_DS5_MIC_OPUS_LEN];
     static int16_t mic_pcm[AUDIO_MIC_FRAME_SAMPLES * AUDIO_MIC_CHANNELS];
@@ -970,7 +1015,7 @@ static void audio_codec_task(void *pvParameters)
     update_audio_codec_runtime_diag();
     next_diag_tick = xTaskGetTickCount() + pdMS_TO_TICKS(AUDIO_CODEC_DIAG_PERIOD_MS);
 
-    int encoder_size = opus_encoder_get_size(AUDIO_SPEAKER_CHANNELS);
+    int encoder_size = opus_encoder_get_size(AUDIO_SPEAKER_OPUS_CHANNELS);
     usb_diag.audio_codec_encoder_size = (uint32_t)encoder_size;
     if (encoder_size <= 0 || (uint32_t)encoder_size > AUDIO_OPUS_ENCODER_STATE_MAX) {
         usb_diag.audio_codec_encoder_error = AUDIO_CODEC_ERR_STATE_TOO_SMALL;
@@ -983,7 +1028,7 @@ static void audio_codec_task(void *pvParameters)
         encoder = (OpusEncoder *)audio_opus_encoder_state;
         opus_error = opus_encoder_init(encoder,
                                        AUDIO_SAMPLE_RATE,
-                                       AUDIO_SPEAKER_CHANNELS,
+                                       AUDIO_SPEAKER_OPUS_CHANNELS,
                                        OPUS_APPLICATION_RESTRICTED_LOWDELAY);
         usb_diag.audio_codec_encoder_error = opus_error;
         if (opus_error != OPUS_OK) {
@@ -1032,16 +1077,27 @@ static void audio_codec_task(void *pvParameters)
         uint8_t speaker_budget = audio_out_open ? 2U : 1U;
         TickType_t now;
 
-        while (speaker_budget > 0 && encoder && take_speaker_frame(speaker_frame)) {
+        while (speaker_budget > 0 && encoder &&
+               m61_audio_epoch_take_encode_job(&speaker_job)) {
             uint64_t encode_start_us;
             uint64_t encode_elapsed_us;
             usb_diag.audio_codec_stage = 3;
+            resample_epoch_speaker_mono(speaker_frame,
+                                        speaker_job.speaker_pcm);
             encode_start_us = bflb_mtimer_get_time_us();
             int encoded = opus_encode(encoder,
                                       speaker_frame,
                                       AUDIO_SPEAKER_FRAME_SAMPLES,
                                       speaker_opus,
                                       sizeof(speaker_opus));
+            if (encoded > 0 && encoded < M61_DS5_SPEAKER_OPUS_LEN) {
+                int pad_error = opus_packet_pad(speaker_opus,
+                                                encoded,
+                                                M61_DS5_SPEAKER_OPUS_LEN);
+                encoded = pad_error == OPUS_OK
+                              ? M61_DS5_SPEAKER_OPUS_LEN
+                              : pad_error;
+            }
             encode_elapsed_us = bflb_mtimer_get_time_us() - encode_start_us;
             if (encode_elapsed_us > UINT32_MAX) {
                 encode_elapsed_us = UINT32_MAX;
@@ -1051,8 +1107,19 @@ static void audio_codec_task(void *pvParameters)
             pause_mic_until_tick =
                 xTaskGetTickCount() + pdMS_TO_TICKS(AUDIO_MIC_PAUSE_AFTER_SPEAKER_MS);
             if (encoded > 0) {
-                queue_speaker_opus(speaker_opus, (size_t)encoded);
+                if (m61_audio_epoch_complete_encode(speaker_job.generation,
+                                                    speaker_job.epoch,
+                                                    speaker_opus,
+                                                    (size_t)encoded)) {
+                    uintptr_t flags = usb_lock();
+                    usb_diag.audio_speaker_encoded++;
+                    usb_unlock(flags);
+                }
             } else {
+                (void)m61_audio_epoch_complete_encode(speaker_job.generation,
+                                                      speaker_job.epoch,
+                                                      NULL,
+                                                      0);
                 uintptr_t flags = usb_lock();
                 usb_diag.audio_speaker_encode_errors++;
                 usb_unlock(flags);
@@ -1060,11 +1127,14 @@ static void audio_codec_task(void *pvParameters)
             speaker_budget--;
         }
 
+        m61_audio_epoch_stats_t epoch_stats;
+        m61_audio_epoch_get_stats(&epoch_stats);
         now = xTaskGetTickCount();
         bool speaker_recent =
             audio_out_open &&
-            (speaker_frame_queue_count > 0 ||
-             speaker_opus_queue_count > 0 ||
+            (epoch_stats.encode_ready_slots > 0 ||
+             epoch_stats.encoding_slots > 0 ||
+             epoch_stats.complete_slots > 0 ||
              (int32_t)(now - pause_mic_until_tick) < 0);
         if (decoder &&
             !speaker_recent &&
@@ -1096,7 +1166,8 @@ static void audio_codec_task(void *pvParameters)
             next_diag_tick = now + pdMS_TO_TICKS(AUDIO_CODEC_DIAG_PERIOD_MS);
         }
 
-        speaker_backlog = (speaker_frame_queue_count > 0);
+        m61_audio_epoch_get_stats(&epoch_stats);
+        speaker_backlog = epoch_stats.encode_ready_slots > 0;
         if (!did_work || !speaker_backlog || speaker_catchup_loops >= 4U) {
             speaker_catchup_loops = 0;
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -1302,14 +1373,14 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             usb_ready = false;
             usb_configured = false;
             usb_busy = false;
+            usb_input_pending = false;
             usb_suspended = false;
             usb_out_armed = false;
             audio_out_open = false;
             audio_in_open = false;
             audio_in_busy = false;
-            flush_haptics_queue();
-            flush_speaker_queues();
             flush_mic_queues();
+            reset_audio_epochs();
             break;
         case USBD_EVENT_CONFIGURED:
             usb_ready = true;
@@ -1342,7 +1413,10 @@ static void usbd_hid_in_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
     (void)busid;
     (void)ep;
     (void)nbytes;
+    uintptr_t flags = usb_lock();
     usb_busy = false;
+    usb_unlock(flags);
+    usb_input_pump();
 }
 
 static void usbd_hid_out_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
@@ -1364,8 +1438,12 @@ static void usbd_audio_out_ep_callback(uint8_t busid, uint8_t ep, uint32_t nbyte
     if (nbytes) {
         usb_diag.audio_out_packets++;
         usb_diag.audio_out_bytes += nbytes;
-        process_audio_speaker(audio_out_buffer, nbytes);
-        process_audio_haptics(audio_out_buffer, nbytes);
+        m61_audio_epoch_ingest_usb(audio_out_buffer,
+                                   nbytes,
+                                   audio_generation,
+                                   bflb_mtimer_get_time_us(),
+                                   audio_out_open && !audio_speaker_mute,
+                                   HAPTICS_GAIN_Q8);
     }
     arm_audio_out(busid);
 }
@@ -1494,9 +1572,8 @@ void m61_usb_gamepad_init(void)
     m61_usb_clock_recover();
     memcpy(last_input_payload, ds5_idle_payload, sizeof(last_input_payload));
     memset(audio_in_buffer, 0, sizeof(audio_in_buffer));
-    flush_haptics_queue();
-    flush_speaker_queues();
     flush_mic_queues();
+    m61_audio_epoch_init(audio_generation);
     ensure_audio_codec_task();
     register_usb_dualsense_device();
     usb_init_result = usbd_initialize(0, 0, usbd_event_handler);
@@ -1531,7 +1608,7 @@ int m61_usb_gamepad_reinit(void)
 void m61_usb_gamepad_send_report01(const uint8_t *payload, size_t len)
 {
     size_t copy_len;
-    int ret;
+    uintptr_t flags;
 
     if (!payload || len == 0) {
         return;
@@ -1542,25 +1619,45 @@ void m61_usb_gamepad_send_report01(const uint8_t *payload, size_t len)
         copy_len = M61_DS5_USB_INPUT_PAYLOAD_LEN;
     }
 
+    flags = usb_lock();
     memcpy(last_input_payload, payload, copy_len);
     if (copy_len < M61_DS5_USB_INPUT_PAYLOAD_LEN) {
         memset(last_input_payload + copy_len, 0, M61_DS5_USB_INPUT_PAYLOAD_LEN - copy_len);
     }
+    usb_input_pending = true;
+    usb_unlock(flags);
+    usb_input_pump();
+}
 
-    if (!usb_ready || !usb_configured || usb_busy || usb_suspended || !usb_device_is_configured(0)) {
-        usb_drop_count++;
-        return;
-    }
+static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src)
+{
+    for (uint32_t out_frame = 0; out_frame < AUDIO_SPEAKER_FRAME_SAMPLES;
+         out_frame++) {
+        uint32_t src_pos_num = out_frame * M61_AUDIO_EPOCH_USB_FRAMES;
+        uint32_t src_frame = src_pos_num / AUDIO_SPEAKER_FRAME_SAMPLES;
+        uint32_t frac = src_pos_num -
+                        src_frame * AUDIO_SPEAKER_FRAME_SAMPLES;
+        uint32_t next_frame = src_frame + 1U;
+        int32_t a;
+        int32_t b;
+        int32_t delta;
 
-    usb_in_buffer[0] = M61_DS5_USB_INPUT_REPORT_ID;
-    memcpy(usb_in_buffer + 1, last_input_payload, M61_DS5_USB_INPUT_PAYLOAD_LEN);
-    usb_busy = true;
-    ret = usbd_ep_start_write(0, HID_IN_EP, usb_in_buffer, M61_DS5_USB_INPUT_PAYLOAD_LEN + 1);
-    if (ret == 0) {
-        usb_sent_count++;
-    } else {
-        usb_busy = false;
-        usb_drop_count++;
+        if (next_frame >= M61_AUDIO_EPOCH_USB_FRAMES) {
+            next_frame = src_frame;
+            frac = 0;
+        }
+        a = ((int32_t)src[src_frame * 2U] +
+             (int32_t)src[src_frame * 2U + 1U]) / 2;
+        b = ((int32_t)src[next_frame * 2U] +
+             (int32_t)src[next_frame * 2U + 1U]) / 2;
+        delta = (b - a) * (int32_t)frac;
+        if (delta >= 0) {
+            delta += AUDIO_SPEAKER_FRAME_SAMPLES / 2;
+        } else {
+            delta -= AUDIO_SPEAKER_FRAME_SAMPLES / 2;
+        }
+        dst[out_frame] = clamp_i16(
+            a + delta / AUDIO_SPEAKER_FRAME_SAMPLES);
     }
 }
 
@@ -1649,48 +1746,6 @@ bool m61_usb_gamepad_take_host_report(m61_usb_gamepad_host_report_t *report)
     return valid;
 }
 
-bool m61_usb_gamepad_take_haptics_block(uint8_t *data, size_t len)
-{
-    bool valid;
-    uintptr_t flags;
-
-    if (!data || len < M61_DS5_HAPTICS_BLOCK_LEN) {
-        return false;
-    }
-
-    flags = usb_lock();
-    valid = haptics_queue_count > 0;
-    if (valid) {
-        memcpy(data, haptics_queue[haptics_queue_tail], M61_DS5_HAPTICS_BLOCK_LEN);
-        haptics_queue_tail = (uint8_t)((haptics_queue_tail + 1U) % HAPTICS_QUEUE_DEPTH);
-        haptics_queue_count--;
-    }
-    usb_unlock(flags);
-    return valid;
-}
-
-bool m61_usb_gamepad_take_speaker_opus(uint8_t *data, size_t len)
-{
-    bool valid;
-    uintptr_t flags;
-
-    if (!data || len < M61_DS5_SPEAKER_OPUS_LEN) {
-        return false;
-    }
-
-    flags = usb_lock();
-    valid = speaker_opus_queue_count > 0;
-    if (valid) {
-        memcpy(data,
-               speaker_opus_queue[speaker_opus_queue_tail],
-               M61_DS5_SPEAKER_OPUS_LEN);
-        speaker_opus_queue_tail = (uint8_t)((speaker_opus_queue_tail + 1U) % AUDIO_SPEAKER_OPUS_QUEUE_DEPTH);
-        speaker_opus_queue_count--;
-    }
-    usb_unlock(flags);
-    return valid;
-}
-
 void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
 {
     uintptr_t flags;
@@ -1734,6 +1789,16 @@ bool m61_usb_gamepad_audio_in_active(void)
 bool m61_usb_gamepad_audio_speaker_active(void)
 {
     return audio_out_open && !audio_speaker_mute;
+}
+
+uint32_t m61_usb_gamepad_audio_generation(void)
+{
+    return audio_generation;
+}
+
+void m61_usb_gamepad_realtime_task(void)
+{
+    usb_input_pump();
 }
 
 bool m61_usb_gamepad_ready(void)
@@ -1781,9 +1846,12 @@ uint32_t m61_usb_gamepad_event_count(uint8_t event)
 
 void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
 {
+    m61_audio_epoch_stats_t epoch_stats;
+
     if (!diag) {
         return;
     }
+    m61_audio_epoch_get_stats(&epoch_stats);
 
     diag->device_desc = usb_diag.device_desc;
     diag->config_desc = usb_diag.config_desc;
@@ -1807,15 +1875,15 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_out_bytes = usb_diag.audio_out_bytes;
     diag->audio_in_packets = usb_diag.audio_in_packets;
     diag->audio_in_bytes = usb_diag.audio_in_bytes;
-    diag->audio_haptic_blocks = usb_diag.audio_haptic_blocks;
-    diag->audio_haptic_sample_pairs = usb_diag.audio_haptic_sample_pairs;
-    diag->audio_haptic_nonzero_blocks = usb_diag.audio_haptic_nonzero_blocks;
-    diag->audio_haptic_queue_dropped = usb_diag.audio_haptic_queue_dropped;
-    diag->audio_speaker_frames = usb_diag.audio_speaker_frames;
+    diag->audio_haptic_blocks = epoch_stats.epochs_completed;
+    diag->audio_haptic_sample_pairs = epoch_stats.haptics_sample_pairs;
+    diag->audio_haptic_nonzero_blocks = epoch_stats.haptics_nonzero_epochs;
+    diag->audio_haptic_queue_dropped = epoch_stats.epochs_dropped;
+    diag->audio_speaker_frames = epoch_stats.epochs_started;
     diag->audio_speaker_encoded = usb_diag.audio_speaker_encoded;
     diag->audio_speaker_encode_errors = usb_diag.audio_speaker_encode_errors;
-    diag->audio_speaker_queue_dropped = usb_diag.audio_speaker_queue_dropped;
-    diag->audio_speaker_opus_dropped = usb_diag.audio_speaker_opus_dropped;
+    diag->audio_speaker_queue_dropped = epoch_stats.epochs_dropped;
+    diag->audio_speaker_opus_dropped = epoch_stats.encode_failures;
     diag->audio_speaker_encode_us_total = usb_diag.audio_speaker_encode_us_total;
     diag->audio_speaker_encode_us_last = usb_diag.audio_speaker_encode_us_last;
     diag->audio_speaker_encode_us_max = usb_diag.audio_speaker_encode_us_max;
@@ -1863,9 +1931,9 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_last_close_intf = usb_diag.audio_last_close_intf;
     diag->audio_out_open = audio_out_open ? 1 : 0;
     diag->audio_in_open = audio_in_open ? 1 : 0;
-    diag->audio_haptic_queue_depth = haptics_queue_count;
-    diag->audio_speaker_queue_depth = speaker_frame_queue_count;
-    diag->audio_speaker_opus_queue_depth = speaker_opus_queue_count;
+    diag->audio_haptic_queue_depth = epoch_stats.complete_slots;
+    diag->audio_speaker_queue_depth = epoch_stats.encode_ready_slots;
+    diag->audio_speaker_opus_queue_depth = epoch_stats.complete_slots;
     diag->audio_mic_opus_queue_depth = mic_opus_queue_count;
     diag->audio_mic_ring_bytes = mic_pcm_ring_count;
     diag->audio_codec_started = usb_diag.audio_codec_started;
@@ -1875,9 +1943,9 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_speaker_opus_force_mono = usb_diag.audio_speaker_opus_force_mono;
     diag->audio_speaker_opus_bandwidth = usb_diag.audio_speaker_opus_bandwidth;
     diag->audio_speaker_opus_bitrate = usb_diag.audio_speaker_opus_bitrate;
-    diag->audio_haptic_last_peak = usb_diag.audio_haptic_last_peak;
+    diag->audio_haptic_last_peak = epoch_stats.haptics_last_peak;
     diag->audio_haptic_downsample = HAPTICS_DOWNSAMPLE_FACTOR;
-    diag->audio_haptic_resample_mode = HAPTICS_RESAMPLE_MODE_WDL_EQUIV;
+    diag->audio_haptic_resample_mode = HAPTICS_RESAMPLE_MODE_BOX_FILTER;
     diag->audio_haptic_gain_q8 = HAPTICS_GAIN_Q8;
     diag->audio_speaker_mute = audio_speaker_mute ? 1 : 0;
     diag->audio_mic_mute = audio_mic_mute ? 1 : 0;
@@ -2002,8 +2070,7 @@ void usbd_audio_open(uint8_t busid, uint8_t intf)
 
     if (intf == ITF_NUM_AUDIO_STREAMING_OUT) {
         audio_out_open = true;
-        flush_haptics_queue();
-        flush_speaker_queues();
+        reset_audio_epochs();
         arm_audio_out(busid);
     } else if (intf == ITF_NUM_AUDIO_STREAMING_IN) {
         audio_in_open = true;
@@ -2022,8 +2089,7 @@ void usbd_audio_close(uint8_t busid, uint8_t intf)
 
     if (intf == ITF_NUM_AUDIO_STREAMING_OUT) {
         audio_out_open = false;
-        flush_haptics_queue();
-        flush_speaker_queues();
+        reset_audio_epochs();
     } else if (intf == ITF_NUM_AUDIO_STREAMING_IN) {
         audio_in_open = false;
         audio_in_busy = false;
@@ -2067,7 +2133,7 @@ void usbd_audio_set_mute(uint8_t busid, uint8_t ep, uint8_t ch, bool mute)
     if (ep == AUDIO_OUT_EP) {
         audio_speaker_mute = mute;
         if (mute) {
-            flush_speaker_queues();
+            reset_audio_epochs();
         }
     } else if (ep == AUDIO_IN_EP) {
         audio_mic_mute = mute;
@@ -2159,6 +2225,8 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
 bool m61_usb_gamepad_audio_mic_enabled(void) { return false; }
 bool m61_usb_gamepad_audio_in_active(void) { return false; }
 bool m61_usb_gamepad_audio_speaker_active(void) { return false; }
+uint32_t m61_usb_gamepad_audio_generation(void) { return 0; }
+void m61_usb_gamepad_realtime_task(void) {}
 bool m61_usb_gamepad_ready(void) { return false; }
 bool m61_usb_gamepad_configured(void) { return false; }
 bool m61_usb_gamepad_busy(void) { return false; }

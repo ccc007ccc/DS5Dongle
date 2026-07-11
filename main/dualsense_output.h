@@ -14,6 +14,9 @@ extern "C" {
 #define DS5_OUTPUT_REPORT32_BT_LEN 142
 #define DS5_OUTPUT_REPORT36_BT_ID 0x36
 #define DS5_OUTPUT_REPORT36_BT_LEN 398
+#define DS5_OUTPUT_AUDIO_RT_BT_ID 0x39
+#define DS5_OUTPUT_AUDIO_RT_BT_LEN 547
+#define DS5_OUTPUT_BT_MAX_LEN DS5_OUTPUT_AUDIO_RT_BT_LEN
 #define DS5_OUTPUT_SET_STATE_LEN 63
 #define DS5_USB_SET_STATE_LEN 47
 #define DS5_OUTPUT_HAPTICS_BLOCK_LEN 64
@@ -55,6 +58,17 @@ bool dualsense_output_make_report36_audio(dualsense_output_context_t *ctx,
                                           uint8_t audio_buffer_len,
                                           uint8_t *report,
                                           size_t report_len);
+bool dualsense_output_make_audio_rt(dualsense_output_context_t *ctx,
+                                    const uint8_t *haptics0,
+                                    const uint8_t *haptics1,
+                                    const uint8_t *speaker_opus0,
+                                    const uint8_t *speaker_opus1,
+                                    size_t speaker_opus_len,
+                                    uint8_t speaker_block_id,
+                                    bool mic_active,
+                                    uint8_t audio_buffer_len,
+                                    uint8_t *report,
+                                    size_t report_len);
 bool dualsense_output_make_report32_audio_status(dualsense_output_context_t *ctx,
                                                  bool mic_active,
                                                  uint8_t audio_buffer_len,
