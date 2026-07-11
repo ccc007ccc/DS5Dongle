@@ -69,6 +69,8 @@ typedef struct {
     uint32_t audio_close;
     uint32_t audio_out_packets;
     uint32_t audio_out_bytes;
+    uint32_t audio_ingress_dropped;
+    uint32_t audio_ingress_gaps;
     uint32_t audio_in_packets;
     uint32_t audio_in_bytes;
     uint32_t audio_haptic_blocks;
@@ -127,6 +129,8 @@ typedef struct {
     uint8_t audio_last_close_intf;
     uint8_t audio_out_open;
     uint8_t audio_in_open;
+    uint8_t audio_ingress_depth;
+    uint8_t audio_ingress_high_water;
     uint8_t audio_haptic_queue_depth;
     uint8_t audio_speaker_queue_depth;
     uint8_t audio_speaker_opus_queue_depth;

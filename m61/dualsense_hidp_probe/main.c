@@ -2481,7 +2481,7 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED],
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 1],
                (unsigned int)output_ctx.set_state[DS5_STATE_LED_RED + 2]);
-        printf("usb_audio open=%lu close=%lu out_open=%u in_open=%u last_open=%u last_close=%u out_pkts=%lu out_bytes=%lu in_pkts=%lu in_bytes=%lu\r\n",
+        printf("usb_audio open=%lu close=%lu out_open=%u in_open=%u last_open=%u last_close=%u out_pkts=%lu out_bytes=%lu ingress=%u/%u ingress_drop=%lu ingress_gap=%lu in_pkts=%lu in_bytes=%lu\r\n",
                (unsigned long)usb_diag.audio_open,
                (unsigned long)usb_diag.audio_close,
                (unsigned int)usb_diag.audio_out_open,
@@ -2490,6 +2490,10 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)usb_diag.audio_last_close_intf,
                (unsigned long)usb_diag.audio_out_packets,
                (unsigned long)usb_diag.audio_out_bytes,
+               (unsigned int)usb_diag.audio_ingress_depth,
+               (unsigned int)usb_diag.audio_ingress_high_water,
+               (unsigned long)usb_diag.audio_ingress_dropped,
+               (unsigned long)usb_diag.audio_ingress_gaps,
                (unsigned long)usb_diag.audio_in_packets,
                (unsigned long)usb_diag.audio_in_bytes);
         printf("usb_haptics queued=%lu sample_pairs=%lu nonzero=%lu qdrop=%lu qdepth=%u peak=%u ds=%u mode=%u gain_q8=%u\r\n",

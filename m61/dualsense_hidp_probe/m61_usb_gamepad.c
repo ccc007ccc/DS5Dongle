@@ -37,6 +37,7 @@
 #define AUDIO_OUT_EP 0x01
 #define AUDIO_IN_EP 0x82
 #define AUDIO_OUT_PACKET_SIZE 392
+#define AUDIO_INGRESS_DEPTH 16
 #define AUDIO_IN_PACKET_SIZE 196
 #define AUDIO_IN_STREAM_PACKET_SIZE 192
 #define AUDIO_SAMPLE_RATE 48000U
@@ -72,6 +73,8 @@
 #endif
 #define AUDIO_CODEC_TASK_STACK_WORDS 8192
 #define AUDIO_CODEC_TASK_PRIORITY (configMAX_PRIORITIES - 4)
+#define AUDIO_INGRESS_TASK_STACK_WORDS 1024
+#define AUDIO_INGRESS_TASK_PRIORITY (configMAX_PRIORITIES - 3)
 #define AUDIO_OPUS_ENCODER_STATE_MAX 49152U
 #define AUDIO_OPUS_DECODER_STATE_MAX 24576U
 #define AUDIO_CODEC_DIAG_PERIOD_MS 1000U
@@ -400,6 +403,27 @@ static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t usb_control_buffer[M61_DS5
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t audio_out_buffer[AUDIO_OUT_PACKET_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t audio_in_buffer[AUDIO_IN_PACKET_SIZE];
 static uint8_t last_input_payload[M61_DS5_USB_INPUT_PAYLOAD_LEN];
+typedef struct {
+    uint64_t captured_us;
+    uint32_t generation;
+    uint32_t sequence;
+    uint16_t len;
+    uint8_t speaker_enabled;
+    uint8_t reserved;
+    uint8_t data[AUDIO_OUT_PACKET_SIZE];
+} audio_ingress_packet_t;
+
+_Static_assert(sizeof(audio_ingress_packet_t) == 416U,
+               "audio ingress packet budget drift");
+
+static audio_ingress_packet_t audio_ingress[AUDIO_INGRESS_DEPTH];
+static volatile uint8_t audio_ingress_head;
+static volatile uint8_t audio_ingress_tail;
+static volatile uint8_t audio_ingress_count;
+static volatile uint8_t audio_ingress_high_water;
+static volatile uint32_t audio_ingress_dropped;
+static volatile uint32_t audio_ingress_sequence;
+static volatile uint32_t audio_ingress_gaps;
 static uint8_t haptics_accum[M61_DS5_HAPTICS_BLOCK_LEN];
 static uint8_t haptics_accum_pos;
 static bool haptics_prev_valid;
@@ -433,9 +457,13 @@ static volatile uint16_t mic_pcm_ring_tail;
 static volatile uint16_t mic_pcm_ring_count;
 static StaticTask_t audio_codec_task_tcb;
 static StackType_t audio_codec_task_stack[AUDIO_CODEC_TASK_STACK_WORDS] __attribute__((aligned(16)));
+static StaticTask_t audio_ingress_task_tcb;
+static StackType_t audio_ingress_task_stack[AUDIO_INGRESS_TASK_STACK_WORDS]
+    __attribute__((aligned(16)));
 static uint32_t audio_opus_encoder_state[(AUDIO_OPUS_ENCODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static TaskHandle_t audio_codec_task_handle;
+static TaskHandle_t audio_ingress_task_handle;
 static m61_usb_gamepad_host_report_t pending_host_report;
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
@@ -457,8 +485,73 @@ static void usb_unlock(uintptr_t flags)
 
 static void reset_audio_epochs(void)
 {
+    uintptr_t flags = usb_lock();
+
     audio_generation++;
+    audio_ingress_head = 0;
+    audio_ingress_tail = 0;
+    audio_ingress_count = 0;
     m61_audio_epoch_reset(audio_generation);
+    usb_unlock(flags);
+}
+
+static void queue_audio_ingress(const uint8_t *data, uint32_t len)
+{
+    audio_ingress_packet_t *packet;
+    uintptr_t flags;
+    uint64_t captured_us;
+    uint32_t sequence;
+
+    if (!data || len == 0) {
+        return;
+    }
+    if (len > AUDIO_OUT_PACKET_SIZE) {
+        len = AUDIO_OUT_PACKET_SIZE;
+    }
+    captured_us = bflb_mtimer_get_time_us();
+    flags = usb_lock();
+    sequence = audio_ingress_sequence++;
+    if (audio_ingress_count >= AUDIO_INGRESS_DEPTH) {
+        audio_ingress_tail =
+            (uint8_t)((audio_ingress_tail + 1U) % AUDIO_INGRESS_DEPTH);
+        audio_ingress_count--;
+        audio_ingress_dropped++;
+    }
+    packet = &audio_ingress[audio_ingress_head];
+    packet->captured_us = captured_us;
+    packet->generation = audio_generation;
+    packet->sequence = sequence;
+    packet->len = (uint16_t)len;
+    packet->speaker_enabled =
+        (audio_out_open && !audio_speaker_mute) ? 1U : 0U;
+    memcpy(packet->data, data, len);
+    audio_ingress_head =
+        (uint8_t)((audio_ingress_head + 1U) % AUDIO_INGRESS_DEPTH);
+    audio_ingress_count++;
+    if (audio_ingress_count > audio_ingress_high_water) {
+        audio_ingress_high_water = audio_ingress_count;
+    }
+    usb_unlock(flags);
+}
+
+static bool take_audio_ingress(audio_ingress_packet_t *packet)
+{
+    uintptr_t flags;
+
+    if (!packet) {
+        return false;
+    }
+    flags = usb_lock();
+    if (audio_ingress_count == 0) {
+        usb_unlock(flags);
+        return false;
+    }
+    *packet = audio_ingress[audio_ingress_tail];
+    audio_ingress_tail =
+        (uint8_t)((audio_ingress_tail + 1U) % AUDIO_INGRESS_DEPTH);
+    audio_ingress_count--;
+    usb_unlock(flags);
+    return true;
 }
 
 static void usb_input_pump(void)
@@ -995,6 +1088,48 @@ static void update_audio_codec_runtime_diag(void)
     }
 }
 
+static void audio_ingress_task(void *pvParameters)
+{
+    audio_ingress_packet_t packet;
+    uint32_t ingress_generation = 0;
+    uint32_t expected_sequence = 0;
+    bool sequence_valid = false;
+
+    (void)pvParameters;
+    while (1) {
+        uint8_t budget = 4;
+        bool did_work = false;
+
+        while (budget > 0 && take_audio_ingress(&packet)) {
+            if (!sequence_valid || packet.generation != ingress_generation) {
+                ingress_generation = packet.generation;
+                expected_sequence = packet.sequence;
+                sequence_valid = true;
+            }
+            if (packet.sequence != expected_sequence) {
+                audio_ingress_gaps++;
+                reset_audio_epochs();
+                sequence_valid = false;
+                break;
+            }
+            expected_sequence = packet.sequence + 1U;
+            m61_audio_epoch_ingest_usb(packet.data,
+                                       packet.len,
+                                       packet.generation,
+                                       packet.captured_us,
+                                       packet.speaker_enabled != 0U,
+                                       HAPTICS_GAIN_Q8);
+            did_work = true;
+            budget--;
+        }
+        if (did_work) {
+            taskYIELD();
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+}
+
 static void audio_codec_task(void *pvParameters)
 {
     OpusEncoder *encoder = NULL;
@@ -1074,7 +1209,7 @@ static void audio_codec_task(void *pvParameters)
     while (1) {
         bool did_work = false;
         bool speaker_backlog;
-        uint8_t speaker_budget = audio_out_open ? 2U : 1U;
+        uint8_t speaker_budget = 1U;
         TickType_t now;
 
         while (speaker_budget > 0 && encoder &&
@@ -1195,6 +1330,23 @@ static void ensure_audio_codec_task(void)
         usb_diag.audio_codec_started = 1;
     } else {
         printf("M61 audio codec task create failed\r\n");
+    }
+}
+
+static void ensure_audio_ingress_task(void)
+{
+    if (audio_ingress_task_handle != NULL) {
+        return;
+    }
+    audio_ingress_task_handle = xTaskCreateStatic(audio_ingress_task,
+                                                  "ds5_audio_in",
+                                                  AUDIO_INGRESS_TASK_STACK_WORDS,
+                                                  NULL,
+                                                  AUDIO_INGRESS_TASK_PRIORITY,
+                                                  audio_ingress_task_stack,
+                                                  &audio_ingress_task_tcb);
+    if (audio_ingress_task_handle == NULL) {
+        printf("M61 audio ingress task create failed\r\n");
     }
 }
 
@@ -1438,12 +1590,7 @@ static void usbd_audio_out_ep_callback(uint8_t busid, uint8_t ep, uint32_t nbyte
     if (nbytes) {
         usb_diag.audio_out_packets++;
         usb_diag.audio_out_bytes += nbytes;
-        m61_audio_epoch_ingest_usb(audio_out_buffer,
-                                   nbytes,
-                                   audio_generation,
-                                   bflb_mtimer_get_time_us(),
-                                   audio_out_open && !audio_speaker_mute,
-                                   HAPTICS_GAIN_Q8);
+        queue_audio_ingress(audio_out_buffer, nbytes);
     }
     arm_audio_out(busid);
 }
@@ -1574,6 +1721,7 @@ void m61_usb_gamepad_init(void)
     memset(audio_in_buffer, 0, sizeof(audio_in_buffer));
     flush_mic_queues();
     m61_audio_epoch_init(audio_generation);
+    ensure_audio_ingress_task();
     ensure_audio_codec_task();
     register_usb_dualsense_device();
     usb_init_result = usbd_initialize(0, 0, usbd_event_handler);
@@ -1873,6 +2021,8 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_close = usb_diag.audio_close;
     diag->audio_out_packets = usb_diag.audio_out_packets;
     diag->audio_out_bytes = usb_diag.audio_out_bytes;
+    diag->audio_ingress_dropped = audio_ingress_dropped;
+    diag->audio_ingress_gaps = audio_ingress_gaps;
     diag->audio_in_packets = usb_diag.audio_in_packets;
     diag->audio_in_bytes = usb_diag.audio_in_bytes;
     diag->audio_haptic_blocks = epoch_stats.epochs_completed;
@@ -1931,6 +2081,8 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_last_close_intf = usb_diag.audio_last_close_intf;
     diag->audio_out_open = audio_out_open ? 1 : 0;
     diag->audio_in_open = audio_in_open ? 1 : 0;
+    diag->audio_ingress_depth = audio_ingress_count;
+    diag->audio_ingress_high_water = audio_ingress_high_water;
     diag->audio_haptic_queue_depth = epoch_stats.complete_slots;
     diag->audio_speaker_queue_depth = epoch_stats.encode_ready_slots;
     diag->audio_speaker_opus_queue_depth = epoch_stats.complete_slots;
