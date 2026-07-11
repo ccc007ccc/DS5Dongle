@@ -65,6 +65,8 @@ typedef struct {
     uint32_t feature_cache_misses;
     uint32_t feature_cache_stores;
     uint32_t host_report_dropped;
+    uint8_t feature_set_queue_depth;
+    uint8_t feature_set_queue_high_water;
     uint32_t audio_open;
     uint32_t audio_close;
     uint32_t audio_out_packets;

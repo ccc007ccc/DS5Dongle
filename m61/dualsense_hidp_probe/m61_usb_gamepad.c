@@ -50,6 +50,7 @@
 #define USB_DUALSENSE_CONFIG_DESC_SIZE 0x00E3
 #define HID_DUALSENSE_REPORT_DESC_SIZE 321
 #define FEATURE_CACHE_SLOTS 12
+#define FEATURE_SET_QUEUE_DEPTH 8
 #define AUDIO_INPUT_CHANNELS 4
 #define AUDIO_BYTES_PER_SAMPLE 2
 #define AUDIO_FRAME_BYTES (AUDIO_INPUT_CHANNELS * AUDIO_BYTES_PER_SAMPLE)
@@ -465,6 +466,12 @@ static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(
 static TaskHandle_t audio_codec_task_handle;
 static TaskHandle_t audio_ingress_task_handle;
 static m61_usb_gamepad_host_report_t pending_host_report;
+static m61_usb_gamepad_host_report_t
+    feature_set_queue[FEATURE_SET_QUEUE_DEPTH];
+static volatile uint8_t feature_set_queue_head;
+static volatile uint8_t feature_set_queue_tail;
+static volatile uint8_t feature_set_queue_count;
+static volatile uint8_t feature_set_queue_high_water;
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
 
@@ -1466,14 +1473,35 @@ static void queue_host_report(uint8_t report_id, uint8_t report_type, const uint
     }
 
     flags = usb_lock();
-    if (pending_host_report_valid) {
-        usb_diag.host_report_dropped++;
+    if (report_type == HID_REPORT_FEATURE) {
+        m61_usb_gamepad_host_report_t *queued;
+
+        if (feature_set_queue_count >= FEATURE_SET_QUEUE_DEPTH) {
+            usb_diag.host_report_dropped++;
+            usb_unlock(flags);
+            return;
+        }
+        queued = &feature_set_queue[feature_set_queue_head];
+        queued->report_id = report_id;
+        queued->report_type = report_type;
+        queued->len = len;
+        memcpy(queued->data, data, len);
+        feature_set_queue_head = (uint8_t)(
+            (feature_set_queue_head + 1U) % FEATURE_SET_QUEUE_DEPTH);
+        feature_set_queue_count++;
+        if (feature_set_queue_count > feature_set_queue_high_water) {
+            feature_set_queue_high_water = feature_set_queue_count;
+        }
+    } else {
+        if (pending_host_report_valid) {
+            usb_diag.host_report_dropped++;
+        }
+        pending_host_report.report_id = report_id;
+        pending_host_report.report_type = report_type;
+        pending_host_report.len = len;
+        memcpy(pending_host_report.data, data, len);
+        pending_host_report_valid = true;
     }
-    pending_host_report.report_id = report_id;
-    pending_host_report.report_type = report_type;
-    pending_host_report.len = len;
-    memcpy(pending_host_report.data, data, len);
-    pending_host_report_valid = true;
     usb_diag.last_out_report_id = report_id ? report_id : data[0];
     usb_diag.last_out_report_len = len;
     update_last_out_state_diag(report_id, data, len);
@@ -1526,6 +1554,10 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             usb_configured = false;
             usb_busy = false;
             usb_input_pending = false;
+            pending_host_report_valid = false;
+            feature_set_queue_head = 0;
+            feature_set_queue_tail = 0;
+            feature_set_queue_count = 0;
             usb_suspended = false;
             usb_out_armed = false;
             audio_out_open = false;
@@ -1889,6 +1921,12 @@ bool m61_usb_gamepad_take_host_report(m61_usb_gamepad_host_report_t *report)
     if (valid) {
         *report = pending_host_report;
         pending_host_report_valid = false;
+    } else if (feature_set_queue_count > 0) {
+        *report = feature_set_queue[feature_set_queue_tail];
+        feature_set_queue_tail = (uint8_t)(
+            (feature_set_queue_tail + 1U) % FEATURE_SET_QUEUE_DEPTH);
+        feature_set_queue_count--;
+        valid = true;
     }
     usb_unlock(flags);
     return valid;
@@ -2017,6 +2055,8 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->feature_cache_misses = usb_diag.feature_cache_misses;
     diag->feature_cache_stores = usb_diag.feature_cache_stores;
     diag->host_report_dropped = usb_diag.host_report_dropped;
+    diag->feature_set_queue_depth = feature_set_queue_count;
+    diag->feature_set_queue_high_water = feature_set_queue_high_water;
     diag->audio_open = usb_diag.audio_open;
     diag->audio_close = usb_diag.audio_close;
     diag->audio_out_packets = usb_diag.audio_out_packets;

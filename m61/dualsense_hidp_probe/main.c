@@ -1812,6 +1812,8 @@ static void usb_hid_bridge_task(void *pvParameters)
             } else {
                 pending_feature_set = host_report;
                 feature_set_pending = true;
+                host_reports_this_tick++;
+                break;
             }
             host_reports_this_tick++;
         }
@@ -2443,13 +2445,15 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.hid_set_protocol,
                (unsigned int)usb_diag.last_report_id,
                (unsigned int)usb_diag.last_report_type);
-        printf("usb_ds5 out=%lu last_out=0x%02x/%lu feature hit=%lu miss=%lu store=%lu host_drop=%lu\r\n",
+        printf("usb_ds5 out=%lu last_out=0x%02x/%lu feature hit=%lu miss=%lu store=%lu feature_set_q=%u/%u host_drop=%lu\r\n",
                (unsigned long)usb_diag.hid_out_report,
                (unsigned int)usb_diag.last_out_report_id,
                (unsigned long)usb_diag.last_out_report_len,
                (unsigned long)usb_diag.feature_cache_hits,
                (unsigned long)usb_diag.feature_cache_misses,
                (unsigned long)usb_diag.feature_cache_stores,
+               (unsigned int)usb_diag.feature_set_queue_depth,
+               (unsigned int)usb_diag.feature_set_queue_high_water,
                (unsigned long)usb_diag.host_report_dropped);
         printf("usb_ds5_last flags=%02x/%02x/%02x rumble=%u/%u audio=0x%02x mute=%02x/%02x player=0x%02x light=%u/%u led=%02x%02x%02x\r\n",
                (unsigned int)usb_diag.last_out_flags0,

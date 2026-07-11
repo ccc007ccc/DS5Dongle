@@ -571,6 +571,8 @@ def test_c_source_contract() -> None:
         "m61_audio_epoch_ingest_usb(packet.data",
         "#define AUDIO_INGRESS_DEPTH 16",
         "packet.sequence != expected_sequence",
+        "#define FEATURE_SET_QUEUE_DEPTH 8",
+        "feature_set_queue_count >= FEATURE_SET_QUEUE_DEPTH",
         "resample_epoch_speaker_mono",
         "m61_audio_epoch_take_encode_job",
         "m61_audio_epoch_complete_encode",
