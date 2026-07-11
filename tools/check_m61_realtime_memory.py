@@ -14,6 +14,7 @@ import sys
 RAM_CAPACITY_BYTES = 0x67C00
 RAM_LIMIT_PERCENT = 75
 CONTINGENCY_BYTES = 8 * 1024
+ITCM_BOOT_LIMIT_BYTES = 40 * 1024
 
 NOCACHE_SECTIONS = ("ram_nocache_data", "ram_nocache_noinit")
 NOCACHE_ALIAS_SKIP_SECTION = ".ram_skip_nocache_region"
@@ -140,8 +141,15 @@ def print_report(sections: dict[str, int]) -> bool:
     print(f"  {'75% limit':26s} {limit_bytes:8d} B")
     print(f"  {'margin below limit':26s} {remaining_bytes:8d} B")
     print(f"  {'physical RAM capacity':26s} {RAM_CAPACITY_BYTES:8d} B")
+    print(f"  {'ITCM boot-safe limit':26s} {ITCM_BOOT_LIMIT_BYTES:8d} B")
 
-    passed = budgeted_bytes < limit_bytes
+    itcm_bytes = sections.get("itcm", 0)
+    passed = budgeted_bytes < limit_bytes and itcm_bytes <= ITCM_BOOT_LIMIT_BYTES
+    if itcm_bytes > ITCM_BOOT_LIMIT_BYTES:
+        print(
+            f"M61 ITCM boot gate failed: {itcm_bytes} B exceeds "
+            f"{ITCM_BOOT_LIMIT_BYTES} B."
+        )
     print("M61 realtime RAM gate passed." if passed else "M61 realtime RAM gate failed.")
     return passed
 
