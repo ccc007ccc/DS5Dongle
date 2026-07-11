@@ -19,6 +19,13 @@
 // 0xf9 feature report so the config UI can display the real gated mic/speaker
 // state, reflecting the disable_mic / disable_speaker settings.
 extern bool spk_active;
+static bool config_save_pending = false;
+static bool usb_reconnect_pending = false;
+static bool usb_reconnect_waiting = false;
+static uint32_t usb_reconnect_deadline_ms = 0;
+static uint32_t config_save_requested_ms = 0;
+static uint32_t usb_reconnect_requested_ms = 0;
+static constexpr uint32_t MAX_AUDIO_DEFERRAL_MS = 2000;
 
 bool is_pico_cmd(uint8_t report_id) {
     if (report_id == 0xf6 ||
@@ -90,14 +97,43 @@ void pico_cmd_set(uint8_t report_id, uint8_t const *buffer, uint16_t bufsize) {
         set_config(buffer + 1, bufsize - 1);
     }
     if (buffer[0] == 0x02) {
-        printf("[CMD] Enter config save func\n");
-        config_save();
+        if (!config_save_pending) {
+            config_save_requested_ms = to_ms_since_boot(get_absolute_time());
+        }
+        config_save_pending = true;
     }
     if (buffer[0] == 0x03) {
-        printf("[CMD] Enter tud reconnect func\n");
-        wake_note_usb_reconnect();   // this disconnect is intentional, not a host sleep
+        if (!usb_reconnect_pending && !usb_reconnect_waiting) {
+            usb_reconnect_requested_ms = to_ms_since_boot(get_absolute_time());
+            usb_reconnect_pending = true;
+        }
+    }
+}
+
+void pico_cmd_task() {
+    const uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (usb_reconnect_waiting) {
+        if ((int32_t)(now - usb_reconnect_deadline_ms) >= 0) {
+            tud_connect();
+            usb_reconnect_waiting = false;
+        }
+        return;
+    }
+    const bool audio_active = audio_realtime_active();
+    if (config_save_pending &&
+        (!audio_active || now - config_save_requested_ms >= MAX_AUDIO_DEFERRAL_MS)) {
+        printf("[CMD] Deferred config save\n");
+        config_save();
+        config_save_pending = false;
+        return;
+    }
+    if (usb_reconnect_pending &&
+        (!audio_active || now - usb_reconnect_requested_ms >= MAX_AUDIO_DEFERRAL_MS)) {
+        printf("[CMD] Deferred tud reconnect\n");
+        wake_note_usb_reconnect();
         tud_disconnect();
-        sleep_ms(150);
-        tud_connect();
+        usb_reconnect_pending = false;
+        usb_reconnect_waiting = true;
+        usb_reconnect_deadline_ms = now + 150U;
     }
 }

@@ -7,6 +7,7 @@
 #include <cstdio>
 
 #include "bt.h"
+#include "audio.h"
 #include "pico/time.h"
 #include "pico/flash.h"
 #include "hardware/gpio.h"
@@ -96,6 +97,11 @@ void button_check() {
     uint32_t now = to_ms_since_boot(get_absolute_time());
     if (now - button_last_check_ms < 100) return;
     button_last_check_ms = now;
+
+    // BOOTSEL sampling and flash persistence park core1 and float QSPI CSn.
+    // Defer both while realtime audio is active instead of injecting a 10 Hz
+    // interruption into the codec path.
+    if (audio_realtime_active()) return;
 
     bt_blacklist_persist_if_dirty();
 

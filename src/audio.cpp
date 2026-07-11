@@ -9,6 +9,7 @@
  */
 
 #include "audio.h"
+#include "audio_epoch_pairer.h"
 #include "bt.h"
 #if ENABLE_DEBUG
 #include "debug.h"
@@ -40,21 +41,29 @@
 using std::clamp;
 using std::max;
 
-static WDL_Resampler resampler;
-extern uint8_t reportSeqCounter;
 extern uint8_t packetCounter;
 static bool plug_headset = false;
 static bool mic_active = false; // host has opened the mic IN interface (alt != 0)
+static uint32_t last_audio_out_ms = 0;
+static volatile uint32_t audio_generation = 1;
 alignas(8) static uint32_t audio_core1_stack[7000];
-queue_t audio_fifo; // raw pcm data
 queue_t mic_fifo;
 queue_t mic_decode_fifo;
-queue_t audio_spk_fifo; // opus data
-queue_t haptics_fifo;
+queue_t audio_epoch_raw_fifo;
+queue_t audio_epoch_complete_fifo;
 
-struct audio_raw_element {
-    float data[512 * 2];
+struct audio_epoch_raw {
+    uint32_t generation;
+    uint32_t epoch;
+    float speaker[512 * 2];
+    uint8_t haptics[SAMPLE_SIZE];
+    bool speaker_enabled;
 };
+
+static_assert(sizeof(audio_epoch_raw) == 4172,
+              "audio epoch raw storage budget drift");
+static_assert(sizeof(AudioEpochComplete) == 276,
+              "audio epoch complete storage budget drift");
 
 struct mic_element {
     uint8_t data[MIC_OPUS_SIZE];
@@ -65,13 +74,12 @@ struct mic_decode_element {
     uint16_t len;
 };
 
-struct audio_spk_element {
-    uint8_t data[SPEAKER_OPUS_SIZE];
-};
-
-struct haptics_element {
-    uint8_t data[64];
-};
+static void publish_complete_epoch(const AudioEpochComplete &epoch) {
+    if (queue_is_full(&audio_epoch_complete_fifo)) {
+        queue_try_remove(&audio_epoch_complete_fifo, nullptr);
+    }
+    queue_try_add(&audio_epoch_complete_fifo, &epoch);
+}
 
 void set_headset(bool state) {
     plug_headset = state;
@@ -88,11 +96,17 @@ bool audio_mic_active() {
     return mic_active;
 }
 
+bool audio_realtime_active() {
+    return to_ms_since_boot(get_absolute_time()) - last_audio_out_ms < 100U;
+}
+
+void audio_reset_realtime() {
+    audio_generation++;
+}
+
 void update_mic_status() {
     uint8_t pkt[142]{};
     pkt[0] = 0x32;
-    pkt[1] = reportSeqCounter << 4;
-    reportSeqCounter = (reportSeqCounter + 1) & 0x0F;
     pkt[2] = 0x11 | 0 << 6 | 1 << 7;
     pkt[3] = 1;
     pkt[4] = (mic_active && !get_config().disable_mic) ? 0b00000011 : 0b00000010;
@@ -106,19 +120,19 @@ void __not_in_flash_func(audio_bt_task)() {
     const bool speaker_enabled = !cfg.disable_speaker;
 #endif
 
-    if (queue_get_level(&haptics_fifo) < 2) {
+    static AudioEpochPairer pairer;
+    AudioEpochComplete first{};
+    AudioEpochComplete current{};
+    if (!queue_try_remove(&audio_epoch_complete_fifo, &current)) return;
+    if (current.generation != audio_generation) {
+        pairer.reset();
         return;
     }
-#if !DISABLE_SPEAKER_PROC
-    if (speaker_enabled && queue_get_level(&audio_spk_fifo) < 2) {
-        return;
-    }
-#endif
+    AudioEpochComplete second{};
+    if (!pairer.push(current, &first, &second)) return;
 
     uint8_t pkt[REPORT_SIZE]{};
     pkt[0] = REPORT_ID;
-    pkt[1] = reportSeqCounter << 4;
-    reportSeqCounter = (reportSeqCounter + 1) & 0x0F;
     pkt[2] = 0x11 | 0 << 6 | 1 << 7;
     pkt[3] = 6;
     pkt[4] = mic_enabled ? 0b01111111 : 0b01111110;
@@ -135,36 +149,15 @@ void __not_in_flash_func(audio_bt_task)() {
     pkt[9] = packetCounter += 2;
     pkt[10] = 0x12 | 1 << 6 | 1 << 7;
     pkt[11] = SAMPLE_SIZE;
-    static haptics_element haptics_pb{};
-    if (queue_get_level(&haptics_fifo) >= 2) {
-        if (queue_try_remove(&haptics_fifo, &haptics_pb)) {
-            memcpy(pkt + 12, haptics_pb.data,SAMPLE_SIZE);
-        } else {
-            printf("[Audio] Warning: Haptics queue remove failed\n");
-        }
-        if (queue_try_remove(&haptics_fifo, &haptics_pb)) {
-            memcpy(pkt + 12 + SAMPLE_SIZE, haptics_pb.data,SAMPLE_SIZE);
-        } else {
-            printf("[Audio] Warning: Haptics queue remove failed\n");
-        }
-    }
+    memcpy(pkt + 12, first.haptics.data(), SAMPLE_SIZE);
+    memcpy(pkt + 12 + SAMPLE_SIZE, second.haptics.data(), SAMPLE_SIZE);
 #if !DISABLE_SPEAKER_PROC
-    if (speaker_enabled) {
+    if (speaker_enabled && first.speaker_enabled) {
         pkt[140] = (plug_headset ? 0x16 : 0x13) | 1 << 6 | 1 << 7;
         pkt[141] = SPEAKER_OPUS_SIZE;
-        static audio_spk_element spk_pb{};
-        if (queue_get_level(&audio_spk_fifo) >= 2) {
-            if (queue_try_remove(&audio_spk_fifo, &spk_pb)) {
-                memcpy(pkt + 142, spk_pb.data,SPEAKER_OPUS_SIZE);
-            } else {
-                printf("[Audio] Warning: Speaker queue remove failed\n");
-            }
-            if (queue_try_remove(&audio_spk_fifo, &spk_pb)) {
-                memcpy(pkt + 142 + SPEAKER_OPUS_SIZE, spk_pb.data,SPEAKER_OPUS_SIZE);
-            } else {
-                printf("[Audio] Warning: Speaker queue remove failed\n");
-            }
-        }
+        memcpy(pkt + 142, first.speaker_opus.data(), SPEAKER_OPUS_SIZE);
+        memcpy(pkt + 142 + SPEAKER_OPUS_SIZE, second.speaker_opus.data(),
+               SPEAKER_OPUS_SIZE);
     }
 #endif
     bt_write(pkt, sizeof(pkt));
@@ -213,89 +206,77 @@ void __not_in_flash_func(audio_loop)() {
     if (frames == 0) {
         return;
     }
+    last_audio_out_ms = to_ms_since_boot(get_absolute_time());
 
-    static float audio_buf[512 * 2];
-    static uint audio_buf_pos = 0;
-    WDL_ResampleSample *in_buf;
-    int nframes = resampler.ResamplePrepare(frames, OUTPUT_CHANNELS, &in_buf);
-
-    // const float audio_gain = mute[0] ? 0.0f : powf(10.0f, get_config().speaker_volume / 20.0f);
+    static audio_epoch_raw epoch{};
+    static uint16_t epoch_frames = 0;
+    static uint32_t next_epoch = 0;
+    static uint32_t observed_generation = audio_generation;
+    static int32_t haptics_sum_l = 0;
+    static int32_t haptics_sum_r = 0;
+    if (observed_generation != audio_generation) {
+        epoch = {};
+        epoch_frames = 0;
+        next_epoch = 0;
+        haptics_sum_l = 0;
+        haptics_sum_r = 0;
+        observed_generation = audio_generation;
+    }
     const float haptics_gain = cfg.haptics_gain;
+    for (int i = 0; i < frames; i++) {
 #if !DISABLE_SPEAKER_PROC
-    if (!speaker_enabled) {
-        audio_buf_pos = 0;
-        while (queue_try_remove(&audio_fifo, NULL)) {
-        }
-    }
+        epoch.speaker[epoch_frames * 2U] =
+            speaker_enabled ? raw[i * INPUT_CHANNELS] / 32768.0f : 0.0f;
+        epoch.speaker[epoch_frames * 2U + 1U] =
+            speaker_enabled ? raw[i * INPUT_CHANNELS + 1] / 32768.0f : 0.0f;
 #endif
-    for (int i = 0; i < nframes; i++) {
-#if !DISABLE_SPEAKER_PROC
-        if (speaker_enabled) {
-            audio_buf[audio_buf_pos++] = raw[i * INPUT_CHANNELS] / 32768.0f;
-            audio_buf[audio_buf_pos++] = raw[i * INPUT_CHANNELS + 1] / 32768.0f;
-            if (audio_buf_pos == 512 * 2) {
-                static audio_raw_element element{};
-                memcpy(element.data, audio_buf, 512 * 2 * 4);
-                if (queue_is_full(&audio_fifo)) {
-                    queue_try_remove(&audio_fifo, NULL);
-                }
-                if (!queue_try_add(&audio_fifo, &element)) {
-                    printf("[Audio] Warning: audio_fifo add failed\n");
-                }
-                audio_buf_pos = 0;
+        haptics_sum_l += raw[i * INPUT_CHANNELS + 2];
+        haptics_sum_r += raw[i * INPUT_CHANNELS + 3];
+        if ((epoch_frames % 16U) == 15U) {
+            const uint16_t haptic_index = (epoch_frames / 16U) * 2U;
+            const int val_l = static_cast<int>((haptics_sum_l / 16.0f) /
+                                               32768.0f * haptics_gain * 127.0f);
+            const int val_r = static_cast<int>((haptics_sum_r / 16.0f) /
+                                               32768.0f * haptics_gain * 127.0f);
+            epoch.haptics[haptic_index] =
+                static_cast<uint8_t>(static_cast<int8_t>(clamp(val_l, -128, 127)));
+            epoch.haptics[haptic_index + 1U] =
+                static_cast<uint8_t>(static_cast<int8_t>(clamp(val_r, -128, 127)));
+            haptics_sum_l = 0;
+            haptics_sum_r = 0;
+        }
+        epoch_frames++;
+        if (epoch_frames == 512U) {
+            epoch.epoch = next_epoch++;
+            epoch.generation = observed_generation;
+            epoch.speaker_enabled = speaker_enabled;
+#if DISABLE_SPEAKER_PROC
+            AudioEpochComplete complete{};
+            complete.generation = epoch.generation;
+            complete.epoch = epoch.epoch;
+            complete.speaker_enabled = false;
+            memcpy(complete.haptics.data(), epoch.haptics, SAMPLE_SIZE);
+            publish_complete_epoch(complete);
+#else
+            if (queue_is_full(&audio_epoch_raw_fifo)) {
+                queue_try_remove(&audio_epoch_raw_fifo, nullptr);
             }
-        }
+            queue_try_add(&audio_epoch_raw_fifo, &epoch);
 #endif
-
-        in_buf[i * 2] = static_cast<WDL_ResampleSample>(clamp(raw[i * INPUT_CHANNELS + 2] / 32768.0f * haptics_gain,
-                                                              -1.0f, 1.0f));
-        in_buf[i * 2 + 1] = static_cast<WDL_ResampleSample>(clamp(raw[i * INPUT_CHANNELS + 3] / 32768.0f * haptics_gain,
-                                                                  -1.0f, 1.0f));
-    }
-
-    // 3. 48kHz -> 3kHz 重采样
-    static WDL_ResampleSample out_buf[SAMPLE_SIZE]; // 64 floats = 32帧 × 2ch
-    const int out_frames = resampler.ResampleOut(out_buf, nframes, nframes / 4, OUTPUT_CHANNELS);
-
-    static int8_t haptic_buf[SAMPLE_SIZE];
-    static int haptic_buf_pos = 0;
-
-    // 4. 转换为int8并缓冲，满64字节即组包发送
-    for (int i = 0; i < out_frames; i++) {
-        int val_l = static_cast<int>(out_buf[i * 2] * 127.0f);
-        int val_r = static_cast<int>(out_buf[i * 2 + 1] * 127.0f);
-        haptic_buf[haptic_buf_pos++] = (int8_t) clamp(val_l, -128, 127); // 似乎clamp有点多余？还是以防万一吧
-        haptic_buf[haptic_buf_pos++] = (int8_t) clamp(val_r, -128, 127);
-
-        if (haptic_buf_pos != SAMPLE_SIZE) {
-            continue;
+            epoch = {};
+            epoch_frames = 0;
         }
-        static haptics_element element{};
-        memcpy(element.data, haptic_buf,SAMPLE_SIZE);
-        if (queue_is_full(&haptics_fifo)) {
-            queue_try_remove(&haptics_fifo, NULL);
-        }
-        if (!queue_try_add(&haptics_fifo, &element)) {
-            printf("[Audio] Warning: haptics_fifo add failed\n");
-        }
-        haptic_buf_pos = 0;
     }
 }
 
 void audio_init() {
-    resampler.SetMode(true, 2, false);
-    resampler.SetFilterParms(0.85f, 0.707f);
-    resampler.SetRates(48000, 3000);
-    resampler.SetFeedMode(true);
-    resampler.Prealloc(2, 48, 4);
-    queue_init(&haptics_fifo, sizeof(haptics_element), 2);
+    queue_init(&audio_epoch_raw_fifo, sizeof(audio_epoch_raw), 1);
+    queue_init(&audio_epoch_complete_fifo, sizeof(AudioEpochComplete), 4);
     // Mic queues are read from audio_loop on core0 every iteration, so they
     // must exist regardless of the speaker-proc build flag.
     queue_init(&mic_fifo, sizeof(mic_element), 2);
     queue_init(&mic_decode_fifo, sizeof(mic_decode_element), 2);
 #if !DISABLE_SPEAKER_PROC
-    queue_init(&audio_fifo, sizeof(audio_raw_element), 2);
-    queue_init(&audio_spk_fifo, sizeof(audio_spk_element), 2);
 #if ENABLE_DEBUG
     // 通常 stack 最大使用 25836 bytes 即 stack[6459]
     debug_fill_core1_stack_watermark(audio_core1_stack,
@@ -309,22 +290,29 @@ static OpusEncoder *encoder;
 static OpusDecoder *decoder; // mic decoder
 static WDL_Resampler resampler_audio;
 
-// Speaker path: USB OUT PCM (core0 audio_fifo) -> resample -> opus encode ->
-// opus_buf for the haptics/speaker BT report. Non-blocking so core1 can also
-// service the mic path. Kept in RAM to remove XIP miss latency from the loop.
+// Speaker path: a complete USB audio epoch from core0 is resampled and encoded,
+// then returned with its matching haptics block as one typed epoch.
 static void __not_in_flash_func(speaker_proc)() {
-    static audio_raw_element audio_element{};
-    if (!queue_try_remove(&audio_fifo, &audio_element)) {
+    static audio_epoch_raw raw_epoch{};
+    if (!queue_try_remove(&audio_epoch_raw_fifo, &raw_epoch)) {
         return;
     }
-    if (get_config().disable_speaker) {
+    AudioEpochComplete complete{};
+    complete.epoch = raw_epoch.epoch;
+    complete.generation = raw_epoch.generation;
+    complete.speaker_enabled = raw_epoch.speaker_enabled &&
+                               !get_config().disable_speaker;
+    memcpy(complete.haptics.data(), raw_epoch.haptics, SAMPLE_SIZE);
+    if (!complete.speaker_enabled) {
+        if (complete.generation != audio_generation) return;
+        publish_complete_epoch(complete);
         return;
     }
     // 将 512 frames 重采样成 480 frames 以解决噪音问题。感谢 @Junhoo
     WDL_ResampleSample *in_buf;
     int nframes = resampler_audio.ResamplePrepare(512, 2, &in_buf);
     for (int i = 0; i < nframes * 2; i++) {
-        in_buf[i] = audio_element.data[i];
+        in_buf[i] = raw_epoch.speaker[i];
     }
     static WDL_ResampleSample out_buf[480 * 2];
     resampler_audio.ResampleOut(out_buf, nframes, 480, 2);
@@ -338,16 +326,13 @@ static void __not_in_flash_func(speaker_proc)() {
         return;
     }
 
-    static audio_spk_element spk_ele{};
-    memcpy(spk_ele.data, out, encoded_len);
-    if (encoded_len < (int) sizeof(spk_ele.data)) {
-        memset(spk_ele.data + encoded_len, 0, sizeof(spk_ele.data) - encoded_len);
+    memcpy(complete.speaker_opus.data(), out, encoded_len);
+    if (encoded_len < (int) sizeof(complete.speaker_opus)) {
+        memset(complete.speaker_opus.data() + encoded_len, 0,
+               complete.speaker_opus.size() - encoded_len);
     }
-    if (queue_is_full(&audio_spk_fifo)) {
-        queue_try_remove(&audio_spk_fifo, NULL);
-    }
-    if (!queue_try_add(&audio_spk_fifo, &spk_ele)) {
-        printf("[Audio] Warning: audio_spk_fifo add failed\n");
+    if (complete.generation == audio_generation) {
+        publish_complete_epoch(complete);
     }
 }
 

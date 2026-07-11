@@ -115,6 +115,7 @@ add_executable(ds5-bridge
         src/usb.cpp
         src/audio.cpp
         src/bt.cpp
+        src/bt_tx_scheduler.cpp
         src/button_functions.cpp
         src/dse.cpp
         src/config.cpp

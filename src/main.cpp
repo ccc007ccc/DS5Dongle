@@ -33,7 +33,6 @@
 // Pico SDK speciifically for waiting on conditions
 #include "pico/critical_section.h"
 
-uint8_t reportSeqCounter = 0;
 uint8_t packetCounter = 0;
 bool spk_active = false;
 
@@ -240,8 +239,6 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
             case 0x02: {
                 uint8_t outputData[78]{};
                 outputData[0] = 0x31;
-                outputData[1] = reportSeqCounter << 4;
-                reportSeqCounter = (reportSeqCounter + 1) & 0x0F;
                 outputData[2] = 0x10;
                 SetStateData state{};
                 memcpy(&state,buffer + 1,sizeof(SetStateData));
@@ -360,5 +357,6 @@ int main() {
         button_check();
         bt_inquiring_led();
         dse_task();
+        pico_cmd_task();
     }
 }

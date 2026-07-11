@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include "bt.h"
+#include "bt_tx_scheduler.h"
+#include "audio.h"
 #include <queue>
 #include <unordered_map>
 #include <vector>
@@ -69,12 +71,16 @@ static bt_data_callback_t bt_data_callback = nullptr;
 static bool check_dse = false;
 static int8_t bt_rssi = 0;
 unordered_map<uint8_t, vector<uint8_t> > feature_data;
-queue_t send_fifo;
+static BtTxScheduler tx_scheduler;
+static bool can_send_requested = false;
 
-struct send_element {
-    uint8_t data[672];
-    size_t len;
-};
+static void request_interrupt_can_send() {
+    if (hid_interrupt_cid == 0 || can_send_requested ||
+        !tx_scheduler.pending()) return;
+    if (l2cap_request_can_send_now_event(hid_interrupt_cid) == 0) {
+        can_send_requested = true;
+    }
+}
 
 absolute_time_t inactive_time = 0; // 手柄长时间静默
 
@@ -140,7 +146,8 @@ void bt_l2cap_init() {
 }
 
 int bt_init() {
-    queue_init(&send_fifo, sizeof(send_element), 10);
+    tx_scheduler.reset();
+    can_send_requested = false;
 
     bt_l2cap_init();
 
@@ -607,7 +614,9 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             bt_rssi = 0;
             hid_control_cid = 0;
             hid_interrupt_cid = 0;
-            while (queue_try_remove(&send_fifo, NULL)) {}
+            tx_scheduler.reset();
+            can_send_requested = false;
+            audio_reset_realtime();
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
 #if ENABLE_BATT_LED
             battery_led_on_disconnect();
@@ -714,6 +723,9 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                 } else if (psm == PSM_HID_INTERRUPT) {
                     printf("[L2CAP] HID Interrupt opened cid=0x%04X\n", local_cid);
                     hid_interrupt_cid = local_cid;
+                    tx_scheduler.reset();
+                    can_send_requested = false;
+                    audio_reset_realtime();
                     // Successful pair removes this specific MAC from the persistent
                     // blacklist (treated as user-explicit re-pair in PS+Share mode).
                     bt_blacklist_remove(current_device_addr);
@@ -781,6 +793,9 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                 printf("[L2CAP] HID Control closed cid=0x%04X\n", local_cid);
             } else if (local_cid == hid_interrupt_cid) {
                 hid_interrupt_cid = 0;
+                tx_scheduler.reset();
+                can_send_requested = false;
+                audio_reset_realtime();
                 printf("[L2CAP] HID Interrupt closed cid=0x%04X\n", local_cid);
             } else {
                 printf("[L2CAP] Channel closed cid=0x%04X\n", local_cid);
@@ -792,18 +807,25 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
         }
 
         case L2CAP_EVENT_CAN_SEND_NOW: {
-            // printf("[L2CAP] L2CAP_EVENT_CAN_SEND_NOW\n");
-
-            send_element send_packet{};
-            if (queue_try_remove(&send_fifo, &send_packet)) {
-                const uint8_t status = l2cap_send(hid_interrupt_cid, send_packet.data, send_packet.len);
+            can_send_requested = false;
+            BtTxFrame send_packet{};
+            if (tx_scheduler.select(to_ms_since_boot(get_absolute_time()),
+                                    &send_packet)) {
+                static uint8_t report_sequence = 0;
+                send_packet.data[2] = static_cast<uint8_t>(
+                    (send_packet.data[2] & 0x0fU) | (report_sequence << 4U));
+                report_sequence = (report_sequence + 1U) & 0x0fU;
+                fill_output_report_checksum(send_packet.data.data() + 1,
+                                            send_packet.len - 1U);
+                const uint8_t status = l2cap_send(hid_interrupt_cid,
+                                                  send_packet.data.data(),
+                                                  send_packet.len);
+                tx_scheduler.finish(send_packet, status == 0);
                 if (status != 0) {
                     printf("[L2CAP] L2CAP Send Error, Status: 0x%02X\n", status);
                 }
             }
-            if (!queue_is_empty(&send_fifo)) {
-                l2cap_request_can_send_now_event(hid_interrupt_cid);
-            }
+            request_interrupt_can_send();
             break;
         }
     }
@@ -822,19 +844,17 @@ void bt_control_send(const uint8_t *data, uint16_t len) {
 
 void __not_in_flash_func(bt_write)(const uint8_t *data, const uint16_t len) {
     if (hid_interrupt_cid == 0) return;
-    static send_element packet{};
-    packet.len = len + 1;
-    packet.data[0] = 0xA2;
-    memcpy(packet.data + 1, data, len);
-    fill_output_report_checksum(packet.data + 1, len);
+    if (len + 1U > BT_TX_MAX_PACKET_SIZE) return;
+    static uint8_t packet[BT_TX_MAX_PACKET_SIZE];
+    packet[0] = 0xA2;
+    memcpy(packet + 1, data, len);
 
-    if (!queue_try_add(&send_fifo, &packet)) {
-        printf("[L2CAP bt_write] Error: Failed to add packet to send FIFO\n");
+    if (!tx_scheduler.publish(data[0], packet, len + 1U,
+                              to_ms_since_boot(get_absolute_time()))) {
+        printf("[L2CAP bt_write] Error: Failed to publish packet\n");
         return;
     }
-    if (queue_get_level(&send_fifo) == 1) {
-        l2cap_request_can_send_now_event(hid_interrupt_cid);
-    }
+    request_interrupt_can_send();
 }
 
 vector<uint8_t> get_feature_data(uint8_t reportId, uint16_t len) {
