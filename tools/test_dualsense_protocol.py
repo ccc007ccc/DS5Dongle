@@ -592,6 +592,9 @@ def test_c_source_contract() -> None:
         "mic_enabled=%u",
         "USB DualSense registration waits for controller full report",
         "usb_after_ds=%d",
+        "hidp_alloc_interrupt_report(DS5_OUTPUT_REPORT31_BT_LEN",
+        "hidp_alloc_interrupt_report(DS5_OUTPUT_REPORT32_BT_LEN",
+        "hidp_submit_interrupt_report(buf)",
     ]
     for snippet in m61_bridge_snippets:
         assert snippet in m61_main_source, f"missing M61 bridge snippet: {snippet}"

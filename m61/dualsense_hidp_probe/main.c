@@ -1357,6 +1357,48 @@ static int hidp_send_data_output(const uint8_t *report, size_t report_len)
     return hidp_send_data_output_timeout(report, report_len, K_FOREVER);
 }
 
+static int hidp_alloc_interrupt_report(size_t report_len,
+                                       s32_t alloc_timeout,
+                                       struct net_buf **buf_out,
+                                       uint8_t **report_out)
+{
+    struct net_buf *buf;
+    uint8_t *packet;
+
+    if (!buf_out || !report_out || report_len + 1U > HIDP_TX_MAX_LEN) {
+        return -EINVAL;
+    }
+    if (!hid_interrupt.connected) {
+        return -ENOTCONN;
+    }
+    if (report_len + 1U > hid_interrupt.br.tx.mtu) {
+        return -EMSGSIZE;
+    }
+    buf = bt_l2cap_create_pdu_timeout(NULL, 0, alloc_timeout);
+    if (!buf) {
+        return -ENOMEM;
+    }
+    if (net_buf_tailroom(buf) < report_len + 1U) {
+        net_buf_unref(buf);
+        return -EMSGSIZE;
+    }
+    packet = net_buf_add(buf, report_len + 1U);
+    packet[0] = HIDP_TRANSACTION_DATA_OUTPUT;
+    *buf_out = buf;
+    *report_out = packet + 1U;
+    return 0;
+}
+
+static int hidp_submit_interrupt_report(struct net_buf *buf)
+{
+    int err = bt_l2cap_chan_send(&hid_interrupt.br.chan, buf);
+
+    if (err < 0) {
+        net_buf_unref(buf);
+    }
+    return err;
+}
+
 static int hidp_send_ds5_output_init(void)
 {
     uint8_t report31[DS5_OUTPUT_REPORT31_BT_LEN];
@@ -1447,9 +1489,11 @@ static int hidp_set_feature_from_usb(uint8_t report_id, const uint8_t *data, siz
 
 static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool includes_report_id)
 {
-    uint8_t report31[DS5_OUTPUT_REPORT31_BT_LEN];
+    struct net_buf *buf;
+    uint8_t *report31;
     const uint8_t *payload = data;
     size_t payload_len = len;
+    int err;
 
     if (!data || len == 0) {
         return -EINVAL;
@@ -1463,22 +1507,28 @@ static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool inc
         payload_len = len - 1;
     }
 
+    err = hidp_alloc_interrupt_report(DS5_OUTPUT_REPORT31_BT_LEN,
+                                      K_NO_WAIT,
+                                      &buf,
+                                      &report31);
+    if (err) {
+        return err;
+    }
     if (!dualsense_output_make_report31_from_usb(&output_ctx,
                                                  payload,
                                                  payload_len,
                                                  report31,
-                                                 sizeof(report31))) {
+                                                 DS5_OUTPUT_REPORT31_BT_LEN)) {
+        net_buf_unref(buf);
         return -EINVAL;
     }
-
-    return hidp_send_data_output_timeout(report31,
-                                         sizeof(report31),
-                                         K_NO_WAIT);
+    return hidp_submit_interrupt_report(buf);
 }
 
 static int hidp_send_audio_status_report(bool mic_active)
 {
-    uint8_t report32[DS5_OUTPUT_REPORT32_BT_LEN];
+    struct net_buf *buf;
+    uint8_t *report32;
     int err;
 
     if (!hid_interrupt.connected) {
@@ -1487,19 +1537,27 @@ static int hidp_send_audio_status_report(bool mic_active)
         return -ENOTCONN;
     }
 
+    err = hidp_alloc_interrupt_report(DS5_OUTPUT_REPORT32_BT_LEN,
+                                      HIDP_BT_AUDIO_ALLOC_TIMEOUT,
+                                      &buf,
+                                      &report32);
+    if (err) {
+        hidp_audio_send_errors++;
+        hidp_audio_last_error = err;
+        return err;
+    }
     if (!dualsense_output_make_report32_audio_status(&output_ctx,
                                                      mic_active,
                                                      DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
                                                      report32,
-                                                     sizeof(report32))) {
+                                                     DS5_OUTPUT_REPORT32_BT_LEN)) {
+        net_buf_unref(buf);
         hidp_audio_send_errors++;
         hidp_audio_last_error = -EINVAL;
         return -EINVAL;
     }
 
-    err = hidp_send_data_output_timeout(report32,
-                                        sizeof(report32),
-                                        HIDP_BT_AUDIO_ALLOC_TIMEOUT);
+    err = hidp_submit_interrupt_report(buf);
     if (err) {
         hidp_audio_send_errors++;
         hidp_audio_last_error = err;
