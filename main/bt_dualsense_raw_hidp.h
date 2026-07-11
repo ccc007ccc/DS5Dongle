@@ -32,6 +32,12 @@ typedef void (*bt_dualsense_raw_hidp_state_cb_t)(
     int64_t timestamp_us,
     void *ctx);
 
+typedef void (*bt_dualsense_raw_hidp_control_complete_cb_t)(uint16_t seq,
+                                                            uint8_t type,
+                                                            uint8_t channel,
+                                                            int status,
+                                                            void *ctx);
+
 esp_err_t bt_dualsense_raw_hidp_start(void);
 bool bt_dualsense_raw_hidp_ready(void);
 void bt_dualsense_raw_hidp_get_state(bt_dualsense_raw_hidp_state_t *state);
@@ -41,14 +47,32 @@ int bt_dualsense_raw_hidp_forget(uint8_t flags);
 int bt_dualsense_raw_hidp_send_report(const uint8_t *report,
                                       size_t report_len,
                                       bool realtime);
+int bt_dualsense_raw_hidp_send_report_at(const uint8_t *report,
+                                         size_t report_len,
+                                         bool realtime,
+                                         uint64_t created_us,
+                                         uint32_t generation);
 int bt_dualsense_raw_hidp_get_feature(uint8_t report_id);
+int bt_dualsense_raw_hidp_get_feature_tracked(uint8_t report_id,
+                                              uint16_t seq,
+                                              uint8_t type,
+                                              uint8_t channel);
 int bt_dualsense_raw_hidp_set_feature(uint8_t report_id,
                                       const uint8_t *data,
                                       size_t len);
+int bt_dualsense_raw_hidp_set_feature_tracked(uint8_t report_id,
+                                              const uint8_t *data,
+                                              size_t len,
+                                              uint16_t seq,
+                                              uint8_t type,
+                                              uint8_t channel);
 void bt_dualsense_raw_hidp_set_rx_callback(bt_dualsense_raw_hidp_rx_cb_t cb,
                                            void *ctx);
 void bt_dualsense_raw_hidp_set_state_callback(bt_dualsense_raw_hidp_state_cb_t cb,
                                               void *ctx);
+void bt_dualsense_raw_hidp_set_control_complete_callback(
+    bt_dualsense_raw_hidp_control_complete_cb_t cb,
+    void *ctx);
 
 #ifdef __cplusplus
 }

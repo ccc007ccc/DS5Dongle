@@ -2,13 +2,12 @@
 
 #include "dual_chip_spi_proto.h"
 #include "dualsense_parser.h"
+#include "m61_spi_scheduler.h"
 #include "m61_usb_gamepad.h"
 
 #include "bflb_core.h"
 #include "bflb_gpio.h"
 #include "bflb_mtimer.h"
-#include "bflb_spi.h"
-#include "semphr.h"
 #include "task.h"
 
 #include <errno.h>
@@ -132,11 +131,7 @@ typedef struct {
     uint16_t seq_audio;
     bool ready;
     struct bflb_device_s *gpio;
-    struct bflb_device_s *spi;
-    SemaphoreHandle_t lock;
     TaskHandle_t bringup_task;
-    TaskHandle_t rx_poll_task;
-    TaskHandle_t time_sync_task;
     bool recovering;
     bool time_sync_valid;
     int32_t esp_time_offset_us;
@@ -156,37 +151,14 @@ typedef struct {
 } m61_esp32_transport_state_t;
 
 static m61_esp32_transport_state_t s_transport;
-static uint8_t s_spi_tx_frame[M61_ESP32_SPI_TRANSACTION_LEN];
-static uint8_t s_spi_rx_frame[M61_ESP32_SPI_TRANSACTION_LEN];
 static m61_esp32_event_t s_event_log[M61_ESP32_EVENT_LOG_DEPTH];
 static uint32_t s_event_seq;
-static uint32_t s_diag_tx_log_count;
 static uint32_t s_diag_exchange_log_count;
 static uint32_t s_diag_rx_reject_count;
 
 static bool pin_configured(int pin)
 {
     return pin >= 0 && pin < GPIO_PIN_MAX;
-}
-
-static uint16_t next_seq(uint8_t channel)
-{
-    switch (channel) {
-    case DS5_DUAL_CHANNEL_AUDIO:
-        return s_transport.seq_audio++;
-    case DS5_DUAL_CHANNEL_OUTPUT:
-        return s_transport.seq_output++;
-    default:
-        return s_transport.seq_ctrl++;
-    }
-}
-
-static bool spi_pins_configured(void)
-{
-    return pin_configured(CONFIG_M61_ESP32_SPI_SCLK_PIN) &&
-           pin_configured(CONFIG_M61_ESP32_SPI_MOSI_PIN) &&
-           pin_configured(CONFIG_M61_ESP32_SPI_MISO_PIN) &&
-           pin_configured(CONFIG_M61_ESP32_SPI_CS_PIN);
 }
 
 static uint32_t local_time_us(void)
@@ -301,15 +273,6 @@ static void diag_print_frame_header(const char *prefix,
     printf("\r\n");
 }
 
-static void diag_log_tx_frame(const uint8_t *frame, size_t frame_len)
-{
-    uint32_t count = ++s_diag_tx_log_count;
-
-    if (count <= 12U || (count % 64U) == 0U) {
-        diag_print_frame_header("esp32_spi_tx_diag", count, frame, frame_len);
-    }
-}
-
 static void diag_log_rx_reject(const char *reason, const uint8_t *frame, size_t frame_len)
 {
     uint32_t count = ++s_diag_rx_reject_count;
@@ -336,44 +299,14 @@ static void diag_log_exchange_rx(const uint8_t *frame, size_t frame_len)
     if (frame == NULL || frame_len == 0U || frame[0] == 0U) {
         return;
     }
-    if (count <= 24U || (count % 64U) == 0U) {
+    if (count <= 24U) {
         diag_print_frame_header("esp32_spi_rx_diag", count, frame, frame_len);
     }
 }
 
-static uint32_t tick_delta_us(TickType_t from_tick, TickType_t to_tick)
-{
-    TickType_t delta_ticks = to_tick - from_tick;
-
-    return (uint32_t)delta_ticks * (uint32_t)portTICK_PERIOD_MS * 1000U;
-}
-
 static int send_time_sync(void);
 static int send_hello(void);
-
-static bool reset_pin_configured(void)
-{
-    return pin_configured(CONFIG_M61_ESP32_RESET_PIN);
-}
-
-static void mark_transport_success(void)
-{
-    s_transport.stats.recovery_consecutive_errors = 0;
-}
-
-static bool recovery_cooldown_elapsed(uint32_t now_us)
-{
-    uint32_t cooldown_us = (CONFIG_M61_ESP32_RECOVERY_COOLDOWN_MS > 0 ?
-                            CONFIG_M61_ESP32_RECOVERY_COOLDOWN_MS :
-                            0) * 1000U;
-
-    if (cooldown_us == 0 ||
-        s_transport.stats.last_recovery_local_us == 0) {
-        return true;
-    }
-
-    return (now_us - s_transport.stats.last_recovery_local_us) >= cooldown_us;
-}
+static void scheduler_rx_callback(const uint8_t *frame, size_t frame_len, void *ctx);
 
 static void invalidate_peer_generation(void)
 {
@@ -417,104 +350,11 @@ static void invalidate_peer_generation(void)
     state_cb_ctx = s_transport.bt_state_cb_ctx;
     bflb_irq_restore(irq_flags);
 
+    m61_spi_scheduler_set_generation(generation);
+
     if (state_cb != NULL) {
         state_cb(0, empty_bda, 0, generation, state_cb_ctx);
     }
-}
-
-static void perform_recovery(uint8_t reason)
-{
-    int hello_err;
-    int sync_err;
-    uint32_t now_us = local_time_us();
-
-    if (CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD <= 0 ||
-        s_transport.recovering) {
-        return;
-    }
-    if (!recovery_cooldown_elapsed(now_us)) {
-        s_transport.stats.recovery_suppressed++;
-        return;
-    }
-
-    s_transport.stats.last_recovery_reason = reason;
-    s_transport.stats.last_recovery_local_us = now_us;
-    s_transport.stats.recovery_consecutive_errors = 0;
-    note_event(M61_ESP32_EVENT_RECOVERY, reason, 0, now_us, s_transport.stats.recovery_attempts);
-
-    if (s_transport.gpio == NULL || !reset_pin_configured()) {
-        s_transport.stats.recovery_skipped_no_reset++;
-        return;
-    }
-
-    s_transport.recovering = true;
-    s_transport.ready = false;
-    invalidate_peer_generation();
-    s_transport.time_sync_valid = false;
-    s_transport.stats.time_sync_valid = 0;
-    s_transport.stats.recovery_attempts++;
-
-    if (s_transport.lock != NULL &&
-        xSemaphoreTake(s_transport.lock, pdMS_TO_TICKS(100)) != pdTRUE) {
-        s_transport.ready = true;
-        s_transport.recovering = false;
-        s_transport.stats.recovery_failures++;
-        s_transport.stats.last_error = -EBUSY;
-        return;
-    }
-
-    bflb_gpio_reset(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_RESET_PIN);
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_ESP32_RESET_PULSE_MS > 0 ?
-                             CONFIG_M61_ESP32_RESET_PULSE_MS : 50));
-    bflb_gpio_set(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_RESET_PIN);
-
-    if (s_transport.lock != NULL) {
-        xSemaphoreGive(s_transport.lock);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_ESP32_RESET_BOOT_MS > 0 ?
-                             CONFIG_M61_ESP32_RESET_BOOT_MS : 750));
-    s_transport.ready = true;
-
-    hello_err = send_hello();
-    sync_err = send_time_sync();
-    if (hello_err == 0 && sync_err == 0) {
-        s_transport.stats.recovery_successes++;
-        s_transport.stats.last_error = 0;
-        mark_transport_success();
-    } else {
-        s_transport.stats.recovery_failures++;
-        s_transport.stats.last_error = hello_err < 0 ? hello_err : sync_err;
-    }
-
-    s_transport.recovering = false;
-}
-
-static void mark_transport_error(int err, uint8_t reason)
-{
-    (void)err;
-
-    if (CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD <= 0 ||
-        s_transport.recovering) {
-        return;
-    }
-
-    s_transport.stats.recovery_consecutive_errors++;
-    if (s_transport.stats.recovery_consecutive_errors >=
-        (uint32_t)CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD) {
-        perform_recovery(reason);
-    }
-}
-
-static void init_optional_input_gpio(int pin, uint32_t pull)
-{
-    if (s_transport.gpio == NULL || !pin_configured(pin)) {
-        return;
-    }
-
-    bflb_gpio_init(s_transport.gpio,
-                   (uint8_t)pin,
-                   GPIO_INPUT | pull | GPIO_SMT_EN | GPIO_DRV_0);
 }
 
 static void init_optional_reset_gpio(void)
@@ -531,50 +371,12 @@ static void init_optional_reset_gpio(void)
 
 static int init_spi_master(void)
 {
-    struct bflb_spi_config_s spi_cfg = {
-        .freq = CONFIG_M61_ESP32_SPI_FREQ_HZ,
-        .role = SPI_ROLE_MASTER,
-        .mode = SPI_MODE0,
-        .data_width = SPI_DATA_WIDTH_8BIT,
-        .bit_order = SPI_BIT_MSB,
-        .byte_order = SPI_BYTE_LSB,
-        .tx_fifo_threshold = 0,
-        .rx_fifo_threshold = 0,
-    };
-
-    if (!CONFIG_M61_ESP32_SPI_ENABLE || !CONFIG_M61_ESP32_SPI_READY) {
-        return -ENOTCONN;
-    }
-    if (!spi_pins_configured()) {
-        return -EINVAL;
-    }
-
     s_transport.gpio = bflb_device_get_by_name("gpio");
-    s_transport.spi = bflb_device_get_by_name("spi0");
-    if (s_transport.gpio == NULL || s_transport.spi == NULL) {
+    if (s_transport.gpio == NULL) {
         return -ENODEV;
     }
-
-    bflb_gpio_init(s_transport.gpio,
-                   (uint8_t)CONFIG_M61_ESP32_SPI_SCLK_PIN,
-                   GPIO_FUNC_SPI0 | GPIO_ALTERNATE | GPIO_FLOAT | GPIO_SMT_EN | GPIO_DRV_1);
-    bflb_gpio_init(s_transport.gpio,
-                   (uint8_t)CONFIG_M61_ESP32_SPI_MOSI_PIN,
-                   GPIO_FUNC_SPI0 | GPIO_ALTERNATE | GPIO_FLOAT | GPIO_SMT_EN | GPIO_DRV_1);
-    bflb_gpio_init(s_transport.gpio,
-                   (uint8_t)CONFIG_M61_ESP32_SPI_MISO_PIN,
-                   GPIO_FUNC_SPI0 | GPIO_ALTERNATE | GPIO_FLOAT | GPIO_SMT_EN | GPIO_DRV_1);
-    bflb_gpio_init(s_transport.gpio,
-                   (uint8_t)CONFIG_M61_ESP32_SPI_CS_PIN,
-                   GPIO_OUTPUT | GPIO_PULLUP | GPIO_SMT_EN | GPIO_DRV_1);
-    bflb_gpio_set(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_SPI_CS_PIN);
-    init_optional_input_gpio(CONFIG_M61_ESP32_READY_PIN, GPIO_PULLDOWN);
-    init_optional_input_gpio(CONFIG_M61_ESP32_IRQ_PIN, GPIO_PULLDOWN);
     init_optional_reset_gpio();
-
-    bflb_spi_init(s_transport.spi, &spi_cfg);
-    bflb_spi_feature_control(s_transport.spi, SPI_CMD_SET_CS_INTERVAL, 0);
-    return 0;
+    return m61_spi_scheduler_init(scheduler_rx_callback, NULL);
 }
 
 static bool optional_ready_pin_active(void)
@@ -586,20 +388,6 @@ static bool optional_ready_pin_active(void)
     return bflb_gpio_read(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_READY_PIN);
 }
 
-static bool wait_ready_for_exchange(uint32_t timeout_ms)
-{
-    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
-
-    do {
-        if (optional_ready_pin_active()) {
-            return true;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1));
-    } while ((int32_t)(deadline - xTaskGetTickCount()) > 0);
-
-    return optional_ready_pin_active();
-}
-
 static bool optional_irq_pin_active(void)
 {
     if (s_transport.gpio == NULL || !pin_configured(CONFIG_M61_ESP32_IRQ_PIN)) {
@@ -607,26 +395,6 @@ static bool optional_irq_pin_active(void)
     }
 
     return bflb_gpio_read(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_IRQ_PIN);
-}
-
-static void spi_cs_select(void)
-{
-    if (s_transport.gpio == NULL || !pin_configured(CONFIG_M61_ESP32_SPI_CS_PIN)) {
-        return;
-    }
-
-    bflb_gpio_reset(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_SPI_CS_PIN);
-    bflb_mtimer_delay_us(2);
-}
-
-static void spi_cs_deselect(void)
-{
-    if (s_transport.gpio == NULL || !pin_configured(CONFIG_M61_ESP32_SPI_CS_PIN)) {
-        return;
-    }
-
-    bflb_mtimer_delay_us(2);
-    bflb_gpio_set(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_SPI_CS_PIN);
 }
 
 static bool peer_link_ready(void)
@@ -817,6 +585,7 @@ static void handle_rx_bt_state(const uint8_t *payload, size_t payload_len)
     memcpy(s_transport.stats.peer_bt_bda, state.bda, sizeof(state.bda));
     s_transport.stats.peer_bt_state_seq = state.state_seq;
     s_transport.stats.peer_generation = s_transport.peer_generation;
+    m61_spi_scheduler_set_generation(s_transport.peer_generation);
     if (s_transport.bt_state_cb != NULL) {
         s_transport.bt_state_cb(state.flags,
                                 state.bda,
@@ -985,205 +754,30 @@ static void process_rx_frame(const uint8_t *frame, size_t frame_len)
     }
 }
 
-static int exchange_frame(uint8_t *frame, size_t frame_len)
+static void scheduler_rx_callback(const uint8_t *frame, size_t frame_len, void *ctx)
 {
-    int err;
-
-    if (frame == NULL || frame_len > M61_ESP32_SPI_TRANSACTION_LEN) {
-        return -EINVAL;
-    }
-    if (s_transport.spi == NULL) {
-        return -ENODEV;
-    }
-    if (!wait_ready_for_exchange(M61_ESP32_SPI_READY_WAIT_MS)) {
-        s_transport.stats.not_ready++;
-        return -EAGAIN;
-    }
-
-    memset(s_spi_tx_frame, 0, sizeof(s_spi_tx_frame));
-    memset(s_spi_rx_frame, 0, sizeof(s_spi_rx_frame));
-    memcpy(s_spi_tx_frame, frame, frame_len);
-    diag_log_tx_frame(s_spi_tx_frame, frame_len);
-
-    spi_cs_select();
-    err = bflb_spi_poll_exchange(s_transport.spi,
-                                 s_spi_tx_frame,
-                                 s_spi_rx_frame,
-                                 sizeof(s_spi_tx_frame));
-    spi_cs_deselect();
-    if (err < 0) {
-        return err;
-    }
-
-    diag_log_exchange_rx(s_spi_rx_frame, sizeof(s_spi_rx_frame));
-    process_rx_frame(s_spi_rx_frame, sizeof(s_spi_rx_frame));
-    return 0;
+    (void)ctx;
+    diag_log_exchange_rx(frame, frame_len);
+    process_rx_frame(frame, frame_len);
 }
 
 static int poll_rx_response(void)
 {
-    int err;
-
-    if (s_transport.spi == NULL) {
-        return -ENODEV;
+    if (!s_transport.ready) {
+        return -ENOTCONN;
     }
-    if (!wait_ready_for_exchange(M61_ESP32_SPI_READY_WAIT_MS)) {
-        s_transport.stats.not_ready++;
-        return -EAGAIN;
-    }
-
-    memset(s_spi_tx_frame, 0, sizeof(s_spi_tx_frame));
-    memset(s_spi_rx_frame, 0, sizeof(s_spi_rx_frame));
-    spi_cs_select();
-    err = bflb_spi_poll_exchange(s_transport.spi,
-                                 s_spi_tx_frame,
-                                 s_spi_rx_frame,
-                                 sizeof(s_spi_tx_frame));
-    spi_cs_deselect();
-    if (err < 0) {
-        return err;
-    }
-
-    diag_log_exchange_rx(s_spi_rx_frame, sizeof(s_spi_rx_frame));
-    process_rx_frame(s_spi_rx_frame, sizeof(s_spi_rx_frame));
+    m61_spi_scheduler_notify_irq();
     return 0;
-}
-
-static int poll_reliable_ack(uint16_t seq, uint8_t type)
-{
-    uint32_t start_ack = s_transport.stats.rx_ack;
-    uint32_t poll_count = CONFIG_M61_ESP32_ACK_POLL_COUNT > 0 ?
-        CONFIG_M61_ESP32_ACK_POLL_COUNT :
-        0;
-
-    if (poll_count == 0) {
-        return -ETIMEDOUT;
-    }
-
-    for (uint32_t i = 0; i < poll_count; i++) {
-        int err;
-
-        vTaskDelay(pdMS_TO_TICKS(1));
-        err = poll_rx_response();
-        s_transport.stats.tx_ack_polls++;
-        if (err < 0) {
-            if (err == -EAGAIN || err == -EBUSY) {
-                continue;
-            }
-            s_transport.stats.last_error = err;
-            return err;
-        }
-        if (s_transport.stats.rx_ack != start_ack &&
-            s_transport.stats.last_ack_seq == seq &&
-            s_transport.stats.last_ack_type == type) {
-            if (s_transport.stats.last_ack_status < 0) {
-                s_transport.stats.ack_status_errors++;
-            }
-            return s_transport.stats.last_ack_status;
-        }
-    }
-
-    s_transport.stats.ack_miss++;
-    return -ETIMEDOUT;
-}
-
-static bool ack_result_should_retry(int ack_result)
-{
-    return ack_result == -ETIMEDOUT ||
-           ack_result == -ENOMEM ||
-           ack_result == -EAGAIN ||
-           ack_result == -EBUSY;
-}
-
-static void rx_poll_task(void *arg)
-{
-    const TickType_t delay_ticks =
-        pdMS_TO_TICKS(CONFIG_M61_ESP32_RX_POLL_INTERVAL_MS > 0 ?
-                      CONFIG_M61_ESP32_RX_POLL_INTERVAL_MS : 1);
-    bool irq_configured = pin_configured(CONFIG_M61_ESP32_IRQ_PIN);
-
-    (void)arg;
-
-    while (1) {
-        if (s_transport.ready &&
-            (!irq_configured || optional_irq_pin_active())) {
-            int err;
-
-            if (s_transport.lock != NULL &&
-                xSemaphoreTake(s_transport.lock, pdMS_TO_TICKS(20)) != pdTRUE) {
-                s_transport.stats.queue_drop_old++;
-            } else {
-                err = poll_rx_response();
-                if (err < 0) {
-                    s_transport.stats.last_error = err;
-                } else {
-                    s_transport.stats.last_error = 0;
-                }
-                if (s_transport.lock != NULL) {
-                    xSemaphoreGive(s_transport.lock);
-                }
-            }
-        }
-        vTaskDelay(delay_ticks);
-    }
 }
 
 static void start_rx_poll_task(void)
 {
-    if (!CONFIG_M61_ESP32_RX_POLL_ENABLE || s_transport.rx_poll_task != NULL) {
-        return;
-    }
-
-    BaseType_t ok = xTaskCreate(rx_poll_task,
-                                "m61_esp32_rx",
-                                1024,
-                                NULL,
-                                6,
-                                &s_transport.rx_poll_task);
-    if (ok != pdPASS) {
-        s_transport.rx_poll_task = NULL;
-        s_transport.stats.last_error = -ENOMEM;
-    }
-}
-
-static void time_sync_task(void *arg)
-{
-    const TickType_t delay_ticks =
-        pdMS_TO_TICKS(CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS > 0 ?
-                      CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS : 1000);
-
-    (void)arg;
-
-    while (1) {
-        vTaskDelay(delay_ticks);
-        if (!s_transport.ready) {
-            continue;
-        }
-
-        int err = send_time_sync();
-        if (err < 0) {
-            s_transport.stats.last_error = err;
-        }
-    }
+    /* RX is event driven by the ESP IRQ GPIO in m61_spi_scheduler. */
 }
 
 static void start_time_sync_task(void)
 {
-    if (CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS <= 0 ||
-        s_transport.time_sync_task != NULL) {
-        return;
-    }
-
-    BaseType_t ok = xTaskCreate(time_sync_task,
-                                "m61_esp32_ts",
-                                1024,
-                                NULL,
-                                4,
-                                &s_transport.time_sync_task);
-    if (ok != pdPASS) {
-        s_transport.time_sync_task = NULL;
-        s_transport.stats.last_error = -ENOMEM;
-    }
+    /* Cross-chip deadlines are not part of the realtime target path. */
 }
 
 static void bringup_task(void *arg)
@@ -1249,21 +843,12 @@ static int send_payload(uint8_t type,
                         const uint8_t *payload,
                         size_t payload_len)
 {
-    ds5_dual_spi_header_t header;
-    uint8_t frame[DS5_DUAL_SPI_HEADER_LEN + DS5_DUAL_SPI_MAX_PAYLOAD];
-    size_t frame_len;
-    uint16_t seq;
-    uint32_t deadline = 0;
-    bool reliable = (flags & DS5_DUAL_FLAG_RELIABLE) != 0;
-    uint32_t max_attempts = reliable ?
-        (1U + (CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT > 0 ?
-               CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT :
-               0U)) :
-        1U;
-    bool ack_failure = false;
-    bool peer_ack_status_error = false;
+    uint32_t generation = s_transport.peer_generation != 0U ?
+        s_transport.peer_generation : 1U;
+    uint64_t created_us = bflb_mtimer_get_time_us();
     int err;
 
+    (void)deadline_tick;
     if ((payload == NULL && payload_len != 0) ||
         payload_len > DS5_DUAL_SPI_MAX_PAYLOAD) {
         s_transport.stats.last_error = -EINVAL;
@@ -1281,115 +866,45 @@ static int send_payload(uint8_t type,
         }
         return -ENOTCONN;
     }
-    if (s_transport.stats.rx_flow_credit > 0 &&
-        (flags & DS5_DUAL_FLAG_DROP_OK) != 0) {
-        if (!s_transport.stats.last_credit_bt_ready) {
-            s_transport.stats.not_ready++;
-            s_transport.stats.last_error = -ENOTCONN;
-            if (event_log_interesting_counter(s_transport.stats.not_ready)) {
-                note_event(M61_ESP32_EVENT_BT_NOT_READY,
-                           type,
-                           -ENOTCONN,
-                           s_transport.stats.peer_bt_flags,
-                           s_transport.stats.rx_flow_credit);
-            }
-            return -ENOTCONN;
-        }
-        if (s_transport.stats.last_credit_free == 0) {
-            s_transport.stats.queue_drop_old++;
-            s_transport.stats.last_error = -EAGAIN;
-            return -EAGAIN;
-        }
-    }
-    if (deadline_tick != 0 && s_transport.time_sync_valid) {
-        TickType_t now_tick = xTaskGetTickCount();
-        int32_t delta_ticks = (int32_t)(deadline_tick - now_tick);
-        uint32_t local_deadline_us;
+    if (type == DS5_DUAL_MSG_BT_TX_AUDIO_RT) {
+        err = m61_spi_submit_rt_report(payload, payload_len, generation,
+                                       created_us);
+    } else if (type == DS5_DUAL_MSG_BT_TX_REPORT && payload_len > 0U &&
+               payload[0] == 0x31U) {
+        err = m61_spi_publish_state31(payload, payload_len, generation,
+                                      created_us);
+    } else if (type == DS5_DUAL_MSG_BT_TX_REPORT && payload_len > 0U &&
+               payload[0] == 0x32U) {
+        err = m61_spi_publish_state32(payload, payload_len, generation,
+                                      created_us);
+    } else {
+        m61_spi_control_request_t request = {
+            .type = type,
+            .flags = flags,
+            .channel = channel,
+            .priority = priority,
+            .payload = payload,
+            .payload_len = (uint16_t)payload_len,
+            .generation = generation,
+            .created_us = created_us,
+        };
 
-        if (delta_ticks <= 0) {
-            s_transport.stats.deadline_miss++;
-            local_deadline_us = local_time_us();
-        } else {
-            local_deadline_us = local_time_us() + tick_delta_us(now_tick, deadline_tick);
-        }
-        deadline = (uint32_t)((int32_t)local_deadline_us + s_transport.esp_time_offset_us);
-    }
-
-    frame_len = ds5_dual_spi_frame_len((uint16_t)payload_len);
-    seq = next_seq(channel);
-    ds5_dual_spi_header_init(&header,
-                             type,
-                             flags,
-                             channel,
-                             priority,
-                             seq,
-                             deadline,
-                             (uint16_t)payload_len);
-    if (!ds5_dual_spi_finalize_frame(frame, sizeof(frame), &header, payload)) {
-        s_transport.stats.frame_errors++;
-        s_transport.stats.last_error = -EINVAL;
-        return -EINVAL;
-    }
-
-    if (s_transport.lock != NULL &&
-        xSemaphoreTake(s_transport.lock, pdMS_TO_TICKS(20)) != pdTRUE) {
-        s_transport.stats.queue_drop_old++;
-        s_transport.stats.last_error = -EBUSY;
-        return -EBUSY;
-    }
-    for (uint32_t attempt = 0; attempt < max_attempts; attempt++) {
-        peer_ack_status_error = false;
-        err = exchange_frame(frame, frame_len);
-        if (err < 0) {
-            break;
-        }
-
-        s_transport.stats.tx_frames++;
-        s_transport.stats.tx_bytes += (uint32_t)frame_len;
-        if (!reliable) {
-            break;
-        }
-
-        uint32_t ack_rx_before = s_transport.stats.rx_ack;
-        int ack_result = poll_reliable_ack(seq, type);
-        bool got_peer_ack = s_transport.stats.rx_ack != ack_rx_before &&
-                            s_transport.stats.last_ack_seq == seq &&
-                            s_transport.stats.last_ack_type == type;
-        if (ack_result >= 0) {
-            err = 0;
-            peer_ack_status_error = false;
-            break;
-        }
-        err = ack_result;
-        ack_failure = true;
-        peer_ack_status_error = got_peer_ack;
-        if (attempt + 1U < max_attempts &&
-            ack_result_should_retry(ack_result)) {
-            s_transport.stats.ack_retries++;
-            continue;
-        }
-        s_transport.stats.ack_failures++;
-        break;
-    }
-    if (s_transport.lock != NULL) {
-        xSemaphoreGive(s_transport.lock);
+        err = m61_spi_submit_control(&request);
     }
     if (err < 0) {
         s_transport.stats.last_error = err;
-        note_event(ack_failure ? M61_ESP32_EVENT_ACK_ERROR : M61_ESP32_EVENT_TX_ERROR,
+        if (err == -EAGAIN) {
+            s_transport.stats.queue_drop_old++;
+        }
+        note_event(M61_ESP32_EVENT_TX_ERROR,
                    type,
                    err,
-                   ((uint32_t)seq << 16) | flags,
+                   flags,
                    payload_len);
-        if (!peer_ack_status_error) {
-            mark_transport_error(err, M61_ESP32_RECOVERY_REASON_TX);
-        }
         return err;
     }
 
-    s_transport.stats.last_seq = seq;
     s_transport.stats.last_error = 0;
-    mark_transport_success();
     return 0;
 }
 
@@ -1440,7 +955,6 @@ static int send_time_sync(void)
         .m61_time_us = local_time_us(),
     };
     uint8_t payload[DS5_DUAL_TIME_SYNC_PAYLOAD_LEN];
-    uint32_t start_rx_time_sync = s_transport.stats.rx_time_sync;
     int err;
 
     if (!ds5_dual_time_sync_encode(&sync, payload, sizeof(payload))) {
@@ -1461,36 +975,7 @@ static int send_time_sync(void)
         return err;
     }
     s_transport.stats.tx_time_sync++;
-
-    for (uint32_t i = 0; i < 2U; i++) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-        if (s_transport.lock != NULL &&
-            xSemaphoreTake(s_transport.lock, pdMS_TO_TICKS(20)) != pdTRUE) {
-            s_transport.stats.queue_drop_old++;
-            s_transport.stats.last_error = -EBUSY;
-            s_transport.stats.time_sync_failures++;
-            return -EBUSY;
-        }
-        err = poll_rx_response();
-        if (s_transport.lock != NULL) {
-            xSemaphoreGive(s_transport.lock);
-        }
-        if (err < 0) {
-            s_transport.stats.last_error = err;
-            s_transport.stats.time_sync_failures++;
-            mark_transport_error(err, M61_ESP32_RECOVERY_REASON_TIME_SYNC);
-            return err;
-        }
-        if (s_transport.stats.rx_time_sync != start_rx_time_sync) {
-            s_transport.stats.last_error = 0;
-            return 0;
-        }
-    }
-
-    s_transport.stats.last_error = -ETIMEDOUT;
-    s_transport.stats.time_sync_failures++;
-    mark_transport_error(-ETIMEDOUT, M61_ESP32_RECOVERY_REASON_TIME_SYNC);
-    return -ETIMEDOUT;
+    return 0;
 }
 
 void m61_esp32_transport_init(void)
@@ -1510,7 +995,8 @@ void m61_esp32_transport_init(void)
     s_transport.feature_cb_ctx = feature_cb_ctx;
     s_transport.bt_state_cb = bt_state_cb;
     s_transport.bt_state_cb_ctx = bt_state_cb_ctx;
-    s_transport.lock = xSemaphoreCreateMutex();
+    s_transport.peer_generation = 1U;
+    s_transport.stats.peer_generation = 1U;
     err = init_spi_master();
     s_transport.ready = (err == 0);
     if (!s_transport.ready) {
@@ -1601,9 +1087,7 @@ int m61_esp32_transport_send_bt_report(const uint8_t *report,
     uint8_t type = realtime ? DS5_DUAL_MSG_BT_TX_AUDIO_RT : DS5_DUAL_MSG_BT_TX_REPORT;
     uint8_t channel = realtime ? DS5_DUAL_CHANNEL_AUDIO : DS5_DUAL_CHANNEL_OUTPUT;
     uint8_t priority = realtime ? DS5_DUAL_PRIORITY_RT : DS5_DUAL_PRIORITY_HID;
-    uint16_t flags = realtime ?
-        (DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK) :
-        (DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_RELIABLE);
+    uint16_t flags = DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK;
     int err;
 
     if (report == NULL || report_len == 0) {
@@ -1648,7 +1132,7 @@ int m61_esp32_transport_send_bt_report(const uint8_t *report,
 
 int m61_esp32_transport_request_feature(uint8_t report_id, uint32_t requested_len)
 {
-    uint8_t payload[5];
+    uint8_t payload[DS5_DUAL_FEATURE_GET_PAYLOAD_LEN];
     int err;
 
     err = require_peer_link_ready();
@@ -1812,19 +1296,7 @@ int m61_esp32_transport_forget(uint8_t flags)
 
 static int poll_rx_response_locked(void)
 {
-    int err;
-
-    if (s_transport.lock != NULL &&
-        xSemaphoreTake(s_transport.lock, pdMS_TO_TICKS(20)) != pdTRUE) {
-        s_transport.stats.queue_drop_old++;
-        s_transport.stats.last_error = -EBUSY;
-        return -EBUSY;
-    }
-    err = poll_rx_response();
-    if (s_transport.lock != NULL) {
-        xSemaphoreGive(s_transport.lock);
-    }
-    return err;
+    return poll_rx_response();
 }
 
 static int send_wire_test_marker(uint8_t marker)
@@ -2095,16 +1567,7 @@ int m61_esp32_transport_request_stats(void)
 
     for (uint32_t i = 0; i < 2U; i++) {
         vTaskDelay(pdMS_TO_TICKS(1));
-        if (s_transport.lock != NULL &&
-            xSemaphoreTake(s_transport.lock, pdMS_TO_TICKS(20)) != pdTRUE) {
-            s_transport.stats.queue_drop_old++;
-            s_transport.stats.last_error = -EBUSY;
-            return -EBUSY;
-        }
         err = poll_rx_response();
-        if (s_transport.lock != NULL) {
-            xSemaphoreGive(s_transport.lock);
-        }
         if (err < 0) {
             s_transport.stats.last_error = err;
             return err;
@@ -2122,7 +1585,24 @@ int m61_esp32_transport_request_stats(void)
 void m61_esp32_transport_get_stats(m61_esp32_transport_stats_t *stats)
 {
     if (stats != NULL) {
+        m61_spi_scheduler_stats_t scheduler_stats;
+
         *stats = s_transport.stats;
+        m61_spi_scheduler_get_stats(&scheduler_stats);
+        stats->tx_frames = (uint32_t)scheduler_stats.transactions;
+        stats->tx_bytes = (uint32_t)scheduler_stats.tx_bytes;
+        stats->tx_ack_polls = (uint32_t)scheduler_stats.ack_polls;
+        stats->ack_retries = (uint32_t)scheduler_stats.control_retried;
+        stats->ack_failures = (uint32_t)scheduler_stats.control_failed;
+        stats->queue_drop_old += (uint32_t)(scheduler_stats.rt_replaced +
+                                            scheduler_stats.control_rejected);
+        stats->frame_errors += (uint32_t)scheduler_stats.rx_frame_errors;
+        stats->crc_errors += (uint32_t)scheduler_stats.rx_crc_errors;
+        stats->not_ready += (uint32_t)scheduler_stats.ready_timeouts;
+        stats->last_seq = scheduler_stats.last_tx_seq;
+        if (scheduler_stats.last_error != 0) {
+            stats->last_error = scheduler_stats.last_error;
+        }
     }
 }
 
@@ -2140,6 +1620,8 @@ void m61_esp32_transport_reset_stats(void)
         }
     }
     memset(&s_transport.stats, 0, sizeof(s_transport.stats));
+    s_transport.stats.peer_generation = s_transport.peer_generation;
+    m61_spi_scheduler_reset_stats();
 }
 
 static const char *bt_flags_to_str(uint32_t flags, char *buf, size_t buf_len)
@@ -2199,11 +1681,14 @@ static const char *bt_flags_to_str(uint32_t flags, char *buf, size_t buf_len)
 void m61_esp32_transport_print_stats(void)
 {
     char bt_flags_buf[96];
+    m61_spi_scheduler_stats_t scheduler_stats;
     uint32_t time_sync_age_ms = s_transport.stats.time_sync_valid ?
         ((local_time_us() - s_transport.stats.last_time_sync_local_us) / 1000U) :
         0U;
 
-    printf("esp32_spi ready=%u tx=%lu bytes=%lu hello_tx=%lu tsync_tx=%lu tsync_fail=%lu tsync_age_ms=%lu recov=%lu recov_ok=%lu recov_fail=%lu recov_skip=%lu recov_suppress=%lu recov_consec=%lu recov_reason=%u audio_rt=%lu reports=%lu fget=%lu fset=%lu bt_conn=%lu bt_disc=%lu rst=%lu stats_req=%lu rx=%lu rx_bytes=%lu hello_rx=%lu tsync_rx=%lu stats_rx=%lu sync=%u rtt_us=%lu offset_us=%ld ack=%lu ack_poll=%lu ack_retry=%lu ack_fail=%lu ack_miss=%lu ack_err=%lu ack_seq=%u ack_type=%u ack_status=%d credit=%lu free=%u/%u bt=%u peer_role=%u peer_ver=%u peer_mtu=%u peer_payload=%u peer_q=%u peer_caps=0x%08lx peer_drop=%lu peer_txerr=%lu peer_last=%d ferr=%lu crc=%lu deadline=%lu drop_old=%lu not_ready=%lu seq=%u last_err=%d\r\n",
+    m61_spi_scheduler_get_stats(&scheduler_stats);
+
+    printf("esp32_spi ready=%u tx=%lu bytes=%lu hello_tx=%lu tsync_tx=%lu tsync_fail=%lu tsync_age_ms=%lu recov=%lu recov_ok=%lu recov_fail=%lu recov_skip=%lu recov_suppress=%lu recov_consec=%lu recov_reason=%u audio_rt=%lu reports=%lu fget=%lu fset=%lu bt_conn=%lu bt_disc=%lu rst=%lu stats_req=%lu rx=%lu rx_bytes=%lu hello_rx=%lu tsync_rx=%lu stats_rx=%lu sync=%u rtt_us=%lu offset_us=%ld ack=%lu ack_poll=%lu ack_retry=%lu ack_fail=%lu ack_miss=%lu ack_err=%lu ack_seq=%u ack_type=%u ack_status=%d credit=%lu free=%u/%u bt=%u peer_role=%u peer_ver=%u peer_mtu=%u peer_payload=%u peer_q=%u peer_caps=0x%08lx peer_drop=%lu peer_txerr=%lu peer_last=%d ferr=%lu crc=%lu deadline=%lu drop_old=%lu not_ready=%lu credit0=%lu tx_lock=%lu rx_lock=%lu ts_lock=%lu seq=%u last_err=%d\r\n",
            s_transport.ready ? 1U : 0U,
            (unsigned long)s_transport.stats.tx_frames,
            (unsigned long)s_transport.stats.tx_bytes,
@@ -2261,6 +1746,10 @@ void m61_esp32_transport_print_stats(void)
            (unsigned long)s_transport.stats.deadline_miss,
            (unsigned long)s_transport.stats.queue_drop_old,
            (unsigned long)s_transport.stats.not_ready,
+           (unsigned long)s_transport.stats.flow_credit_zero_rejects,
+           (unsigned long)s_transport.stats.tx_lock_timeouts,
+           (unsigned long)s_transport.stats.rx_poll_lock_timeouts,
+           (unsigned long)s_transport.stats.time_sync_lock_timeouts,
            (unsigned int)s_transport.stats.last_seq,
            s_transport.stats.last_error);
     printf("esp32_bt state_rx=%lu flags=0x%08lx(%s) seq=%u err=%ld rssi=%d bringup=%u reconnect_fail=%u mtu=%u/%u bda=%02x:%02x:%02x:%02x:%02x:%02x\r\n",
@@ -2305,6 +1794,37 @@ void m61_esp32_transport_print_stats(void)
            (unsigned long)s_transport.stats.peer_stats_flow_credit_tx,
            (unsigned long)s_transport.stats.peer_stats_bt_connect_rx,
            (unsigned long)s_transport.stats.peer_stats_bt_disconnect_rx);
+    printf("m61_spi_scheduler gen=%lu txn=%llu bytes=%llu rx=%llu frame_err=%llu crc_err=%llu rt=%llu/%llu replaced=%llu stale=%llu failed=%llu state31=%llu/%llu coalesced=%llu state32=%llu/%llu coalesced=%llu control=%llu/%llu reject=%llu retry=%llu fail=%llu ack_poll=%llu irq=%llu fallback=%llu ready_timeout=%llu xfer_err=%llu last_type=%u last_seq=%u last_err=%d\r\n",
+           (unsigned long)scheduler_stats.generation,
+           (unsigned long long)scheduler_stats.transactions,
+           (unsigned long long)scheduler_stats.tx_bytes,
+           (unsigned long long)scheduler_stats.rx_frames,
+           (unsigned long long)scheduler_stats.rx_frame_errors,
+           (unsigned long long)scheduler_stats.rx_crc_errors,
+           (unsigned long long)scheduler_stats.rt_accepted,
+           (unsigned long long)scheduler_stats.rt_transmitted,
+           (unsigned long long)scheduler_stats.rt_replaced,
+           (unsigned long long)scheduler_stats.rt_stale,
+           (unsigned long long)scheduler_stats.rt_failed,
+           (unsigned long long)scheduler_stats.state31_accepted,
+           (unsigned long long)scheduler_stats.state31_transmitted,
+           (unsigned long long)scheduler_stats.state31_coalesced,
+           (unsigned long long)scheduler_stats.state32_accepted,
+           (unsigned long long)scheduler_stats.state32_transmitted,
+           (unsigned long long)scheduler_stats.state32_coalesced,
+           (unsigned long long)scheduler_stats.control_accepted,
+           (unsigned long long)scheduler_stats.control_transmitted,
+           (unsigned long long)scheduler_stats.control_rejected,
+           (unsigned long long)scheduler_stats.control_retried,
+           (unsigned long long)scheduler_stats.control_failed,
+           (unsigned long long)scheduler_stats.ack_polls,
+           (unsigned long long)scheduler_stats.irq_notifications,
+           (unsigned long long)scheduler_stats.fallback_wakes,
+           (unsigned long long)scheduler_stats.ready_timeouts,
+           (unsigned long long)scheduler_stats.transfer_errors,
+           (unsigned int)scheduler_stats.last_tx_type,
+           (unsigned int)scheduler_stats.last_tx_seq,
+           scheduler_stats.last_error);
 }
 
 void m61_esp32_transport_print_events(bool clear_after_print)

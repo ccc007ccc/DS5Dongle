@@ -1,0 +1,33 @@
+{
+  "final": {
+    "require": {
+      "m61": [
+        "g_ds5_owner_m61_spi_scheduler",
+        "g_ds5_owner_m61_audio_epochs",
+        "g_m61_mic_opus_storage",
+        "g_m61_usb_control_storage"
+      ],
+      "esp": [
+        "g_ds5_owner_esp_tx_scheduler",
+        "g_ds5_owner_esp_response_scheduler",
+        "g_ds5_response_scheduler_storage"
+      ]
+    },
+    "forbid": {
+      "m61": [
+        "mic_opus_queue",
+        "pending_host_report"
+      ],
+      "esp": [
+        "s_realtime_cmd_queue",
+        "s_state31_cmd_queue",
+        "s_state32_cmd_queue",
+        "s_send_fifo",
+        "s_tx_queue",
+        "s_response_queue",
+        "s_response_head",
+        "s_response_count"
+      ]
+    }
+  }
+}

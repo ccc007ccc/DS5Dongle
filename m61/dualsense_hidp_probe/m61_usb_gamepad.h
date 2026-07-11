@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "dualsense_parser.h"
+#include "m61_audio_epoch.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,8 +38,7 @@ void m61_usb_gamepad_reset_feature_cache(void);
 void m61_usb_gamepad_reset_transport_queues(void);
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len);
 bool m61_usb_gamepad_take_host_report(m61_usb_gamepad_host_report_t *report);
-bool m61_usb_gamepad_take_haptics_block(uint8_t *data, size_t len);
-bool m61_usb_gamepad_take_speaker_opus(uint8_t *data, size_t len);
+bool m61_usb_gamepad_take_audio_epoch_pair(m61_audio_epoch_pair_t *pair);
 void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len);
 bool m61_usb_gamepad_audio_mic_enabled(void);
 bool m61_usb_gamepad_audio_in_active(void);
@@ -70,6 +70,11 @@ typedef struct {
     uint32_t feature_cache_misses;
     uint32_t feature_cache_stores;
     uint32_t host_report_dropped;
+    uint32_t usb_input_replaced;
+    uint32_t usb_input_retries;
+    uint32_t usb_control_ingress_dropped;
+    uint32_t usb_audio_ingress_dropped;
+    uint32_t usb_audio_ingress_stale;
     uint32_t audio_open;
     uint32_t audio_close;
     uint32_t audio_out_packets;
@@ -89,6 +94,17 @@ typedef struct {
     uint32_t audio_speaker_encode_us_last;
     uint32_t audio_speaker_encode_us_max;
     uint16_t audio_speaker_last_opus_len;
+    uint32_t audio_epoch_generation;
+    uint32_t audio_epoch_next;
+    uint32_t audio_epoch_generation_resets;
+    uint32_t audio_epoch_started;
+    uint32_t audio_epoch_completed;
+    uint32_t audio_epoch_dropped;
+    uint32_t audio_epoch_stale;
+    uint32_t audio_epoch_adjacent_pairs;
+    uint32_t audio_epoch_gaps;
+    uint32_t audio_epoch_discontinuities;
+    uint32_t audio_epoch_speaker_state_discontinuities;
     uint32_t audio_mic_opus_packets;
     uint32_t audio_mic_opus_nonzero;
     uint32_t audio_mic_opus_dropped;

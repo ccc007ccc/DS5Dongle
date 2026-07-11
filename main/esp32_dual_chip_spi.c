@@ -1,6 +1,8 @@
 #include "esp32_dual_chip_spi.h"
 
 #include "bt_dualsense_raw_hidp.h"
+#include "bt_ds5_tx_scheduler.h"
+#include "esp32_dual_chip_response_scheduler.h"
 #include "dual_chip_spi_proto.h"
 #include "led_status.h"
 #include "dualsense_parser.h"
@@ -11,8 +13,6 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include <errno.h>
@@ -21,14 +21,6 @@
 
 #ifndef CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR
 #define CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR 0
-#endif
-
-#ifndef CONFIG_DS5_DUAL_CHIP_TX_QUEUE_DEPTH
-#define CONFIG_DS5_DUAL_CHIP_TX_QUEUE_DEPTH 4
-#endif
-
-#ifndef CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH
-#define CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH 4
 #endif
 
 #ifndef CONFIG_DS5_DUAL_CHIP_SPI_HOST
@@ -59,43 +51,20 @@
 #define CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO -1
 #endif
 
-#define DS5_DUAL_CHIP_TASK_STACK 4096
 #define DS5_DUAL_CHIP_SPI_TASK_STACK 4096
 #define DS5_DUAL_CHIP_SPI_TRANSACTION_LEN \
     (DS5_DUAL_SPI_HEADER_LEN + DS5_DUAL_SPI_MAX_PAYLOAD)
 
-typedef struct {
-    uint8_t type;
-    uint16_t flags;
-    uint8_t channel;
-    uint8_t priority;
-    uint16_t ack_seq;
-    uint32_t deadline_us;
-    uint16_t len;
-    bool wants_ack;
-    uint8_t payload[DS5_DUAL_SPI_MAX_PAYLOAD];
-} dual_chip_tx_item_t;
-
-typedef struct {
-    uint8_t type;
-    uint16_t flags;
-    size_t len;
-    uint8_t frame[DS5_DUAL_CHIP_SPI_TRANSACTION_LEN];
-} dual_chip_response_item_t;
-
 static const char *TAG = "ds5_dual_spi";
-static QueueHandle_t s_tx_queue;
 #if CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR
-static TaskHandle_t s_tx_task;
 static TaskHandle_t s_spi_task;
-static SemaphoreHandle_t s_response_lock;
-static dual_chip_response_item_t s_response_queue[CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH];
-static uint8_t s_response_head;
-static uint8_t s_response_count;
 static uint32_t s_reject_log_count;
 static uint32_t s_transaction_log_count;
+static uint32_t s_frame_log_count;
 static uint32_t s_zero_transaction_count;
 static uint32_t s_short_response_count;
+static uint16_t s_rx_last_seq[DS5_DUAL_CHANNEL_LOG + 1U];
+static bool s_rx_seq_seen[DS5_DUAL_CHANNEL_LOG + 1U];
 static uint64_t s_output_gpio_configured_mask;
 DMA_ATTR static uint8_t s_spi_rx_buf[DS5_DUAL_CHIP_SPI_TRANSACTION_LEN];
 DMA_ATTR static uint8_t s_spi_tx_buf[DS5_DUAL_CHIP_SPI_TRANSACTION_LEN];
@@ -103,6 +72,8 @@ DMA_ATTR static uint8_t s_spi_tx_buf[DS5_DUAL_CHIP_SPI_TRANSACTION_LEN];
 static esp32_dual_chip_spi_stats_t s_stats;
 
 #if CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR
+static void set_pending_flow_credit(void);
+
 static void note_hidp_report(uint8_t report_id)
 {
     switch (report_id) {
@@ -145,33 +116,6 @@ void bt_dualsense_raw_hidp_note_tx(const uint8_t *data, size_t len, int status)
 }
 #endif
 
-static bool enqueue_latest(const dual_chip_tx_item_t *item)
-{
-    dual_chip_tx_item_t dropped;
-
-    if (s_tx_queue == NULL || item == NULL) {
-        return false;
-    }
-
-    if (xQueueSend(s_tx_queue, item, 0) == pdPASS) {
-        return true;
-    }
-
-    if ((item->flags & DS5_DUAL_FLAG_LATEST) != 0 &&
-        xQueueReceive(s_tx_queue, &dropped, 0) == pdPASS) {
-        if (dropped.wants_ack) {
-            (void)xQueueSendToFront(s_tx_queue, &dropped, 0);
-            s_stats.spi_queue_drops++;
-            return false;
-        }
-        s_stats.spi_queue_drops++;
-        return xQueueSend(s_tx_queue, item, 0) == pdPASS;
-    }
-
-    s_stats.spi_queue_drops++;
-    return false;
-}
-
 #if CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR
 static bool spi_pins_configured(void)
 {
@@ -200,6 +144,16 @@ static void set_optional_gpio_level(int gpio_num, int level)
         s_output_gpio_configured_mask |= gpio_mask;
     }
     ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)gpio_num, level));
+}
+
+static void response_irq_set(bool asserted, void *ctx)
+{
+    (void)ctx;
+    if (CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO >= 0) {
+        (void)gpio_set_level(
+            (gpio_num_t)CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO,
+            asserted ? 1U : 0U);
+    }
 }
 
 static uint16_t load_u16_le(const uint8_t *src)
@@ -297,7 +251,7 @@ static void log_transaction_diag(const uint8_t *frame,
             return;
         }
     }
-    if (log_count > 24U && (log_count % 64U) != 0U) {
+    if (log_count > 4U && (log_count & (log_count - 1U)) != 0U) {
         return;
     }
 
@@ -331,150 +285,6 @@ static uint16_t response_seq_for_type(uint8_t type)
     }
 }
 
-static uint8_t response_queue_index(uint8_t offset)
-{
-    return (uint8_t)((s_response_head + offset) %
-                     CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH);
-}
-
-static bool response_items_match_replace_key(const dual_chip_response_item_t *queued,
-                                             const dual_chip_response_item_t *incoming)
-{
-    if (queued == NULL || incoming == NULL) {
-        return false;
-    }
-    if (queued->type != incoming->type ||
-        (queued->flags & DS5_DUAL_FLAG_ACK) != 0 ||
-        (incoming->flags & DS5_DUAL_FLAG_ACK) != 0) {
-        return false;
-    }
-
-    switch (incoming->type) {
-    case DS5_DUAL_MSG_BT_RX_FEATURE_REPORT: {
-        uint16_t queued_payload_len = load_u16_le(queued->frame + 14);
-        uint16_t incoming_payload_len = load_u16_le(incoming->frame + 14);
-
-        if (queued_payload_len < 1U || incoming_payload_len < 1U) {
-            return false;
-        }
-        return queued->frame[DS5_DUAL_SPI_HEADER_LEN] ==
-               incoming->frame[DS5_DUAL_SPI_HEADER_LEN];
-    }
-    default:
-        return true;
-    }
-}
-
-static void response_queue_drop_tail_locked(void)
-{
-    if (s_response_count == 0) {
-        return;
-    }
-
-    s_response_count--;
-    s_stats.spi_queue_drops++;
-}
-
-static bool response_queue_replace_matching_locked(const dual_chip_response_item_t *item)
-{
-    if (item == NULL) {
-        return false;
-    }
-
-    for (uint8_t i = 0; i < s_response_count; i++) {
-        uint8_t idx = response_queue_index(i);
-
-        if (response_items_match_replace_key(&s_response_queue[idx], item)) {
-            s_response_queue[idx] = *item;
-            s_stats.spi_queue_drops++;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool response_queue_push_back_locked(const dual_chip_response_item_t *item,
-                                            bool replace_existing)
-{
-    uint8_t idx;
-
-    if (item == NULL) {
-        return false;
-    }
-    if (replace_existing && response_queue_replace_matching_locked(item)) {
-        return true;
-    }
-    if (s_response_count >= CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH) {
-        if (!replace_existing) {
-            return false;
-        }
-        response_queue_drop_tail_locked();
-    }
-
-    idx = response_queue_index(s_response_count);
-    s_response_queue[idx] = *item;
-    s_response_count++;
-    return true;
-}
-
-static bool response_queue_push_front_locked(const dual_chip_response_item_t *item)
-{
-    if (item == NULL) {
-        return false;
-    }
-    if (s_response_count >= CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH) {
-        response_queue_drop_tail_locked();
-    }
-
-    s_response_head = s_response_head == 0 ?
-        (CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH - 1) :
-        (s_response_head - 1);
-    s_response_queue[s_response_head] = *item;
-    s_response_count++;
-    return true;
-}
-
-static bool response_queue_peek_front_locked(dual_chip_response_item_t *item)
-{
-    if (item == NULL || s_response_count == 0) {
-        return false;
-    }
-
-    *item = s_response_queue[s_response_head];
-    return true;
-}
-
-static void response_queue_pop_front_locked(void)
-{
-    if (s_response_count == 0) {
-        return;
-    }
-
-    s_response_head = response_queue_index(1);
-    s_response_count--;
-}
-
-static bool response_queue_consume_matching_front_locked(const dual_chip_response_item_t *item)
-{
-    const dual_chip_response_item_t *head;
-
-    if (item == NULL || s_response_count == 0) {
-        return false;
-    }
-
-    head = &s_response_queue[s_response_head];
-    if (head->type != item->type ||
-        head->flags != item->flags ||
-        head->len != item->len ||
-        memcmp(head->frame, item->frame, item->len) != 0) {
-        return false;
-    }
-
-    response_queue_pop_front_locked();
-    return true;
-}
-
 static bool set_pending_response_with_flags(uint8_t type,
                                             uint16_t flags,
                                             uint8_t channel,
@@ -484,50 +294,15 @@ static bool set_pending_response_with_flags(uint8_t type,
                                             size_t payload_len,
                                             bool replace_existing)
 {
-    ds5_dual_spi_header_t header;
-    dual_chip_response_item_t item;
-    bool queued;
-
-    if (payload == NULL || payload_len == 0 || payload_len > DS5_DUAL_SPI_MAX_PAYLOAD) {
-        return false;
-    }
-
-    memset(&item, 0, sizeof(item));
-    item.type = type;
-    item.flags = flags;
-    item.len = ds5_dual_spi_frame_len((uint16_t)payload_len);
-    ds5_dual_spi_header_init(&header,
-                             type,
-                             flags,
-                             channel,
-                             priority,
-                             response_seq_for_type(type),
-                             timestamp_us,
-                             (uint16_t)payload_len);
-    if (!ds5_dual_spi_finalize_frame(item.frame, sizeof(item.frame), &header, payload)) {
-        s_stats.spi_crc_errors++;
-        return false;
-    }
-
-    if (s_response_lock != NULL) {
-        xSemaphoreTake(s_response_lock, portMAX_DELAY);
-    }
-    queued = ((flags & DS5_DUAL_FLAG_ACK) != 0 ||
-              type == DS5_DUAL_MSG_HELLO ||
-              type == DS5_DUAL_MSG_TIME_SYNC ||
-              type == DS5_DUAL_MSG_STATS ||
-              type == DS5_DUAL_MSG_FLOW_CREDIT) ?
-        response_queue_push_front_locked(&item) :
-        response_queue_push_back_locked(&item, replace_existing);
-    if (s_response_lock != NULL) {
-        xSemaphoreGive(s_response_lock);
-    }
-
-    if (!queued) {
-        return false;
-    }
-    set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO, 1);
-    return true;
+    (void)replace_existing;
+    return esp32_dual_response_publish(type,
+                                       flags,
+                                       channel,
+                                       priority,
+                                       response_seq_for_type(type),
+                                       timestamp_us,
+                                       payload,
+                                       payload_len);
 }
 
 static bool set_pending_response(uint8_t type,
@@ -560,7 +335,7 @@ static void set_pending_ack_fields(uint16_t seq,
     ack.type = type;
     ack.status = status;
     if (!ds5_dual_ack_encode(&ack, payload, sizeof(payload))) {
-        s_stats.spi_crc_errors++;
+        s_stats.spi_frame_errors++;
         return;
     }
 
@@ -587,13 +362,22 @@ static void set_pending_ack(const ds5_dual_spi_header_t *request, int32_t status
     set_pending_ack_fields(request->seq, request->type, request->channel, status);
 }
 
+static void control_complete_cb(uint16_t seq,
+                                uint8_t type,
+                                uint8_t channel,
+                                int status,
+                                void *ctx)
+{
+    (void)ctx;
+    set_pending_ack_fields(seq, type, channel, status);
+    set_pending_flow_credit();
+}
+
 static void set_pending_flow_credit(void)
 {
     ds5_dual_flow_credit_t credit = {
-        .tx_queue_free = s_tx_queue != NULL ?
-            (uint8_t)uxQueueSpacesAvailable(s_tx_queue) :
-            0,
-        .tx_queue_depth = CONFIG_DS5_DUAL_CHIP_TX_QUEUE_DEPTH,
+        .tx_queue_free = bt_ds5_tx_scheduler_free_count(),
+        .tx_queue_depth = DS5_SCHED_ESP_RT_REPORT_CAPACITY,
         .bt_ready = bt_dualsense_raw_hidp_ready(),
         .spi_queue_drops = s_stats.spi_queue_drops,
         .hidp_tx_errors = s_stats.hidp_tx_errors,
@@ -602,7 +386,7 @@ static void set_pending_flow_credit(void)
     uint8_t payload[DS5_DUAL_FLOW_CREDIT_PAYLOAD_LEN];
 
     if (!ds5_dual_flow_credit_encode(&credit, payload, sizeof(payload))) {
-        s_stats.spi_crc_errors++;
+        s_stats.spi_frame_errors++;
         return;
     }
 
@@ -646,7 +430,7 @@ static void set_pending_stats(void)
     uint8_t payload[DS5_DUAL_STATS_PAYLOAD_LEN];
 
     if (!ds5_dual_stats_encode(&stats, payload, sizeof(payload))) {
-        s_stats.spi_crc_errors++;
+        s_stats.spi_frame_errors++;
         return;
     }
 
@@ -671,7 +455,7 @@ static void set_pending_hello(void)
         .header_len = DS5_DUAL_SPI_HEADER_LEN,
         .max_payload = DS5_DUAL_SPI_MAX_PAYLOAD,
         .spi_mtu = DS5_DUAL_CHIP_SPI_TRANSACTION_LEN,
-        .tx_queue_depth = CONFIG_DS5_DUAL_CHIP_TX_QUEUE_DEPTH,
+        .tx_queue_depth = DS5_SCHED_ESP_RT_REPORT_CAPACITY,
         .capabilities = DS5_DUAL_CAP_BT_HIDP_RAW |
                         DS5_DUAL_CAP_AUDIO_RT |
                         DS5_DUAL_CAP_FEATURE_REPORTS |
@@ -682,7 +466,7 @@ static void set_pending_hello(void)
     uint8_t payload[DS5_DUAL_HELLO_PAYLOAD_LEN];
 
     if (!ds5_dual_hello_encode(&hello, payload, sizeof(payload))) {
-        s_stats.spi_crc_errors++;
+        s_stats.spi_frame_errors++;
         return;
     }
 
@@ -711,7 +495,7 @@ static void set_pending_time_sync(const ds5_dual_time_sync_t *request)
     sync.roundtrip_us = 0;
     sync.offset_us = 0;
     if (!ds5_dual_time_sync_encode(&sync, payload, sizeof(payload))) {
-        s_stats.spi_crc_errors++;
+        s_stats.spi_frame_errors++;
         return;
     }
 
@@ -747,7 +531,7 @@ static void set_pending_bt_state(const bt_dualsense_raw_hidp_state_t *raw_state,
     memcpy(state.bda, raw_state->bda, sizeof(state.bda));
     state.state_seq = raw_state->state_seq;
     if (!ds5_dual_bt_state_encode(&state, payload, sizeof(payload))) {
-        s_stats.spi_crc_errors++;
+        s_stats.spi_frame_errors++;
         return;
     }
 
@@ -764,62 +548,20 @@ static void set_pending_bt_state(const bt_dualsense_raw_hidp_state_t *raw_state,
     }
 }
 
-static bool stage_response_for_transaction(dual_chip_response_item_t *item,
-                                          size_t *response_len)
+static bool stage_response_for_transaction(esp32_dual_response_token_t *token,
+                                           size_t *response_len)
 {
-    bool valid = false;
-    bool dropped = false;
-    uint8_t queued_after = 0;
-
-    /* Keep the queued item in place until the slave transaction succeeds. */
     memset(s_spi_tx_buf, 0, sizeof(s_spi_tx_buf));
-    if (s_response_lock != NULL) {
-        xSemaphoreTake(s_response_lock, portMAX_DELAY);
-    }
-    valid = response_queue_peek_front_locked(item);
-    if (valid && item->len <= sizeof(s_spi_tx_buf)) {
-        memcpy(s_spi_tx_buf, item->frame, item->len);
-        if (response_len != NULL) {
-            *response_len = item->len;
-        }
-    } else if (valid) {
-        response_queue_pop_front_locked();
-        s_stats.spi_queue_drops++;
-        queued_after = s_response_count;
-        dropped = true;
-        valid = false;
-    }
-    if (s_response_lock != NULL) {
-        xSemaphoreGive(s_response_lock);
-    }
-
-    if (!valid && response_len != NULL) {
-        *response_len = 0;
-    }
-    if (dropped) {
-        set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO,
-                                queued_after > 0 ? 1 : 0);
-    }
-    return valid;
+    return esp32_dual_response_stage(s_spi_tx_buf,
+                                     sizeof(s_spi_tx_buf),
+                                     response_len,
+                                     token);
 }
 
-static void finish_response_transaction(const dual_chip_response_item_t *item, bool success)
+static void finish_response_transaction(const esp32_dual_response_token_t *token,
+                                        bool success)
 {
-    uint8_t queued_after;
-
-    if (s_response_lock != NULL) {
-        xSemaphoreTake(s_response_lock, portMAX_DELAY);
-    }
-    if (success) {
-        (void)response_queue_consume_matching_front_locked(item);
-    }
-    queued_after = s_response_count;
-    if (s_response_lock != NULL) {
-        xSemaphoreGive(s_response_lock);
-    }
-
-    set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO,
-                            queued_after > 0 ? 1 : 0);
+    esp32_dual_response_finish(token, success);
 }
 
 static void rx_forward_cb(const uint8_t *data, size_t len, int64_t timestamp_us, void *ctx)
@@ -869,79 +611,9 @@ static void state_forward_cb(const bt_dualsense_raw_hidp_state_t *state,
                              void *ctx)
 {
     (void)ctx;
+    esp32_dual_response_reset_generation(
+        bt_ds5_tx_scheduler_generation());
     set_pending_bt_state(state, timestamp_us);
-}
-
-static void tx_task(void *arg)
-{
-    dual_chip_tx_item_t item;
-
-    (void)arg;
-
-    while (true) {
-        if (xQueueReceive(s_tx_queue, &item, portMAX_DELAY) != pdPASS) {
-            continue;
-        }
-
-        if (item.deadline_us != 0 &&
-            esp_timer_get_time() > (int64_t)item.deadline_us) {
-            if (item.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT ||
-                (item.len > 0 && item.payload[0] == 0x39)) {
-                s_stats.deadline_miss_36++;
-            }
-            if (item.wants_ack) {
-                set_pending_ack_fields(item.ack_seq, item.type, item.channel, -ETIMEDOUT);
-            }
-            set_pending_flow_credit();
-            continue;
-        }
-
-        int err;
-        if (item.type == DS5_DUAL_MSG_BT_TX_FEATURE_GET) {
-            if (item.len < 1U) {
-                err = -EINVAL;
-            } else {
-                err = bt_dualsense_raw_hidp_get_feature(item.payload[0]);
-            }
-        } else if (item.type == DS5_DUAL_MSG_BT_TX_FEATURE_SET) {
-            if (item.len < 1U) {
-                err = -EINVAL;
-            } else {
-                err = bt_dualsense_raw_hidp_set_feature(item.payload[0],
-                                                        item.payload + 1,
-                                                        item.len - 1U);
-            }
-        } else {
-            err = bt_dualsense_raw_hidp_send_report(
-                item.payload,
-                item.len,
-                item.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT);
-        }
-        if (err) {
-            static uint32_t s_tx_fail_log_count;
-
-            s_stats.hidp_tx_errors++;
-            s_stats.hidp_last_err = err;
-            s_tx_fail_log_count++;
-            if (s_tx_fail_log_count <= 4U || (s_tx_fail_log_count % 64U) == 0U) {
-                ESP_LOGW(TAG, "HIDP tx from SPI failed type=%s len=%u err=%d (count=%u)",
-                         ds5_dual_spi_type_name(item.type),
-                         (unsigned)item.len,
-                         err,
-                         (unsigned)s_tx_fail_log_count);
-            }
-        } else if ((item.type == DS5_DUAL_MSG_BT_TX_REPORT ||
-                    item.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT) &&
-                   item.len > 0) {
-            s_stats.hidp_last_err = 0;
-        } else {
-            s_stats.hidp_last_err = 0;
-        }
-        if (item.wants_ack) {
-            set_pending_ack_fields(item.ack_seq, item.type, item.channel, err);
-        }
-        set_pending_flow_credit();
-    }
 }
 
 static esp_err_t init_spi_slave(void)
@@ -995,9 +667,10 @@ static void spi_task(void *arg)
 
     while (true) {
         spi_slave_transaction_t trans = {0};
-        dual_chip_response_item_t response_item = {0};
+        esp32_dual_response_token_t response_token = {0};
         size_t response_len = 0;
-        bool had_response = stage_response_for_transaction(&response_item, &response_len);
+        bool had_response =
+            stage_response_for_transaction(&response_token, &response_len);
 
         memset(s_spi_rx_buf, 0, sizeof(s_spi_rx_buf));
         trans.length = sizeof(s_spi_rx_buf) * 8U;
@@ -1010,7 +683,10 @@ static void spi_task(void *arg)
                                  portMAX_DELAY);
         set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_READY_GPIO, 0);
         if (err != ESP_OK) {
-            s_stats.spi_crc_errors++;
+            s_stats.spi_driver_errors++;
+            if (had_response) {
+                finish_response_transaction(&response_token, false);
+            }
             ESP_LOGW(TAG, "SPI slave transaction failed: %s", esp_err_to_name(err));
             continue;
         }
@@ -1023,6 +699,7 @@ static void spi_task(void *arg)
                 s_stats.spi_tx_frames++;
             } else {
                 uint32_t short_count = ++s_short_response_count;
+                s_stats.spi_short_transactions++;
 
                 if (short_count <= 4U || (short_count % 256U) == 0U) {
                     ESP_LOGW(TAG,
@@ -1032,7 +709,7 @@ static void spi_task(void *arg)
                              (unsigned)short_count);
                 }
             }
-            finish_response_transaction(&response_item, response_complete);
+            finish_response_transaction(&response_token, response_complete);
         }
 
         log_transaction_diag(s_spi_rx_buf, rx_len, trans.trans_len, had_response);
@@ -1072,37 +749,15 @@ static void set_pending_time_sync(const ds5_dual_time_sync_t *request)
 esp_err_t esp32_dual_chip_spi_start(void)
 {
 #if CONFIG_DS5_DUAL_CHIP_SPI_COPROCESSOR
-    if (s_tx_queue == NULL) {
-        s_tx_queue = xQueueCreate(CONFIG_DS5_DUAL_CHIP_TX_QUEUE_DEPTH,
-                                  sizeof(dual_chip_tx_item_t));
-        if (s_tx_queue == NULL) {
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
-    if (s_response_lock == NULL) {
-        s_response_lock = xSemaphoreCreateMutex();
-        if (s_response_lock == NULL) {
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
-    if (s_tx_task == NULL) {
-        BaseType_t ok = xTaskCreatePinnedToCore(tx_task,
-                                                "ds5_spi_tx",
-                                                DS5_DUAL_CHIP_TASK_STACK,
-                                                NULL,
-                                                6,
-                                                &s_tx_task,
-                                                1);
-        if (ok != pdPASS) {
-            s_tx_task = NULL;
-            return ESP_ERR_NO_MEM;
-        }
-    }
+    /* The scheduler synchronizes IRQ state while holding its portMUX. GPIO
+     * configuration can log and take newlib locks, so it must happen first. */
+    set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO, 0);
+    esp32_dual_response_scheduler_init(response_irq_set, NULL);
 
     bt_dualsense_raw_hidp_set_rx_callback(rx_forward_cb, NULL);
     bt_dualsense_raw_hidp_set_state_callback(state_forward_cb, NULL);
+    bt_dualsense_raw_hidp_set_control_complete_callback(control_complete_cb,
+                                                        NULL);
     if (spi_pins_configured()) {
         if (s_spi_task == NULL) {
             BaseType_t ok = xTaskCreatePinnedToCore(spi_task,
@@ -1130,12 +785,16 @@ esp_err_t esp32_dual_chip_spi_start(void)
 esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_len)
 {
     ds5_dual_spi_header_t header;
-    dual_chip_tx_item_t item;
     const uint8_t *payload;
     bool wants_ack;
 
     if (frame == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!ds5_dual_spi_decode_header(frame, frame_len, &header) ||
+        frame_len < ds5_dual_spi_frame_len(header.length)) {
+        s_stats.spi_frame_errors++;
+        return ESP_ERR_INVALID_SIZE;
     }
     if (!ds5_dual_spi_validate_frame(frame, frame_len, &header)) {
         s_stats.spi_crc_errors++;
@@ -1143,12 +802,32 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
     }
 
     s_stats.spi_rx_frames++;
-    ESP_LOGI(TAG,
-             "SPI rx valid type=%s seq=%u len=%u flags=0x%04x",
-             ds5_dual_spi_type_name(header.type),
-             (unsigned)header.seq,
-             (unsigned)header.length,
-             (unsigned)header.flags);
+    if (header.channel <= DS5_DUAL_CHANNEL_LOG) {
+        uint8_t channel = header.channel;
+        if (s_rx_seq_seen[channel]) {
+            uint16_t expected = (uint16_t)(s_rx_last_seq[channel] + 1U);
+            if (header.seq == s_rx_last_seq[channel]) {
+                s_stats.spi_duplicates++;
+            } else if (header.seq != expected) {
+                s_stats.spi_sequence_errors++;
+            }
+        }
+        if (!s_rx_seq_seen[channel] || header.seq != s_rx_last_seq[channel]) {
+            s_rx_last_seq[channel] = header.seq;
+            s_rx_seq_seen[channel] = true;
+        }
+    }
+    s_frame_log_count++;
+    if (s_frame_log_count <= 4U ||
+        (s_frame_log_count & (s_frame_log_count - 1U)) == 0U) {
+        ESP_LOGI(TAG,
+                 "SPI rx sampled count=%u type=%s seq=%u len=%u flags=0x%04x",
+                 (unsigned)s_frame_log_count,
+                 ds5_dual_spi_type_name(header.type),
+                 (unsigned)header.seq,
+                 (unsigned)header.length,
+                 (unsigned)header.flags);
+    }
     payload = frame + DS5_DUAL_SPI_HEADER_LEN;
     wants_ack = (header.flags & DS5_DUAL_FLAG_RELIABLE) != 0;
 
@@ -1191,6 +870,12 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
         return ESP_OK;
     }
     if (header.type == DS5_DUAL_MSG_RESET_STATS) {
+        if (header.length != 0U) {
+            if (wants_ack) {
+                set_pending_ack(&header, -EINVAL);
+            }
+            return ESP_ERR_INVALID_SIZE;
+        }
         esp32_dual_chip_spi_reset_stats();
         if (wants_ack) {
             set_pending_ack(&header, 0);
@@ -1214,7 +899,7 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
     if (header.type == DS5_DUAL_MSG_WIRE_TEST) {
         int status = 0;
 
-        if (header.length < 1U) {
+        if (header.length != DS5_DUAL_WIRE_TEST_PAYLOAD_LEN) {
             status = -EINVAL;
         } else if (payload[0] == DS5_DUAL_WIRE_TEST_START) {
             led_status_set_transient(DS5_LED_STATE_WIRE_TESTING, 10000);
@@ -1288,33 +973,64 @@ esp_err_t esp32_dual_chip_spi_handle_frame(const uint8_t *frame, size_t frame_le
         }
         return ESP_OK;
     }
-    if (header.length == 0 || header.length > sizeof(item.payload)) {
+    if (header.length == 0 || header.length > DS5_DUAL_SPI_MAX_PAYLOAD) {
         if (wants_ack) {
             set_pending_ack(&header, -EMSGSIZE);
         }
         return ESP_ERR_INVALID_SIZE;
     }
 
-    memset(&item, 0, sizeof(item));
-    item.type = header.type;
-    item.flags = header.flags;
-    item.channel = header.channel;
-    item.priority = header.priority;
-    item.ack_seq = header.seq;
-    item.deadline_us = header.deadline;
-    item.len = header.length;
-    item.wants_ack = wants_ack;
-    memcpy(item.payload, payload, header.length);
-
-    if (!enqueue_latest(&item)) {
-        if (wants_ack) {
-            set_pending_ack(&header, -ENOMEM);
+    int status;
+    bool ack_deferred = false;
+    if (header.type == DS5_DUAL_MSG_BT_TX_FEATURE_GET) {
+        if (header.length != DS5_DUAL_FEATURE_GET_PAYLOAD_LEN) {
+            status = -EINVAL;
+        } else if (wants_ack) {
+            status = bt_dualsense_raw_hidp_get_feature_tracked(
+                payload[0], header.seq, header.type, header.channel);
+            ack_deferred = status == 0;
+        } else {
+            status = bt_dualsense_raw_hidp_get_feature(payload[0]);
         }
-        set_pending_flow_credit();
-        return ESP_ERR_NO_MEM;
+    } else if (header.type == DS5_DUAL_MSG_BT_TX_FEATURE_SET) {
+        if (header.length < 2U) {
+            status = -EINVAL;
+        } else if (wants_ack) {
+            status = bt_dualsense_raw_hidp_set_feature_tracked(
+                payload[0],
+                payload + 1,
+                header.length - 1U,
+                header.seq,
+                header.type,
+                header.channel);
+            ack_deferred = status == 0;
+        } else {
+            status = bt_dualsense_raw_hidp_set_feature(payload[0],
+                                                       payload + 1,
+                                                       header.length - 1U);
+        }
+    } else {
+        status = bt_dualsense_raw_hidp_send_report_at(
+            payload,
+            header.length,
+            header.type == DS5_DUAL_MSG_BT_TX_AUDIO_RT,
+            (uint64_t)esp_timer_get_time(),
+            bt_ds5_tx_scheduler_generation());
+    }
+    if (status != 0) {
+        s_stats.hidp_tx_errors++;
+        s_stats.hidp_last_err = status;
+        if (status == -ENOBUFS || status == -EAGAIN) {
+            s_stats.spi_queue_drops++;
+        }
+    } else {
+        s_stats.hidp_last_err = 0;
+    }
+    if (wants_ack && !ack_deferred) {
+        set_pending_ack(&header, status);
     }
     set_pending_flow_credit();
-    return ESP_OK;
+    return status == 0 ? ESP_OK : ESP_FAIL;
 }
 
 void esp32_dual_chip_spi_get_stats(esp32_dual_chip_spi_stats_t *stats)
@@ -1327,4 +1043,8 @@ void esp32_dual_chip_spi_get_stats(esp32_dual_chip_spi_stats_t *stats)
 void esp32_dual_chip_spi_reset_stats(void)
 {
     memset(&s_stats, 0, sizeof(s_stats));
+    memset(s_rx_last_seq, 0, sizeof(s_rx_last_seq));
+    memset(s_rx_seq_seen, 0, sizeof(s_rx_seq_seen));
+    bt_ds5_tx_scheduler_reset_metrics();
+    esp32_dual_response_reset_metrics();
 }

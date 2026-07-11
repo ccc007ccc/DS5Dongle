@@ -105,33 +105,15 @@ menu "DS5 DualSense Bridge"
             schedules HIDP transport. Hardware SPI pin binding is intentionally
             left to board-specific config until the M61/ESP32 wiring is known.
 
-    config DS5_DUAL_CHIP_TX_QUEUE_DEPTH
-        int "Dual-chip ESP32 TX queue depth"
-        range 2 16
-        default 4
-        help
-            Number of pending M61-to-ESP32 BT reports kept before latest-wins
-            dropping is applied.
-
-    config DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH
-        int "Dual-chip ESP32 response queue depth"
-        range 2 8
-        default 8
-        depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
-        help
-            Number of ESP32-to-M61 response frames queued while waiting for
-            the M61 SPI master to clock them out. ACK frames are queued ahead
-            of latest status/input frames so reliable control traffic is not
-            blocked by stale status responses.
-
     config DS5_DUAL_CHIP_SPI_HOST
         int "Dual-chip ESP32 SPI host peripheral"
-        range 2 3
+        range 1 2
         default 2
         depends on DS5_DUAL_CHIP_SPI_COPROCESSOR
         help
-            ESP32 SPI peripheral used as slave. 2 is HSPI/SPI2 on classic
-            ESP32-WROOM-32 boards; 3 is VSPI/SPI3.
+            ESP-IDF spi_host_device_t value used as the slave peripheral.
+            On classic ESP32-WROOM-32 boards, 1 is SPI2/HSPI and 2 is
+            SPI3/VSPI. Value 3 is not a valid general-purpose SPI host.
 
     config DS5_DUAL_CHIP_SPI_SCLK_GPIO
         int "Dual-chip SPI SCLK GPIO (-1 disables hardware SPI)"

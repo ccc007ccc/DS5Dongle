@@ -68,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
         help="optional dual-chip wiring profile; default keeps SPI GPIOs disabled",
     )
     parser.add_argument("--clean", action="store_true", help="run idf.py clean before build")
+    parser.add_argument(
+        "--fullclean",
+        action="store_true",
+        help="run idf.py fullclean before build to regenerate CMake and Kconfig outputs",
+    )
     args = parser.parse_args(argv)
 
     ok = True
@@ -133,8 +138,13 @@ def main(argv: list[str] | None = None) -> int:
             f"-DSDKCONFIG_DEFAULTS={';'.join(defaults)}",
         ])
 
-    if args.clean:
-        clean_cmd = [str(python), str(idf_py), *idf_global_args, "clean"]
+    if args.clean and args.fullclean:
+        print("--clean and --fullclean are mutually exclusive", file=sys.stderr)
+        return 1
+
+    if args.clean or args.fullclean:
+        clean_action = "fullclean" if args.fullclean else "clean"
+        clean_cmd = [str(python), str(idf_py), *idf_global_args, clean_action]
         print("running:", " ".join(clean_cmd), flush=True)
         result = subprocess.run(clean_cmd, cwd=ROOT, env=env)
         if result.returncode != 0:

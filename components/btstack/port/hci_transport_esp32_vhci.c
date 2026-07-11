@@ -274,7 +274,16 @@ static int transport_open(void){
         log_error("transport: esp_bt_controller_enable failed");
         return -1;
     }
-
+#if CONFIG_IDF_TARGET_ESP32
+    if (bt_mode != ESP_BT_MODE_BLE) {
+        ret = esp_bredr_tx_power_set(ESP_PWR_LVL_N0, ESP_PWR_LVL_P9);
+        if (ret) {
+            log_error("transport: set BR/EDR TX power failed: %s",
+                      esp_err_to_name(ret));
+            return -1;
+        }
+    }
+#endif
     esp_vhci_host_register_callback(&vhci_host_cb);
 
     return 0;

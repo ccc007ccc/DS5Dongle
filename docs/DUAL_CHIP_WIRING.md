@@ -19,6 +19,24 @@ the two 5V/VIN rails together.
 | RESET | not connected | not connected | optional |
 | GND | GND | GND | common ground |
 
+The current ESP32 profile sets the ESP-IDF host value to `2`, which is
+`SPI3/VSPI` on ESP32-IDF 5.3.2. `GPIO27/26/25/33` are routed through the GPIO
+Matrix; they are not the VSPI native IO_MUX pins `SCLK=18`, `MOSI=23`,
+`MISO=19`, `CS=5`. This matters for timing margin:
+
+- 4 MHz is the fallback and protocol-debug profile;
+- the ESP32 slave timing limit for Matrix-routed MISO is below 7.2 MHz, so
+  8 MHz on the current wiring is an explicit overclock candidate allowed by
+  the user only after a minimum 30-minute CRC/sequence stress test;
+- 10 MHz is not a valid target for the current Matrix-routed profile;
+- 12 MHz and higher are outside this project's ESP32-WROOM SPI target.
+
+The existing `devkit-vspi` profile already selects the native VSPI pins
+`18/23/19/5` and is the required wiring path for an in-spec 8 MHz production
+profile. Moving to HSPI instead would require host value `1`, would conflict
+with the current IRQ on GPIO13, and would require a boot-strapping review for
+GPIO12/GPIO15.
+
 The M61 side uses only left-side pins and avoids the current status LED defaults
 on IO12/IO14/IO15. The ESP32 side also stays on the left header in the supplied
 pinout image. This profile intentionally avoids ESP32 GPIO12 and GPIO15 because
@@ -41,9 +59,9 @@ inquiry duration in 1.28-second units (about 38.4 seconds), not 30 wall-clock
 seconds. Continuous inquiry allows PS+Create re-pairing even when a saved bond
 has become stale.
 
-The older `devkit-vspi` profile uses the right-side VSPI pins
-`GPIO18/GPIO23/GPIO19/GPIO5` plus `GPIO22/GPIO21`. Keep it only as a backup if
-the boards are no longer constrained to left-side wiring.
+The `devkit-vspi` profile uses the right-side native VSPI pins
+`GPIO18/GPIO23/GPIO19/GPIO5` plus `GPIO22/GPIO21`. Use it when the boards are no
+longer constrained to left-side wiring and an in-spec 8 MHz profile is needed.
 
 ## M61 Config Fragment
 

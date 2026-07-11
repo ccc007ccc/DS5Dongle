@@ -6,12 +6,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TRANSPORT = ROOT / "m61" / "dualsense_hidp_probe" / "m61_esp32_transport.c"
+SCHEDULER = ROOT / "m61" / "dualsense_hidp_probe" / "m61_spi_scheduler.c"
 MAIN = ROOT / "m61" / "dualsense_hidp_probe" / "main.c"
 USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
 
 
 def main() -> int:
     transport = TRANSPORT.read_text(encoding="utf-8")
+    scheduler = SCHEDULER.read_text(encoding="utf-8")
     bridge = MAIN.read_text(encoding="utf-8")
     usb = USB.read_text(encoding="utf-8")
 
@@ -29,16 +31,12 @@ def main() -> int:
         "s_transport.stats.rx_hello > 0U && !expected_response",
         "s_transport.hello_response_expected = false;",
         "if (!peer_link_ready())",
+        "m61_spi_scheduler_set_generation(generation);",
+        "m61_spi_scheduler_set_generation(s_transport.peer_generation);",
     ):
         assert snippet in transport, f"missing transport generation contract: {snippet}"
 
-    recovery = transport.index("static void perform_recovery(uint8_t reason)")
-    not_ready = transport.index("s_transport.ready = false;", recovery)
-    invalidate = transport.index("invalidate_peer_generation();", not_ready)
-    reset = transport.index("bflb_gpio_reset(s_transport.gpio", invalidate)
-    assert not_ready < invalidate < reset
-
-    send_hello = transport.index("static int send_hello(void)", recovery)
+    send_hello = transport.index("static int send_hello(void)")
     hello_expected = transport.index(
         "s_transport.hello_response_expected = true;", send_hello
     )
@@ -48,22 +46,31 @@ def main() -> int:
     assert hello_expected < hello_send
 
     for snippet in (
+        "void m61_spi_scheduler_set_generation(uint32_t generation)",
+        "DS5_SCHED_SLOT_EVICTED",
+        "s_scheduler.store.state31.control.state = DS5_SCHED_SLOT_FREE;",
+        "s_scheduler.store.state32.control.state = DS5_SCHED_SLOT_FREE;",
+        "memset(&s_scheduler.ack_wait, 0, sizeof(s_scheduler.ack_wait));",
+        "s_scheduler.stats.generation_resets++;",
+    ):
+        assert snippet in scheduler, f"missing scheduler generation contract: {snippet}"
+
+    for snippet in (
         "generation != dual_chip_bt_generation",
         "m61_ds5_dse_reset();",
         "m61_usb_gamepad_reset_feature_cache();",
         "m61_usb_gamepad_reset_transport_queues();",
         "hidp_usb_output_pending = false;",
         "observed_bt_generation != dual_chip_bt_generation",
-        "pending_speaker_count = 0;",
-        "pending_haptics_count = 0;",
     ):
         assert snippet in bridge, f"missing bridge generation contract: {snippet}"
 
     for snippet in (
         "pending_feature_request_valid = false;",
-        "pending_host_report_valid = false;",
-        "flush_haptics_queue();",
-        "flush_speaker_queues();",
+        "reset_host_report_queues_locked();",
+        "pending_output_report_valid = false;",
+        "g_m61_usb_control_storage",
+        "m61_audio_epoch_reset(usb_generation);",
         "flush_mic_queues();",
     ):
         assert snippet in usb, f"missing USB queue reset contract: {snippet}"

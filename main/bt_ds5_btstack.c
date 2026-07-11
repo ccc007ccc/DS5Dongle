@@ -11,6 +11,7 @@
  */
 
 #include "bt_dualsense_raw_hidp.h"
+#include "bt_ds5_tx_scheduler.h"
 
 #include "sdkconfig.h"
 
@@ -45,8 +46,10 @@
 #define DS5_HIDP_GET_REPORT_FEATURE 0x43
 #define DS5_HIDP_SET_REPORT_FEATURE 0x53
 
-#define DS5_SEND_FIFO_DEPTH 10
 #define DS5_CMD_QUEUE_DEPTH 12
+#define DS5_BT_CONTROL_PAYLOAD_MAX 160
+#define DS5_CONTROL_FIFO_DEPTH 8
+#define DS5_CONTROL_FRAME_MAX 160
 #define DS5_RSSI_POLL_MS 2000
 #define DS5_ACL_CREATE_RETRY_MS 20
 
@@ -115,16 +118,10 @@ static void fill_feature_report_checksum(uint8_t *data, size_t len)
 
 /* ------------------------------------------------------------- BT state -- */
 
-typedef struct {
-    size_t len;
-    uint8_t data[MTU_INTERRUPT + 1];
-} send_element_t;
-
 typedef enum {
     BT_CMD_CONNECT = 1,
     BT_CMD_DISCONNECT,
     BT_CMD_FORGET,
-    BT_CMD_SEND_REPORT,
     BT_CMD_FEATURE_GET,
     BT_CMD_FEATURE_SET,
 } bt_cmd_kind_t;
@@ -134,11 +131,28 @@ typedef struct {
     uint8_t mode;      /* CONNECT: DS5_DUAL_BT_CONNECT_*  FORGET: flags */
     bool flag;         /* DISCONNECT: allow_reconnect */
     bool has_bda;
+    bool tracked;
     uint8_t bda[6];
-    uint16_t len;      /* SEND/FEATURE_SET payload length */
+    uint16_t len;      /* FEATURE_SET payload length */
+    uint16_t request_seq;
     uint8_t report_id; /* FEATURE_GET / FEATURE_SET */
-    uint8_t data[MTU_INTERRUPT];
+    uint8_t request_type;
+    uint8_t request_channel;
+    uint8_t data[DS5_BT_CONTROL_PAYLOAD_MAX];
 } bt_cmd_t;
+
+typedef struct {
+    uint16_t len;
+    uint16_t request_seq;
+    uint8_t request_type;
+    uint8_t request_channel;
+    uint8_t attempts;
+    bool tracked;
+    uint8_t data[DS5_CONTROL_FRAME_MAX];
+} bt_control_item_t;
+
+_Static_assert(sizeof(bt_control_item_t) * DS5_CONTROL_FIFO_DEPTH <= 1600U,
+               "BT control FIFO exceeds planned descriptor/payload budget");
 
 static btstack_packet_callback_registration_t s_hci_cb_reg;
 static btstack_packet_callback_registration_t s_l2cap_cb_reg;
@@ -179,12 +193,17 @@ static uint8_t s_acl_disconnect_reason;
 static hci_con_handle_t s_acl_handle = HCI_CON_HANDLE_INVALID;
 static uint16_t s_control_cid;
 static uint16_t s_interrupt_cid;
+static uint32_t s_tx_generation;
 static bool s_stack_ready;
-
-/* send FIFO for the interrupt channel, drained on CAN_SEND_NOW */
-static send_element_t s_send_fifo[DS5_SEND_FIFO_DEPTH];
-static uint8_t s_send_head;
-static uint8_t s_send_count;
+static bt_control_item_t s_control_fifo[DS5_CONTROL_FIFO_DEPTH];
+static uint8_t s_control_head;
+static uint8_t s_control_count;
+static bool s_control_can_send_requested;
+static bool s_last_control_completion_valid;
+static uint16_t s_last_control_completion_seq;
+static uint8_t s_last_control_completion_type;
+static uint8_t s_last_control_completion_channel;
+static int s_last_control_completion_status;
 
 /* state snapshot shared with SPI tasks */
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -194,6 +213,8 @@ static bt_dualsense_raw_hidp_rx_cb_t s_rx_cb;
 static void *s_rx_cb_ctx;
 static bt_dualsense_raw_hidp_state_cb_t s_state_cb;
 static void *s_state_cb_ctx;
+static bt_dualsense_raw_hidp_control_complete_cb_t s_control_complete_cb;
+static void *s_control_complete_ctx;
 
 void bt_dualsense_raw_hidp_note_tx(const uint8_t *data, size_t len, int status);
 
@@ -299,60 +320,125 @@ static void state_publish_locked_fields(uint32_t set, uint32_t clear, int32_t er
 
 /* ------------------------------------------------------------- TX paths -- */
 
-static bool send_fifo_push(const uint8_t *data, size_t len)
+static void control_request_can_send(void)
 {
-    if (s_send_count >= DS5_SEND_FIFO_DEPTH || len > sizeof(s_send_fifo[0].data)) {
-        return false;
+    if (s_control_cid == 0U || s_control_count == 0U ||
+        s_control_can_send_requested) {
+        return;
     }
-    send_element_t *slot =
-        &s_send_fifo[(s_send_head + s_send_count) % DS5_SEND_FIFO_DEPTH];
-    memcpy(slot->data, data, len);
-    slot->len = len;
-    s_send_count++;
-    return true;
+    s_control_can_send_requested = true;
+    l2cap_request_can_send_now_event(s_control_cid);
 }
 
-static bool send_fifo_pop(send_element_t *out)
+static void control_report_completion(const bt_control_item_t *item, int status)
 {
-    if (s_send_count == 0) {
-        return false;
+    if (item == NULL || !item->tracked) {
+        return;
     }
-    *out = s_send_fifo[s_send_head];
-    s_send_head = (s_send_head + 1) % DS5_SEND_FIFO_DEPTH;
-    s_send_count--;
-    return true;
+    s_last_control_completion_valid = true;
+    s_last_control_completion_seq = item->request_seq;
+    s_last_control_completion_type = item->request_type;
+    s_last_control_completion_channel = item->request_channel;
+    s_last_control_completion_status = status;
+    if (s_control_complete_cb != NULL) {
+        s_control_complete_cb(item->request_seq,
+                              item->request_type,
+                              item->request_channel,
+                              status,
+                              s_control_complete_ctx);
+    }
 }
 
-static void send_fifo_clear(void)
+static void control_fifo_clear(void)
 {
-    s_send_head = 0;
-    s_send_count = 0;
+    while (s_control_count > 0U) {
+        bt_control_item_t *item = &s_control_fifo[s_control_head];
+        control_report_completion(item, -ENOTCONN);
+        s_control_head = (s_control_head + 1U) % DS5_CONTROL_FIFO_DEPTH;
+        s_control_count--;
+    }
+    s_control_head = 0;
+    s_control_can_send_requested = false;
 }
 
-/* bt_write() from the reference: 0xA2 prefix + report + CRC32 in the last
- * four bytes of the report, queued for CAN_SEND_NOW on the interrupt cid. */
-static int bt_write_report(const uint8_t *report, size_t len)
+static int control_fifo_push(const uint8_t *data,
+                             size_t len,
+                             bool tracked,
+                             uint16_t request_seq,
+                             uint8_t request_type,
+                             uint8_t request_channel)
 {
-    if (s_interrupt_cid == 0) {
-        return -ENOTCONN;
-    }
-    if (len < 5 || len + 1 > sizeof(s_send_fifo[0].data)) {
+    if (data == NULL || len == 0U || len > DS5_CONTROL_FRAME_MAX) {
         return -EINVAL;
     }
-
-    uint8_t packet[MTU_INTERRUPT + 1];
-    packet[0] = DS5_HIDP_DATA_OUTPUT;
-    memcpy(packet + 1, report, len);
-    fill_output_report_checksum(packet + 1, len);
-
-    if (!send_fifo_push(packet, len + 1)) {
-        ESP_LOGW(TAG, "send FIFO full, output report dropped");
+    if (s_control_cid == 0U) {
+        return -ENOTCONN;
+    }
+    if (tracked && s_last_control_completion_valid &&
+        request_seq == s_last_control_completion_seq &&
+        request_type == s_last_control_completion_type &&
+        request_channel == s_last_control_completion_channel) {
+        if (s_control_complete_cb != NULL) {
+            s_control_complete_cb(request_seq,
+                                  request_type,
+                                  request_channel,
+                                  s_last_control_completion_status,
+                                  s_control_complete_ctx);
+        }
+        return 0;
+    }
+    if (tracked) {
+        for (uint8_t offset = 0; offset < s_control_count; offset++) {
+            const bt_control_item_t *pending =
+                &s_control_fifo[(s_control_head + offset) %
+                                DS5_CONTROL_FIFO_DEPTH];
+            if (pending->tracked && pending->request_seq == request_seq &&
+                pending->request_type == request_type &&
+                pending->request_channel == request_channel) {
+                return 0;
+            }
+        }
+    }
+    if (s_control_count >= DS5_CONTROL_FIFO_DEPTH) {
         return -ENOBUFS;
     }
-    if (s_send_count == 1) {
-        l2cap_request_can_send_now_event(s_interrupt_cid);
-    }
+
+    bt_control_item_t *item =
+        &s_control_fifo[(s_control_head + s_control_count) %
+                        DS5_CONTROL_FIFO_DEPTH];
+    memcpy(item->data, data, len);
+    item->len = (uint16_t)len;
+    item->tracked = tracked;
+    item->request_seq = request_seq;
+    item->request_type = request_type;
+    item->request_channel = request_channel;
+    item->attempts = 0;
+    s_control_count++;
+    control_request_can_send();
     return 0;
+}
+
+static void control_handle_can_send_now(void)
+{
+    s_control_can_send_requested = false;
+    if (s_control_cid == 0U || s_control_count == 0U) {
+        return;
+    }
+
+    bt_control_item_t *item = &s_control_fifo[s_control_head];
+    uint8_t status = l2cap_send(s_control_cid, item->data, item->len);
+    bt_dualsense_raw_hidp_note_tx(item->data,
+                                  item->len,
+                                  status == ERROR_CODE_SUCCESS ? 0 : -EIO);
+    item->attempts++;
+    bool complete = status == ERROR_CODE_SUCCESS || item->attempts >= 2U;
+    if (complete) {
+        control_report_completion(item,
+                                  status == ERROR_CODE_SUCCESS ? 0 : -EIO);
+        s_control_head = (s_control_head + 1U) % DS5_CONTROL_FIFO_DEPTH;
+        s_control_count--;
+    }
+    control_request_can_send();
 }
 
 static int bt_feature_get(uint8_t report_id)
@@ -361,8 +447,24 @@ static int bt_feature_get(uint8_t report_id)
         return -ENOTCONN;
     }
     uint8_t frame[2] = { DS5_HIDP_GET_REPORT_FEATURE, report_id };
-    uint8_t status = l2cap_send(s_control_cid, frame, sizeof(frame));
-    return status == ERROR_CODE_SUCCESS ? 0 : -EIO;
+    return control_fifo_push(frame, sizeof(frame), false, 0, 0, 0);
+}
+
+static int bt_feature_get_tracked(uint8_t report_id,
+                                  uint16_t request_seq,
+                                  uint8_t request_type,
+                                  uint8_t request_channel)
+{
+    if (s_control_cid == 0) {
+        return -ENOTCONN;
+    }
+    uint8_t frame[2] = { DS5_HIDP_GET_REPORT_FEATURE, report_id };
+    return control_fifo_push(frame,
+                             sizeof(frame),
+                             true,
+                             request_seq,
+                             request_type,
+                             request_channel);
 }
 
 static int bt_feature_set(uint8_t report_id, const uint8_t *data, size_t len)
@@ -370,7 +472,7 @@ static int bt_feature_set(uint8_t report_id, const uint8_t *data, size_t len)
     if (s_control_cid == 0) {
         return -ENOTCONN;
     }
-    if (len < 4 || len + 2 > MTU_CONTROL) {
+    if (len < 4 || len + 2 > DS5_CONTROL_FRAME_MAX) {
         return -EINVAL;
     }
     uint8_t frame[MTU_CONTROL];
@@ -378,8 +480,33 @@ static int bt_feature_set(uint8_t report_id, const uint8_t *data, size_t len)
     frame[1] = report_id;
     memcpy(frame + 2, data, len);
     fill_feature_report_checksum(frame + 1, len + 1);
-    uint8_t status = l2cap_send(s_control_cid, frame, len + 2);
-    return status == ERROR_CODE_SUCCESS ? 0 : -EIO;
+    return control_fifo_push(frame, len + 2, false, 0, 0, 0);
+}
+
+static int bt_feature_set_tracked(uint8_t report_id,
+                                  const uint8_t *data,
+                                  size_t len,
+                                  uint16_t request_seq,
+                                  uint8_t request_type,
+                                  uint8_t request_channel)
+{
+    if (s_control_cid == 0) {
+        return -ENOTCONN;
+    }
+    if (len < 4 || len + 2 > DS5_CONTROL_FRAME_MAX) {
+        return -EINVAL;
+    }
+    uint8_t frame[DS5_CONTROL_FRAME_MAX];
+    frame[0] = DS5_HIDP_SET_REPORT_FEATURE;
+    frame[1] = report_id;
+    memcpy(frame + 2, data, len);
+    fill_feature_report_checksum(frame + 1, len + 1);
+    return control_fifo_push(frame,
+                             len + 2,
+                             true,
+                             request_seq,
+                             request_type,
+                             request_channel);
 }
 
 /* init_feature() from the reference: prefetch calibration/version/pairing
@@ -414,7 +541,11 @@ static void send_connect_led_state(void)
     pkt[4 + 44] = 0xFF;
     pkt[4 + 45] = 0xD7;
     pkt[4 + 46] = 0x00;
-    (void)bt_write_report(pkt, sizeof(pkt));
+    (void)bt_ds5_tx_scheduler_submit(pkt,
+                                     sizeof(pkt),
+                                     false,
+                                     (uint64_t)esp_timer_get_time(),
+                                     s_tx_generation);
 }
 
 /* --------------------------------------------------- connect state flow -- */
@@ -607,14 +738,16 @@ static void wait_for_controller_page(const char *reason)
 
 static void start_auto_connect(const char *reason)
 {
+    if (s_have_saved) {
+        wait_for_controller_page(reason);
+        return;
+    }
+
     s_abort_link = false;
     s_forget_pending = false;
     set_reconnect_policy(true, true);
-    if (s_have_saved) {
-        bd_addr_copy(s_current_addr, s_saved_addr);
-    }
-    ESP_LOGI(TAG, "Auto connect: inquiry + incoming page reason=%s saved=%d",
-             reason != NULL ? reason : "auto", s_have_saved ? 1 : 0);
+    ESP_LOGI(TAG, "Auto connect: inquiry reason=%s saved=0",
+             reason != NULL ? reason : "auto");
     start_inquiry();
 }
 
@@ -980,7 +1113,10 @@ static void handle_disconnected(uint8_t reason)
     s_acl_handle = HCI_CON_HANDLE_INVALID;
     s_control_cid = 0;
     s_interrupt_cid = 0;
-    send_fifo_clear();
+    control_fifo_clear();
+    s_tx_generation++;
+    bt_ds5_tx_scheduler_reset_generation(s_tx_generation);
+    bt_ds5_tx_scheduler_set_interrupt_channel(0);
     apply_reconnect_visibility();
     led_status_set(s_reconnect_allowed ? DS5_LED_STATE_BT_CONNECTING
                                        : DS5_LED_STATE_BOOT_OK);
@@ -1433,6 +1569,8 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
                      psm, status);
             s_control_cid = 0;
             s_interrupt_cid = 0;
+            control_fifo_clear();
+            bt_ds5_tx_scheduler_set_interrupt_channel(0);
             s_device_found = false;
             s_abort_link = true;
             s_forget_pending = false;
@@ -1451,6 +1589,8 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
         if (psm == PSM_HID_CONTROL) {
             ESP_LOGI(TAG, "HID Control opened cid=0x%04X", local_cid);
             s_control_cid = local_cid;
+            s_last_control_completion_valid = false;
+            control_request_can_send();
             STATE_SET(DS5_DUAL_BT_STATE_CONTROL_OPEN);
             /* our outgoing pairing path opens interrupt after control */
             if (s_new_pair && s_interrupt_cid == 0) {
@@ -1461,6 +1601,9 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
         } else if (psm == PSM_HID_INTERRUPT) {
             ESP_LOGI(TAG, "HID Interrupt opened cid=0x%04X", local_cid);
             s_interrupt_cid = local_cid;
+            s_tx_generation++;
+            bt_ds5_tx_scheduler_reset_generation(s_tx_generation);
+            bt_ds5_tx_scheduler_set_interrupt_channel(local_cid);
             if (!s_abort_link && !s_forget_pending && s_reconnect_allowed) {
                 saved_addr_store(s_current_addr);
             } else {
@@ -1501,10 +1644,13 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
             l2cap_event_channel_closed_get_local_cid(packet);
         if (local_cid == s_control_cid) {
             s_control_cid = 0;
+            control_fifo_clear();
             STATE_CLEAR(DS5_DUAL_BT_STATE_CONTROL_OPEN);
         } else if (local_cid == s_interrupt_cid) {
             s_interrupt_cid = 0;
-            send_fifo_clear();
+            s_tx_generation++;
+            bt_ds5_tx_scheduler_reset_generation(s_tx_generation);
+            bt_ds5_tx_scheduler_set_interrupt_channel(0);
             STATE_CLEAR(DS5_DUAL_BT_STATE_INTERRUPT_OPEN |
                         DS5_DUAL_BT_STATE_FULL_REPORT);
         }
@@ -1518,19 +1664,12 @@ static void l2cap_packet_handler(uint8_t packet_type, uint16_t channel,
     }
 
     case L2CAP_EVENT_CAN_SEND_NOW: {
-        send_element_t element;
-        if (send_fifo_pop(&element)) {
-            uint8_t status =
-                l2cap_send(s_interrupt_cid, element.data, element.len);
-            bt_dualsense_raw_hidp_note_tx(element.data, element.len,
-                                          status == ERROR_CODE_SUCCESS
-                                              ? 0 : -EIO);
-            if (status != ERROR_CODE_SUCCESS) {
-                ESP_LOGW(TAG, "l2cap_send failed status=0x%02X", status);
-            }
-        }
-        if (s_send_count > 0 && s_interrupt_cid != 0) {
-            l2cap_request_can_send_now_event(s_interrupt_cid);
+        const uint16_t local_cid =
+            l2cap_event_can_send_now_get_local_cid(packet);
+        if (local_cid == s_interrupt_cid) {
+            bt_ds5_tx_scheduler_handle_can_send_now();
+        } else if (local_cid == s_control_cid) {
+            control_handle_can_send_now();
         }
         break;
     }
@@ -1611,20 +1750,48 @@ static void cmd_execute(const bt_cmd_t *cmd)
         }
         break;
 
-    case BT_CMD_SEND_REPORT: {
-        int err = bt_write_report(cmd->data, cmd->len);
-        if (err != 0) {
-            state_publish_locked_fields(0, 0, err);
-        }
-        break;
-    }
-
     case BT_CMD_FEATURE_GET:
-        (void)bt_feature_get(cmd->report_id);
+        {
+            int err = cmd->tracked ?
+                bt_feature_get_tracked(cmd->report_id,
+                                       cmd->request_seq,
+                                       cmd->request_type,
+                                       cmd->request_channel) :
+                bt_feature_get(cmd->report_id);
+            if (err != 0) {
+                state_publish_locked_fields(0, 0, err);
+                if (cmd->tracked && s_control_complete_cb != NULL) {
+                    s_control_complete_cb(cmd->request_seq,
+                                          cmd->request_type,
+                                          cmd->request_channel,
+                                          err,
+                                          s_control_complete_ctx);
+                }
+            }
+        }
         break;
 
     case BT_CMD_FEATURE_SET:
-        (void)bt_feature_set(cmd->report_id, cmd->data, cmd->len);
+        {
+            int err = cmd->tracked ?
+                bt_feature_set_tracked(cmd->report_id,
+                                       cmd->data,
+                                       cmd->len,
+                                       cmd->request_seq,
+                                       cmd->request_type,
+                                       cmd->request_channel) :
+                bt_feature_set(cmd->report_id, cmd->data, cmd->len);
+            if (err != 0) {
+                state_publish_locked_fields(0, 0, err);
+                if (cmd->tracked && s_control_complete_cb != NULL) {
+                    s_control_complete_cb(cmd->request_seq,
+                                          cmd->request_type,
+                                          cmd->request_channel,
+                                          err,
+                                          s_control_complete_ctx);
+                }
+            }
+        }
         break;
 
     default:
@@ -1635,10 +1802,16 @@ static void cmd_execute(const bt_cmd_t *cmd)
 static void cmd_drain(void *context)
 {
     (void)context;
-    s_cmd_drain_pending = false;
     bt_cmd_t cmd;
+
     while (xQueueReceive(s_cmd_queue, &cmd, 0) == pdPASS) {
         cmd_execute(&cmd);
+    }
+
+    s_cmd_drain_pending = false;
+    if (uxQueueMessagesWaiting(s_cmd_queue) > 0U) {
+        s_cmd_drain_pending = true;
+        btstack_run_loop_execute_on_main_thread(&s_cmd_drain_reg);
     }
 }
 
@@ -1712,6 +1885,9 @@ static void btstack_task(void *arg)
 esp_err_t bt_dualsense_raw_hidp_start(void)
 {
     crc32_table_init();
+    bt_ds5_tx_scheduler_init(fill_output_report_checksum,
+                             bt_dualsense_raw_hidp_note_tx);
+    control_fifo_clear();
     saved_addr_load();
     state_publish_locked_fields(0, 0, 0);
 
@@ -1773,22 +1949,53 @@ int bt_dualsense_raw_hidp_send_report(const uint8_t *report,
                                       size_t report_len,
                                       bool realtime)
 {
-    (void)realtime;
-    if (report == NULL || report_len == 0 ||
-        report_len > sizeof(((bt_cmd_t *)0)->data)) {
+    return bt_dualsense_raw_hidp_send_report_at(
+        report,
+        report_len,
+        realtime,
+        (uint64_t)esp_timer_get_time(),
+        bt_ds5_tx_scheduler_generation());
+}
+
+int bt_dualsense_raw_hidp_send_report_at(const uint8_t *report,
+                                         size_t report_len,
+                                         bool realtime,
+                                         uint64_t created_us,
+                                         uint32_t generation)
+{
+    if (report == NULL || report_len == 0 || report_len > MTU_INTERRUPT) {
         return -EINVAL;
     }
     if (!bt_dualsense_raw_hidp_ready()) {
         return -ENOTCONN;
     }
-    bt_cmd_t cmd = { .kind = BT_CMD_SEND_REPORT, .len = (uint16_t)report_len };
-    memcpy(cmd.data, report, report_len);
-    return cmd_submit(&cmd);
+    return bt_ds5_tx_scheduler_submit(
+        report,
+        report_len,
+        realtime && ds5_dual_spi_report_is_audio_rt(report, report_len),
+        created_us,
+        generation);
 }
 
 int bt_dualsense_raw_hidp_get_feature(uint8_t report_id)
 {
     bt_cmd_t cmd = { .kind = BT_CMD_FEATURE_GET, .report_id = report_id };
+    return cmd_submit(&cmd);
+}
+
+int bt_dualsense_raw_hidp_get_feature_tracked(uint8_t report_id,
+                                              uint16_t seq,
+                                              uint8_t type,
+                                              uint8_t channel)
+{
+    bt_cmd_t cmd = {
+        .kind = BT_CMD_FEATURE_GET,
+        .tracked = true,
+        .report_id = report_id,
+        .request_seq = seq,
+        .request_type = type,
+        .request_channel = channel,
+    };
     return cmd_submit(&cmd);
 }
 
@@ -1802,6 +2009,29 @@ int bt_dualsense_raw_hidp_set_feature(uint8_t report_id,
     bt_cmd_t cmd = { .kind = BT_CMD_FEATURE_SET,
                      .report_id = report_id,
                      .len = (uint16_t)len };
+    memcpy(cmd.data, data, len);
+    return cmd_submit(&cmd);
+}
+
+int bt_dualsense_raw_hidp_set_feature_tracked(uint8_t report_id,
+                                              const uint8_t *data,
+                                              size_t len,
+                                              uint16_t seq,
+                                              uint8_t type,
+                                              uint8_t channel)
+{
+    if (data == NULL || len == 0 || len > sizeof(((bt_cmd_t *)0)->data)) {
+        return -EINVAL;
+    }
+    bt_cmd_t cmd = {
+        .kind = BT_CMD_FEATURE_SET,
+        .tracked = true,
+        .report_id = report_id,
+        .len = (uint16_t)len,
+        .request_seq = seq,
+        .request_type = type,
+        .request_channel = channel,
+    };
     memcpy(cmd.data, data, len);
     return cmd_submit(&cmd);
 }
@@ -1827,4 +2057,12 @@ void bt_dualsense_raw_hidp_set_state_callback(
     if (cb != NULL) {
         cb(&snapshot, esp_timer_get_time(), ctx);
     }
+}
+
+void bt_dualsense_raw_hidp_set_control_complete_callback(
+    bt_dualsense_raw_hidp_control_complete_cb_t cb,
+    void *ctx)
+{
+    s_control_complete_cb = cb;
+    s_control_complete_ctx = ctx;
 }

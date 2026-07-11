@@ -103,6 +103,10 @@ typedef struct {
     uint32_t deadline_miss;
     uint32_t queue_drop_old;
     uint32_t not_ready;
+    uint32_t flow_credit_zero_rejects;
+    uint32_t tx_lock_timeouts;
+    uint32_t rx_poll_lock_timeouts;
+    uint32_t time_sync_lock_timeouts;
     uint16_t last_seq;
     int last_error;
 } m61_esp32_transport_stats_t;

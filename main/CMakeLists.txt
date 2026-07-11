@@ -2,10 +2,13 @@ idf_component_register(
     SRCS
         "app_main.c"
         "bt_ds5_btstack.c"
+        "bt_ds5_tx_scheduler.c"
+        "dual_chip_scheduler_types.c"
         "dual_chip_spi_proto.c"
         "dualsense_output.c"
         "dualsense_parser.c"
         "esp32_dual_chip_spi.c"
+        "esp32_dual_chip_response_scheduler.c"
         "led_status.c"
     INCLUDE_DIRS
         "."
@@ -14,5 +17,6 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_spi
         esp_timer
+        heap
         nvs_flash
 )

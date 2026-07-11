@@ -152,7 +152,7 @@
 #define HIDP_BT_AUDIO_ALLOC_TIMEOUT K_MSEC(CONFIG_M61_DS5_BT_AUDIO_ALLOC_TIMEOUT_MS)
 
 #ifndef CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK
-#define CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK 2
+#define CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK 1
 #endif
 
 #ifndef CONFIG_M61_DS5_HOST_REPORTS_PER_TICK
@@ -241,7 +241,7 @@ static bool hidp_active_open_allowed;
 static bool br_connectable_enabled;
 static bool br_discoverable_enabled;
 static bool hidp_l2cap_servers_registered;
-static bool full_report_seen;
+static volatile bool full_report_seen;
 static bool hidp_report_log_enabled;
 static bool hidp_full_report_banner_printed;
 static uint32_t hidp_parsed_reports;
@@ -266,7 +266,6 @@ static TickType_t hidp_usb_output_next_tick;
 static bool hidp_mic_status_known;
 static bool hidp_last_mic_active;
 static TickType_t hidp_next_mic_status_tick;
-static TickType_t hidp_next_audio_report_tick;
 static uint32_t hidp_audio_control_seen_volume;
 static uint32_t hidp_audio_control_seen_mute;
 static bool usb_start_after_dualsense_done;
@@ -302,9 +301,41 @@ typedef enum {
 } usb_identity_probe_result_t;
 
 static usb_identity_probe_result_t usb_identity_probe_result;
+static uint32_t hidp_feature_inflight[8];
+
+static bool hidp_feature_mark_inflight(uint8_t report_id)
+{
+    uint32_t word = report_id >> 5;
+    uint32_t mask = 1UL << (report_id & 31U);
+    bool already_inflight;
+
+    taskENTER_CRITICAL();
+    already_inflight = (hidp_feature_inflight[word] & mask) != 0U;
+    hidp_feature_inflight[word] |= mask;
+    taskEXIT_CRITICAL();
+    return !already_inflight;
+}
+
+static void hidp_feature_clear_inflight(uint8_t report_id)
+{
+    uint32_t word = report_id >> 5;
+    uint32_t mask = 1UL << (report_id & 31U);
+
+    taskENTER_CRITICAL();
+    hidp_feature_inflight[word] &= ~mask;
+    taskEXIT_CRITICAL();
+}
+
+static void hidp_feature_reset_inflight(void)
+{
+    taskENTER_CRITICAL();
+    memset(hidp_feature_inflight, 0, sizeof(hidp_feature_inflight));
+    taskEXIT_CRITICAL();
+}
 
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
-static bool dual_chip_dse_link_active;
+static volatile bool dual_chip_dse_link_active;
+static volatile bool dual_chip_usb_detach_pending;
 static volatile uint32_t dual_chip_bt_generation;
 #endif
 
@@ -539,7 +570,6 @@ static void auto_reset_link_state(void)
     hidp_mic_status_known = false;
     hidp_last_mic_active = false;
     hidp_next_mic_status_tick = 0;
-    hidp_next_audio_report_tick = 0;
     dualsense_headphones_connected = false;
     dualsense_wake_input_valid = false;
     dualsense_wake_dpad = 0;
@@ -551,6 +581,7 @@ static void auto_reset_link_state(void)
     reset_controller_inactivity();
     m61_usb_gamepad_reset_controller_state();
     m61_usb_gamepad_reset_feature_cache();
+    hidp_feature_reset_inflight();
     m61_ds5_dse_reset();
 }
 
@@ -965,6 +996,32 @@ static void m61_usb_bus_detach_pulse(uint32_t delay_ms)
     m61_native_usb_gpio_init();
 }
 
+static void m61_usb_bus_hold_detached(void)
+{
+    struct bflb_device_s *gpio = bflb_device_get_by_name("gpio");
+
+    if (!gpio) {
+        printf("USB gpio device not found; unable to hold bus detached\r\n");
+        return;
+    }
+
+#if defined(BL616)
+    const uint32_t dp_pin = GPIO_PIN_32;
+    const uint32_t dm_pin = GPIO_PIN_33;
+#elif defined(BL618DG)
+    const uint32_t dp_pin = GPIO_PIN_40;
+    const uint32_t dm_pin = GPIO_PIN_41;
+#else
+    return;
+#endif
+
+    bflb_gpio_init(gpio, dp_pin, GPIO_OUTPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_1);
+    bflb_gpio_init(gpio, dm_pin, GPIO_OUTPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_1);
+    bflb_gpio_reset(gpio, dp_pin);
+    bflb_gpio_reset(gpio, dm_pin);
+    printf("USB bus held detached until the controller reconnects\r\n");
+}
+
 static int m61_usb_cycle_command(void)
 {
     m61_usb_gamepad_deinit();
@@ -1272,7 +1329,6 @@ static void hidp_l2cap_disconnected(struct bt_l2cap_chan *chan)
     hidp_mic_status_known = false;
     hidp_last_mic_active = false;
     hidp_next_mic_status_tick = 0;
-    hidp_next_audio_report_tick = 0;
     auto_hidp_requested = false;
     auto_next_hidp_tick =
         xTaskGetTickCount() + pdMS_TO_TICKS(DS5_DISCONNECT_CLEANUP_DELAY_MS);
@@ -1297,6 +1353,7 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
     }
 
     if (channel == &hid_control && buf->len >= 3 && buf->data[0] == 0xA3) {
+        hidp_feature_clear_inflight(buf->data[1]);
         m61_usb_gamepad_store_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
         if (m61_ds5_bridge_config_dse_enabled()) {
             m61_ds5_dse_note_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
@@ -1357,8 +1414,7 @@ static void dual_chip_bt_state_callback(uint32_t flags,
                                         void *ctx)
 {
     bool link_active =
-        (flags & (DS5_DUAL_BT_STATE_CONTROL_OPEN |
-                  DS5_DUAL_BT_STATE_INTERRUPT_OPEN)) != 0U;
+        (flags & DS5_DUAL_BT_STATE_INTERRUPT_OPEN) != 0U;
     bool generation_changed = generation != dual_chip_bt_generation;
     bool disconnected = !link_active && dual_chip_dse_link_active;
 
@@ -1369,8 +1425,13 @@ static void dual_chip_bt_state_callback(uint32_t flags,
         m61_ds5_dse_reset();
         m61_usb_gamepad_reset_feature_cache();
         m61_usb_gamepad_reset_transport_queues();
+        hidp_feature_reset_inflight();
         hidp_usb_output_pending = false;
         hidp_mic_status_known = false;
+        if (disconnected || usb_start_after_dualsense_done) {
+            full_report_seen = false;
+            dual_chip_usb_detach_pending = true;
+        }
         printf("DSE/USB bridge state reset on ESP32 BT generation=%lu seq=%u active=%u disconnected=%u\r\n",
                (unsigned long)generation,
                (unsigned int)state_seq,
@@ -1810,6 +1871,7 @@ static void m61_dse_note_feature_report(uint8_t report_id,
                                         void *ctx)
 {
     (void)ctx;
+    hidp_feature_clear_inflight(report_id);
     if (!m61_ds5_bridge_config_dse_enabled()) {
         return;
     }
@@ -2122,10 +2184,6 @@ static void handle_usb_host_report(const m61_usb_gamepad_host_report_t *report)
 
 static void usb_hid_bridge_task(void *pvParameters)
 {
-    uint8_t pending_speaker_opus[DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS][M61_DS5_SPEAKER_OPUS_LEN];
-    uint8_t pending_haptics[DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS][M61_DS5_HAPTICS_BLOCK_LEN];
-    uint8_t pending_speaker_count = 0;
-    uint8_t pending_haptics_count = 0;
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
     uint32_t observed_bt_generation = dual_chip_bt_generation;
 #endif
@@ -2137,10 +2195,7 @@ static void usb_hid_bridge_task(void *pvParameters)
         uint8_t feature_report_id;
         uint32_t requested_len;
         m61_usb_gamepad_host_report_t host_report;
-        uint8_t haptics[M61_DS5_HAPTICS_BLOCK_LEN];
-        uint8_t speaker_opus[M61_DS5_SPEAKER_OPUS_LEN];
-        uint8_t speaker_drained_this_tick = 0;
-        uint8_t haptics_drained_this_tick = 0;
+        m61_audio_epoch_pair_t audio_pair;
         uint8_t feature_reports_this_tick = 0;
         uint8_t host_reports_this_tick = 0;
         bool host_mic_active = m61_usb_gamepad_audio_in_active();
@@ -2149,16 +2204,27 @@ static void usb_hid_bridge_task(void *pvParameters)
 
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
         if (observed_bt_generation != dual_chip_bt_generation) {
-            pending_speaker_count = 0;
-            pending_haptics_count = 0;
             hidp_usb_output_pending = false;
             observed_bt_generation = dual_chip_bt_generation;
         }
 #endif
         process_controller_inactivity_disconnect();
 
-        if (!speaker_active) {
-            pending_speaker_count = 0;
+        if (ds5_bt_transport_ready() &&
+            m61_usb_gamepad_take_audio_epoch_pair(&audio_pair)) {
+            const uint8_t *speaker0 =
+                audio_pair.speaker_enabled ? audio_pair.speaker_opus[0] : NULL;
+            const uint8_t *speaker1 =
+                audio_pair.speaker_enabled ? audio_pair.speaker_opus[1] : NULL;
+
+            (void)hidp_send_audio_report(
+                audio_pair.haptics[0],
+                audio_pair.haptics[1],
+                speaker0,
+                speaker1,
+                m61_ds5_bridge_config_speaker_uses_headset(
+                    dualsense_headphones_connected),
+                host_mic_active && !audio_pair.speaker_enabled);
         }
 
         if (ds5_bt_transport_ready() &&
@@ -2179,8 +2245,16 @@ static void usb_hid_bridge_task(void *pvParameters)
 
         while (feature_reports_this_tick < CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK &&
                m61_usb_gamepad_take_feature_request(&feature_report_id, &requested_len)) {
-            int err = hidp_request_feature_report(feature_report_id, requested_len);
-            if (err && err != -ENOTCONN) {
+            int err;
+
+            if (!hidp_feature_mark_inflight(feature_report_id)) {
+                continue;
+            }
+            err = hidp_request_feature_report(feature_report_id, requested_len);
+            if (err) {
+                hidp_feature_clear_inflight(feature_report_id);
+            }
+            if (err && err != -ENOTCONN && err != -EAGAIN) {
                 printf("usb feature get forward failed id=0x%02x requested=%lu err=%d\r\n",
                        feature_report_id,
                        (unsigned long)requested_len,
@@ -2212,71 +2286,6 @@ static void usb_hid_bridge_task(void *pvParameters)
         }
 
         maybe_forward_audio_controls();
-
-        while (speaker_drained_this_tick < 4 &&
-               m61_usb_gamepad_take_speaker_opus(speaker_opus, sizeof(speaker_opus))) {
-            if (speaker_active) {
-                if (pending_speaker_count >= DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS) {
-                    memmove(pending_speaker_opus[0],
-                            pending_speaker_opus[1],
-                            M61_DS5_SPEAKER_OPUS_LEN);
-                    pending_speaker_count = DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS - 1U;
-                }
-                memcpy(pending_speaker_opus[pending_speaker_count],
-                       speaker_opus,
-                       sizeof(speaker_opus));
-                pending_speaker_count++;
-            }
-            speaker_drained_this_tick++;
-        }
-
-        while (haptics_drained_this_tick < 4 &&
-               m61_usb_gamepad_take_haptics_block(haptics, sizeof(haptics))) {
-            if (pending_haptics_count >= DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS) {
-                memmove(pending_haptics[0],
-                        pending_haptics[1],
-                        M61_DS5_HAPTICS_BLOCK_LEN);
-                pending_haptics_count = DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS - 1U;
-            }
-            memcpy(pending_haptics[pending_haptics_count], haptics, sizeof(haptics));
-            pending_haptics_count++;
-            haptics_drained_this_tick++;
-        }
-
-        if (ds5_bt_transport_ready() &&
-            tick_due(now, hidp_next_audio_report_tick) &&
-            (pending_haptics_count >= DS5_OUTPUT_AUDIO_RT_HAPTICS_BLOCKS ||
-             (speaker_active &&
-              pending_speaker_count >= DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS))) {
-            const bool send_speaker =
-                speaker_active &&
-                pending_speaker_count >= DS5_OUTPUT_AUDIO_RT_SPEAKER_BLOCKS;
-            const uint8_t *haptics0 =
-                pending_haptics_count > 0 ? pending_haptics[0] : NULL;
-            const uint8_t *haptics1 =
-                pending_haptics_count > 1 ? pending_haptics[1] : NULL;
-            const uint8_t *speaker0 =
-                send_speaker ? pending_speaker_opus[0] : NULL;
-            const uint8_t *speaker1 =
-                send_speaker ? pending_speaker_opus[1] : NULL;
-
-            if (hidp_send_audio_report(haptics0,
-                                       haptics1,
-                                       speaker0,
-                                       speaker1,
-                                       m61_ds5_bridge_config_speaker_uses_headset(
-                                           dualsense_headphones_connected),
-                                       bt_mic_active) == 0) {
-                pending_haptics_count = 0;
-                if (send_speaker) {
-                    pending_speaker_count = 0;
-                }
-                hidp_next_audio_report_tick =
-                    now + pdMS_TO_TICKS(CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS);
-            } else {
-                hidp_next_audio_report_tick = now + pdMS_TO_TICKS(1);
-            }
-        }
 
         vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS));
     }
@@ -2614,21 +2623,55 @@ static void M61_MAYBE_UNUSED bt_enable_cb(int err)
 #if CONFIG_M61_DS5_DUAL_CHIP_TRANSPORT
 static void dual_chip_usb_start_task(void *pvParameters)
 {
+    bool usb_attached = false;
+
     (void)pvParameters;
 
     printf("USB DualSense registration waits for ESP32 full report\r\n");
-    while (!full_report_seen) {
+    while (1) {
+        if (dual_chip_usb_detach_pending) {
+            dual_chip_usb_detach_pending = false;
+            m61_usb_gamepad_deinit();
+            m61_usb_bus_hold_detached();
+            usb_attached = false;
+            usb_start_after_dualsense_done = false;
+            printf("ESP32 Bluetooth link closed; USB composite device detached\r\n");
+        }
+
+        if (!usb_attached && dual_chip_dse_link_active && full_report_seen) {
+            uint32_t observed_generation = dual_chip_bt_generation;
+
+            wait_for_usb_identity_probe();
+            if (dual_chip_usb_detach_pending ||
+                !dual_chip_dse_link_active ||
+                !full_report_seen ||
+                observed_generation != dual_chip_bt_generation) {
+                continue;
+            }
+
+            printf("DualSense full report seen via ESP32; starting USB composite device\r\n");
+            vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
+            if (dual_chip_usb_detach_pending ||
+                !dual_chip_dse_link_active ||
+                !full_report_seen ||
+                observed_generation != dual_chip_bt_generation) {
+                continue;
+            }
+
+            m61_usb_bus_detach_pulse(350);
+            if (dual_chip_usb_detach_pending ||
+                !dual_chip_dse_link_active ||
+                !full_report_seen ||
+                observed_generation != dual_chip_bt_generation) {
+                continue;
+            }
+            m61_usb_gamepad_init();
+            usb_attached = m61_usb_gamepad_init_result() == 0;
+            usb_start_after_dualsense_done = usb_attached;
+        }
+
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-
-    wait_for_usb_identity_probe();
-    printf("DualSense full report seen via ESP32; starting USB composite device\r\n");
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
-    m61_usb_bus_detach_pulse(350);
-    m61_usb_gamepad_init();
-    usb_start_after_dualsense_done = true;
-
-    vTaskDelete(NULL);
 }
 
 static void dual_chip_boot_task(void *pvParameters)
@@ -3013,6 +3056,18 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)usb_diag.audio_haptic_downsample,
                (unsigned int)usb_diag.audio_haptic_resample_mode,
                (unsigned int)usb_diag.audio_haptic_gain_q8);
+        printf("usb_audio_epoch gen=%lu next=%lu resets=%lu started=%lu complete=%lu drop=%lu stale=%lu pairs=%lu gaps=%lu discontinuity=%lu speaker_transition=%lu\r\n",
+               (unsigned long)usb_diag.audio_epoch_generation,
+               (unsigned long)usb_diag.audio_epoch_next,
+               (unsigned long)usb_diag.audio_epoch_generation_resets,
+               (unsigned long)usb_diag.audio_epoch_started,
+               (unsigned long)usb_diag.audio_epoch_completed,
+               (unsigned long)usb_diag.audio_epoch_dropped,
+               (unsigned long)usb_diag.audio_epoch_stale,
+               (unsigned long)usb_diag.audio_epoch_adjacent_pairs,
+               (unsigned long)usb_diag.audio_epoch_gaps,
+               (unsigned long)usb_diag.audio_epoch_discontinuities,
+               (unsigned long)usb_diag.audio_epoch_speaker_state_discontinuities);
         uint32_t speaker_encode_attempts =
             usb_diag.audio_speaker_encoded + usb_diag.audio_speaker_encode_errors;
         uint32_t speaker_encode_avg_us =

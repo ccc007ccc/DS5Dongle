@@ -20,19 +20,26 @@ ROOT = Path(__file__).resolve().parents[1]
 PARSER = ROOT / "main" / "dualsense_parser.c"
 OUTPUT = ROOT / "main" / "dualsense_output.c"
 M61_USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
+M61_AUDIO_EPOCH = ROOT / "m61" / "dualsense_hidp_probe" / "m61_audio_epoch.c"
 M61_MAIN = ROOT / "m61" / "dualsense_hidp_probe" / "main.c"
 M61_DSE = ROOT / "m61" / "dualsense_hidp_probe" / "m61_ds5_dse.c"
 M61_BRIDGE_CONFIG = ROOT / "m61" / "dualsense_hidp_probe" / "m61_ds5_bridge_config.c"
 M61_BRIDGE_CONFIG_H = ROOT / "m61" / "dualsense_hidp_probe" / "m61_ds5_bridge_config.h"
 M61_CMAKE = ROOT / "m61" / "dualsense_hidp_probe" / "CMakeLists.txt"
+ESP32_CMAKE = ROOT / "main" / "CMakeLists.txt"
 M61_BUILD_SH = ROOT / "m61" / "dualsense_hidp_probe" / "build.sh"
 M61_TRANSPORT = ROOT / "m61" / "dualsense_hidp_probe" / "m61_esp32_transport.c"
+M61_SPI_SCHEDULER = ROOT / "m61" / "dualsense_hidp_probe" / "m61_spi_scheduler.c"
 M61_LEFT_SPI_EXAMPLE = ROOT / "m61" / "dualsense_hidp_probe" / "defconfig.dual_chip_left_spi.example"
 FIRMWARE_MANIFEST = ROOT / "tools" / "firmware_manifest.py"
 CHECK_DUAL_CHIP_LOG = ROOT / "tools" / "check_dual_chip_log.py"
 DUAL_PROTO = ROOT / "main" / "dual_chip_spi_proto.c"
+DUAL_SCHED_TYPES_H = ROOT / "main" / "dual_chip_scheduler_types.h"
+DUAL_SCHED_TYPES_C = ROOT / "main" / "dual_chip_scheduler_types.c"
 ESP32_DUAL_SPI = ROOT / "main" / "esp32_dual_chip_spi.c"
 ESP32_RAW_HIDP = ROOT / "main" / "bt_ds5_btstack.c"
+ESP32_BT_TX_SCHEDULER = ROOT / "main" / "bt_ds5_tx_scheduler.c"
+ESP32_RESPONSE_SCHEDULER = ROOT / "main" / "esp32_dual_chip_response_scheduler.c"
 ESP32_LED_STATUS = ROOT / "main" / "led_status.h"
 BTSTACK_TLV_ESP32 = ROOT / "components" / "btstack" / "port" / "btstack_tlv_esp32.c"
 BTSTACK_VHCI_ESP32 = ROOT / "components" / "btstack" / "port" / "hci_transport_esp32_vhci.c"
@@ -1000,19 +1007,27 @@ def test_c_source_contract() -> None:
     source = PARSER.read_text(encoding="utf-8")
     output_source = OUTPUT.read_text(encoding="utf-8")
     m61_usb_source = M61_USB.read_text(encoding="utf-8")
+    m61_audio_epoch_source = M61_AUDIO_EPOCH.read_text(encoding="utf-8")
     m61_main_source = M61_MAIN.read_text(encoding="utf-8")
     m61_dse_source = M61_DSE.read_text(encoding="utf-8")
     m61_bridge_config_source = M61_BRIDGE_CONFIG.read_text(encoding="utf-8")
     m61_bridge_config_header = M61_BRIDGE_CONFIG_H.read_text(encoding="utf-8")
     m61_cmake_source = M61_CMAKE.read_text(encoding="utf-8")
+    esp32_cmake_source = ESP32_CMAKE.read_text(encoding="utf-8")
     m61_build_source = M61_BUILD_SH.read_text(encoding="utf-8")
     m61_transport_source = M61_TRANSPORT.read_text(encoding="utf-8")
+    m61_spi_scheduler_source = M61_SPI_SCHEDULER.read_text(encoding="utf-8")
     m61_left_spi_example = M61_LEFT_SPI_EXAMPLE.read_text(encoding="utf-8")
     firmware_manifest_source = FIRMWARE_MANIFEST.read_text(encoding="utf-8")
     check_dual_chip_log_source = CHECK_DUAL_CHIP_LOG.read_text(encoding="utf-8")
     dual_proto_source = DUAL_PROTO.read_text(encoding="utf-8")
+    dual_sched_types_header = DUAL_SCHED_TYPES_H.read_text(encoding="utf-8")
+    dual_sched_types_source = DUAL_SCHED_TYPES_C.read_text(encoding="utf-8")
     esp32_dual_spi_source = ESP32_DUAL_SPI.read_text(encoding="utf-8")
     esp32_raw_hidp_source = ESP32_RAW_HIDP.read_text(encoding="utf-8")
+    esp32_bt_tx_scheduler_source = ESP32_BT_TX_SCHEDULER.read_text(encoding="utf-8")
+    esp32_response_scheduler_source = ESP32_RESPONSE_SCHEDULER.read_text(encoding="utf-8")
+    esp32_bt_source = esp32_raw_hidp_source + "\n" + esp32_bt_tx_scheduler_source
     esp32_led_status_source = ESP32_LED_STATUS.read_text(encoding="utf-8")
     btstack_tlv_source = BTSTACK_TLV_ESP32.read_text(encoding="utf-8")
     btstack_vhci_source = BTSTACK_VHCI_ESP32.read_text(encoding="utf-8")
@@ -1066,34 +1081,41 @@ def test_c_source_contract() -> None:
         assert snippet in output_source, f"missing C output snippet: {snippet}"
 
     m61_haptics_snippets = [
-        "HAPTICS_RESAMPLE_MODE_WDL_EQUIV",
-        "haptics_prev_valid",
-        "haptics_phase",
+        "M61_AUDIO_HAPTICS_DOWNSAMPLE",
         "haptic_pcm16_to_i8",
-        "audio_packet_has_nonzero_speaker",
-        "force_zero_haptics",
-        "read_i16_le(frame + 4)",
-        "read_i16_le(frame + 6)",
-        "if (haptics_phase == 0)",
-        "haptics_phase >= HAPTICS_DOWNSAMPLE_FACTOR",
+        "read_i16_le(frame + 4U)",
+        "read_i16_le(frame + 6U)",
+        "frame_index % M61_AUDIO_HAPTICS_DOWNSAMPLE",
+        "slot->speaker_pcm",
+        "slot->haptics",
+        "M61_AUDIO_EPOCH_USB_FRAMES",
     ]
     for snippet in m61_haptics_snippets:
-        assert snippet in m61_usb_source, f"missing M61 USB haptics snippet: {snippet}"
+        assert snippet in m61_audio_epoch_source, f"missing M61 audio epoch snippet: {snippet}"
     m61_audio_snippets = [
         "#include \"opus/opus.h\"",
         "opus_encoder_get_size",
         "opus_encoder_init",
+        "OPUS_APPLICATION_AUDIO",
         "opus_encode(encoder",
-        "OPUS_SET_FORCE_CHANNELS",
+        "#define AUDIO_SPEAKER_OPUS_CHANNELS 1",
+        "#define AUDIO_SPEAKER_OPUS_BITRATE 160000",
+        "#define AUDIO_SPEAKER_INPUT_FRAME_SAMPLES 512",
+        "resample_speaker_512_to_480(speaker_frame, speaker_job.speaker_pcm)",
+        "opus_encode(encoder,\n                                      speaker_frame,",
+        "opus_packet_pad(speaker_opus",
         "OPUS_SET_MAX_BANDWIDTH",
         "OPUS_BANDWIDTH_MEDIUMBAND",
         "opus_decoder_get_size",
         "opus_decoder_init",
         "opus_decode(decoder",
         "xTaskCreateStatic(audio_codec_task",
-        "process_audio_speaker(audio_out_buffer, nbytes)",
+        "m61_audio_epoch_ingest_usb(",
+        "USB_AUDIO_INGRESS_DEPTH 4",
+        "usb_notify_from_isr(usb_audio_ingress_task_handle)",
         "#define AUDIO_SPEAKER_FRAME_SAMPLES 480",
-        "queue_speaker_frame(speaker_accum)",
+        "m61_audio_epoch_take_encode_job(&speaker_job)",
+        "m61_audio_epoch_complete_encode(speaker_job.generation",
         "m61_usb_gamepad_submit_mic_opus",
         "m61_usb_gamepad_audio_mic_enabled",
         "m61_usb_gamepad_remote_wakeup",
@@ -1102,7 +1124,7 @@ def test_c_source_contract() -> None:
         "m61_ds5_bridge_config_polling_interval",
         "descriptor_polling_interval",
         "config_descriptor_runtime[7] |= USB_CONFIG_REMOTE_WAKEUP",
-        "m61_usb_gamepad_take_speaker_opus",
+        "m61_usb_gamepad_take_audio_epoch_pair",
         "AUDIO_IN_STREAM_PACKET_SIZE",
         "audio_mic_usb_nonzero_packets",
         "audio_speaker_encode_us_max",
@@ -1113,12 +1135,17 @@ def test_c_source_contract() -> None:
         "m61_esp32_transport_get_stats(&stats)",
         "stats.peer_bt_rssi",
         "USB_RECONNECT_DELAY_MS 150U",
-        "schedule_usb_reconnect",
+        "ensure_usb_control_worker_task",
+        "queue_usb_control_from_isr(USB_CONTROL_RECONNECT",
         "m61_usb_gamepad_reinit();",
         "CONFIG_M61_DS5_BRIDGE_VERSION_STRING",
     ]
     for snippet in m61_audio_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
+    assert "process_audio_speaker(audio_out_buffer, nbytes)" not in m61_usb_source
+    assert "schedule_usb_reconnect" not in m61_usb_source
+    assert "speaker_mono" not in m61_usb_source
+    assert "downmix_speaker_frame_mono" not in m61_usb_source
     ds5_report_descriptor = extract_c_hex_array(
         m61_usb_source, "dualsense_ds5_report_desc"
     )
@@ -1161,11 +1188,17 @@ def test_c_source_contract() -> None:
         "USB_IDENTITY_PROBE_TIMEOUT_DS5",
         "result=timeout-DS5",
         "m61_esp32_transport_set_bt_state_callback(dual_chip_bt_state_callback, NULL);",
-        "DS5_DUAL_BT_STATE_CONTROL_OPEN |",
-        "DS5_DUAL_BT_STATE_INTERRUPT_OPEN",
+        "(flags & DS5_DUAL_BT_STATE_INTERRUPT_OPEN) != 0U",
         "generation != dual_chip_bt_generation",
         "DSE/USB bridge state reset on ESP32 BT generation=",
         "m61_usb_gamepad_reset_transport_queues();",
+        "dual_chip_usb_detach_pending = true;",
+        "ESP32 Bluetooth link closed; USB composite device detached",
+        "m61_usb_gamepad_deinit();",
+        "m61_usb_bus_hold_detached();",
+        "USB bus held detached until the controller reconnects",
+        "usb_attached = m61_usb_gamepad_init_result() == 0;",
+        "observed_generation != dual_chip_bt_generation",
         "observed_bt_generation != dual_chip_bt_generation",
     ):
         assert snippet in m61_main_source, f"missing identity probe lifecycle snippet: {snippet}"
@@ -1199,25 +1232,89 @@ def test_c_source_contract() -> None:
     transport_restore = m61_transport_source.index(
         "s_transport.input_cb = input_cb;", transport_memset
     )
-    transport_mutex = m61_transport_source.index(
-        "s_transport.lock = xSemaphoreCreateMutex();", transport_restore
+    transport_spi_init = m61_transport_source.index(
+        "err = init_spi_master();", transport_restore
     )
-    assert transport_memset < transport_restore < transport_mutex
-    recovery_start = m61_transport_source.index(
-        "static void perform_recovery(uint8_t reason)"
-    )
-    recovery_not_ready = m61_transport_source.index(
-        "s_transport.ready = false;", recovery_start
-    )
-    recovery_invalidate = m61_transport_source.index(
-        "invalidate_peer_generation();", recovery_not_ready
-    )
-    recovery_reset = m61_transport_source.index(
-        "bflb_gpio_reset(s_transport.gpio", recovery_invalidate
-    )
-    assert recovery_not_ready < recovery_invalidate < recovery_reset
-    assert "AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM" not in m61_usb_source
-    assert "resample_speaker_upstream_frame" not in m61_usb_source
+    assert transport_memset < transport_restore < transport_spi_init
+    for removed in (
+        "xSemaphoreTake(",
+        "xSemaphoreGive(",
+        "bflb_spi_poll_exchange(",
+        "static void rx_poll_task(",
+        "static void time_sync_task(",
+    ):
+        assert removed not in m61_transport_source, (
+            f"legacy M61 synchronous transport path remains: {removed}"
+        )
+    assert "bflb_spi_poll_exchange(" in m61_spi_scheduler_source
+    assert "m61_spi_scheduler_init(" in m61_transport_source
+    for snippet in (
+        "DS5_SCHED_M61_RT_REPORT_CAPACITY",
+        "DS5_SCHED_M61_RELIABLE_CONTROL_CAPACITY",
+        "M61_SPI_CONTROL_MAX_ATTEMPTS 2U",
+        "m61_spi_submit_rt_report(",
+        "m61_spi_publish_state31(",
+        "m61_spi_publish_state32(",
+        "m61_spi_submit_control(",
+        "GPIO_INT_TRIG_MODE_SYNC_RISING_EDGE",
+        "M61_SPI_SCHED_FALLBACK_MS 1U",
+        "pdMS_TO_TICKS(M61_SPI_SCHED_FALLBACK_MS)",
+        "DS5_SCHED_SLOT_EVICTED",
+        "sizeof(m61_spi_typed_storage_t) <=",
+    ):
+        assert snippet in m61_spi_scheduler_source, (
+            f"missing M61 single-owner scheduler contract: {snippet}"
+        )
+    assert "(void)deadline_tick;" in m61_transport_source
+    for snippet in (
+        "m61_spi_submit_rt_report(",
+        "m61_spi_publish_state31(",
+        "m61_spi_publish_state32(",
+        "m61_spi_submit_control(",
+    ):
+        assert snippet in m61_transport_source
+    assert "uint32_t src_pos_num = out * AUDIO_SPEAKER_INPUT_FRAME_SAMPLES;" in m61_usb_source
+    assert "m61_usb_gamepad_take_audio_epoch_pair(&audio_pair)" in m61_main_source
+    assert "audio_pair.speaker_enabled ? audio_pair.speaker_opus[0] : NULL" in m61_main_source
+    assert "pending_speaker_opus" not in m61_main_source
+    assert "pending_haptics" not in m61_main_source
+    assert "#define CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK 1" in m61_main_source
+    bridge_task = m61_main_source[
+        m61_main_source.index("static void usb_hid_bridge_task(void *pvParameters)"):
+        m61_main_source.index("static uint8_t hid_sdp_discover_cb", m61_main_source.index("static void usb_hid_bridge_task(void *pvParameters)"))
+    ]
+    audio_drain = bridge_task.index("m61_usb_gamepad_take_audio_epoch_pair")
+    audio_send = bridge_task.index("hidp_send_audio_report(", audio_drain)
+    feature_drain = bridge_task.index("m61_usb_gamepad_take_feature_request")
+    host_drain = bridge_task.index("m61_usb_gamepad_take_host_report")
+    assert audio_drain < audio_send < feature_drain < host_drain
+    assert "static uint32_t hidp_feature_inflight[8];" in m61_main_source
+    assert "if (!hidp_feature_mark_inflight(feature_report_id))" in m61_main_source
+    assert "hidp_feature_clear_inflight(report_id);" in m61_main_source
+    assert "#define FEATURE_CACHE_SLOTS 32" in m61_usb_source
+    assert "M61_AUDIO_EPOCH_SLOT_COUNT 8U" in M61_AUDIO_EPOCH.with_suffix(".h").read_text(encoding="utf-8")
+    assert "M61_AUDIO_EPOCH_RESERVED_SLOT_BYTES 2344U" in M61_AUDIO_EPOCH.with_suffix(".h").read_text(encoding="utf-8")
+    for snippet in (
+        "g_m61_mic_opus_storage",
+        "DS5_SCHED_M61_MIC_OPUS_CAPACITY",
+        "sizeof(m61_mic_opus_slot_t) == 104U",
+        "len != M61_DS5_MIC_OPUS_LEN",
+        "g_m61_usb_control_storage",
+        "DS5_SCHED_M61_USB_CONTROL_CAPACITY",
+        "sizeof(m61_usb_control_slot_t) == 104U",
+        "report_type == HID_REPORT_OUTPUT",
+        "pending_output_report_valid",
+    ):
+        assert snippet in m61_usb_source, (
+            f"missing M61 typed USB queue contract: {snippet}"
+        )
+    assert "uint16_t flags = DS5_DUAL_FLAG_LATEST | DS5_DUAL_FLAG_DROP_OK;" in m61_transport_source
+    assert "static int16_t speaker_frame_queue[" not in m61_usb_source
+    assert "static uint8_t speaker_opus_queue[" not in m61_usb_source
+    assert "static uint8_t haptics_queue[" not in m61_usb_source
+    assert "static uint8_t mic_opus_queue[" not in m61_usb_source
+    assert "pending_host_report" not in m61_usb_source
+    assert "tick_due(now, hidp_next_audio_report_tick)" not in bridge_task
     assert "USB remote wake requested by controller input" in m61_main_source
     assert "state->dpad != dualsense_wake_dpad" in m61_main_source
     assert "state->buttons != dualsense_wake_buttons" in m61_main_source
@@ -1267,6 +1364,42 @@ def test_c_source_contract() -> None:
     assert "m61_ds5_inactivity.c" in m61_cmake_source
     assert "m61_haptics_resampler" not in m61_cmake_source
     assert "resample.cpp" not in m61_cmake_source
+    assert "set(OPUS_RAM_OBJECTS" in m61_cmake_source
+    assert "opus_encoder.c.o" in m61_cmake_source
+    assert "celt_encoder.c.o" in m61_cmake_source
+    assert '"CONFIG_M61_ESP32_SPI_FREQ_HZ=8000000"' in m61_build_source
+    assert "CONFIG_M61_ESP32_SPI_FREQ_HZ =8000000" in m61_left_spi_example
+    assert "*libopus.a:${OPUS_OBJECT}*(.text* .rodata* .srodata*)" in m61_cmake_source
+    assert "sdk_set_linker_script_macro(\"${BL616_OPUS_RAM_LINKER}\")" in m61_cmake_source
+    assert "../../main/dual_chip_scheduler_types.c" in m61_cmake_source
+    assert '"dual_chip_scheduler_types.c"' in esp32_cmake_source
+
+    for snippet in (
+        "DS5_SCHED_RT_ACTUATION = 1",
+        "uint32_t reserved;",
+        "DS5_SCHED_SLOT_SENDING",
+        "ds5_sched_class_metrics_t",
+        "DS5_SCHED_M61_AUDIO_EPOCH_CAPACITY 8U",
+        "DS5_SCHED_ESP_RT_REPORT_CAPACITY 2U",
+        "DS5_SCHED_M61_PLANNED_TYPED_STORAGE_BYTES 29416U",
+        "DS5_SCHED_ESP_PLANNED_TYPED_STORAGE_BYTES 10952U",
+    ):
+        assert snippet in dual_sched_types_header, (
+            f"missing scheduler type contract: {snippet}"
+        )
+    for snippet in (
+        "sizeof(ds5_sched_meta_t) == 24U",
+        "offsetof(ds5_sched_meta_t, reserved) == 16U",
+        ".reserved = 0U",
+        "sizeof(ds5_sched_m61_storage_plan_t)",
+        "sizeof(ds5_sched_esp_storage_plan_t)",
+        "DS5_SCHED_M61_PROJECTED_MIN_HEAP_BYTES == 116886U",
+        "M61 projected static RAM exceeds 75 percent",
+        "ESP32 projected static DRAM exceeds 70 percent",
+    ):
+        assert snippet in dual_sched_types_source, (
+            f"missing scheduler size contract: {snippet}"
+        )
 
     m61_bridge_config_snippets = [
         "M61_DS5_BRIDGE_CONFIG_VERSION 5U",
@@ -1322,10 +1455,8 @@ def test_c_source_contract() -> None:
         "CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS",
         "CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD",
         "CONFIG_M61_ESP32_RECOVERY_COOLDOWN_MS",
-        "perform_recovery(reason)",
-        "bflb_gpio_reset(s_transport.gpio, (uint8_t)CONFIG_M61_ESP32_RESET_PIN)",
+        "bflb_gpio_reset(s_scheduler.gpio,",
         "s_transport.stats.time_sync_failures++",
-        "s_transport.stats.recovery_attempts++",
         "s_transport.stats.rx_hello++",
         "s_transport.stats.rx_time_sync++",
         "s_transport.stats.rx_bt_state++",
@@ -1343,7 +1474,6 @@ def test_c_source_contract() -> None:
         "MTU_CONTROL 672",
         "DS5_CRC_SEED_OUTPUT 0xEADA2D49",
         "DS5_CRC_SEED_FEATURE 0x2060EFC3",
-        "fill_output_report_checksum(packet + 1, len)",
         "fill_feature_report_checksum(frame + 1, len + 1)",
         "gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO)",
         "gap_set_page_scan_type(PAGE_SCAN_MODE_INTERLACED)",
@@ -1366,7 +1496,7 @@ def test_c_source_contract() -> None:
         "Page scan stays enabled for PS-only controller-",
         "explicitly with BT_CONNECT scan/auto",
         "handle_inquiry_result(event_type, packet)",
-        "Auto connect: inquiry + incoming page",
+        "Auto connect: inquiry reason=%s saved=0",
         "static bool s_acl_pending;",
         "DS5_ACL_CREATE_RETRY_MS 20",
         "static void try_send_acl_create(void)",
@@ -1382,7 +1512,7 @@ def test_c_source_contract() -> None:
         "DS5_NVS_KEY_ADDR",
         "init_feature_prefetch",
         "send_connect_led_state",
-        "l2cap_request_can_send_now_event(s_interrupt_cid)",
+        "l2cap_request_can_send_now_event(cid)",
         "btstack_run_loop_execute_on_main_thread(&s_cmd_drain_reg)",
         "DS5_DUAL_BT_STATE_FULL_REPORT",
         "DS5_DUAL_MSG_BT_CONNECT",
@@ -1418,49 +1548,64 @@ def test_c_source_contract() -> None:
         "--require-mic-opus",
         "--require-no-rt-errors",
         "set_pending_ack(&header, 0)",
-        "set_pending_ack(&header, -ENOMEM)",
-        "item.wants_ack = wants_ack;",
-        "(void)xQueueSendToFront(s_tx_queue, &dropped, 0);",
-        "set_pending_ack_fields(item.ack_seq, item.type, item.channel, err);",
-        "set_pending_ack_fields(item.ack_seq, item.type, item.channel, -ETIMEDOUT);",
+        "bt_dualsense_raw_hidp_send_report_at(",
+        "set_pending_ack(&header, status);",
+        "bt_ds5_tx_scheduler_free_count()",
         "bool allow_reconnect = header.length > 0 && payload[0] != 0;",
-        "CONFIG_DS5_DUAL_CHIP_RESPONSE_QUEUE_DEPTH",
-        "response_queue_push_front_locked(&item)",
-        "response_queue_push_back_locked(&item, replace_existing)",
-        "stage_response_for_transaction(&response_item, &response_len)",
+        "esp32_dual_response_publish(",
+        "RESPONSE_CONTROL_CAPACITY 8U",
+        "RESPONSE_FEATURE_CAPACITY 8U",
+        "RESPONSE_INPUT_CAPACITY 4U",
+        "RESPONSE_MIC_CAPACITY 4U",
+        "sync_irq_locked();",
+        "spi_frame_errors",
+        "spi_driver_errors",
+        "spi_sequence_errors",
+        "set_pending_ack_fields(seq, type, channel, status);",
+        "stage_response_for_transaction(&response_token, &response_len)",
         "trans.trans_len >= (response_len * 8U)",
-        "finish_response_transaction(&response_item, response_complete)",
+        "finish_response_transaction(&response_token, response_complete)",
+        "finish_response_transaction(&response_token, false)",
         "size_t rx_len = (size_t)(trans.trans_len / 8U);",
         "SPI response retained: clocked_bits=%u needed_bits=%u",
-        "poll_reliable_ack(seq, type)",
-        "bool peer_ack_status_error = false;",
-        "uint32_t ack_rx_before = s_transport.stats.rx_ack;",
-        "peer_ack_status_error = got_peer_ack;",
-        "if (!peer_ack_status_error) {",
+        "M61_SPI_CONTROL_MAX_ATTEMPTS 2U",
         "CONFIG_M61_ESP32_ACK_POLL_COUNT",
-        "CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT",
-        "s_transport.stats.tx_ack_polls++",
-        "s_transport.stats.ack_retries++",
-        "s_transport.stats.ack_failures++",
-        "s_transport.stats.ack_miss++",
-        "(!irq_configured || optional_irq_pin_active())",
-        "if (!CONFIG_M61_ESP32_RX_POLL_ENABLE || s_transport.rx_poll_task != NULL)",
+        "optional_irq_pin_active()",
         "m61_esp32_transport_request_stats",
         "esp32_peer_stats",
+        "DS5_DUAL_FEATURE_GET_PAYLOAD_LEN",
+        "DS5_DUAL_WIRE_TEST_PAYLOAD_LEN",
+        "bt_ds5_tx_scheduler_reset_metrics();",
+        "esp32_dual_response_reset_metrics();",
     ]
     combined_dual_chip_source = "\n".join(
         [
             dual_proto_source,
             esp32_dual_spi_source,
             esp32_raw_hidp_source,
+            esp32_bt_tx_scheduler_source,
+            esp32_response_scheduler_source,
             esp32_led_status_source,
             m61_transport_source,
+            m61_spi_scheduler_source,
             m61_main_source,
             check_dual_chip_log_source,
         ]
     )
     for snippet in dual_chip_snippets:
         assert snippet in combined_dual_chip_source, f"missing dual-chip snippet: {snippet}"
+    for snippet in (
+        "#define AUDIO_SPEAKER_OPUS_BANDWIDTH OPUS_BANDWIDTH_MEDIUMBAND",
+        "OPUS_SET_FORCE_CHANNELS(1)",
+        "audio_speaker_opus_force_mono = 1",
+    ):
+        assert snippet in m61_usb_source, f"missing bounded M61 speaker codec setting: {snippet}"
+    scheduler_burst = m61_spi_scheduler_source[
+        m61_spi_scheduler_source.index("if (transactions == 4U)"):
+        m61_spi_scheduler_source.index("if (xTaskNotifyWait", m61_spi_scheduler_source.index("if (transactions == 4U)"))
+    ]
+    assert "vTaskDelay(1U);" in scheduler_burst
+    assert "taskYIELD();" not in scheduler_burst
     assert "case HCI_EVENT_LINK_KEY_REQUEST:" not in esp32_raw_hidp_source
     assert "hci_link_key_request_reply" not in esp32_raw_hidp_source
     assert "hci_link_key_request_negative_reply" not in esp32_raw_hidp_source
@@ -1485,8 +1630,93 @@ def test_c_source_contract() -> None:
         "l2cap_decline_connection(local_cid);",
         "snapshot = s_state;",
         "cb(&snapshot, esp_timer_get_time(), ctx);",
+        "if (s_have_saved) {\n        wait_for_controller_page(reason);\n        return;",
+        'ESP_LOGI(TAG, "Auto connect: inquiry reason=%s saved=0"',
+        "bt_ds5_tx_scheduler_init(fill_output_report_checksum,",
+        "bt_ds5_tx_scheduler_set_interrupt_channel(local_cid);",
+        "bt_ds5_tx_scheduler_handle_can_send_now();",
+        "l2cap_event_can_send_now_get_local_cid(packet)",
+        "control_handle_can_send_now();",
+        "DS5_CONTROL_FIFO_DEPTH 8",
+        "item->attempts >= 2U",
+        "bt_dualsense_raw_hidp_get_feature_tracked(",
+        "bt_dualsense_raw_hidp_set_feature_tracked(",
+        "bt_dualsense_raw_hidp_set_control_complete_callback(",
+        "DS5_SCHED_ESP_RT_REPORT_CAPACITY",
+        "DS5_TX_RT_STALE_US 64000ULL",
+        "DS5_TX_RT_MAX_BURST 3U",
+        "static bool s_can_send_requested;",
+        "if (s_interrupt_cid != 0U && has_pending_locked() &&",
+        "!s_can_send_requested",
+        "s_can_send_requested = false;",
+        "selection.generation == s_generation",
+        "return -ESTALE;",
+        "l2cap_request_can_send_now_event(cid);",
+        "slot->state = DS5_SCHED_SLOT_SENDING;",
+        "mailbox->dirty && mailbox->version == selection->version",
+        "metrics->transport_failed++;",
+        "metrics->stale++;",
+        "s_metrics.realtime.gap_over_25ms++",
+        "s_metrics.realtime.gap_over_40ms++",
+        "_Static_assert(sizeof(bt_ds5_rt_slot_t) == 584U",
+        "_Static_assert(sizeof(bt_ds5_state31_mailbox_t) == 112U",
+        "_Static_assert(sizeof(bt_ds5_state32_mailbox_t) == 176U",
+        "ds5_dual_spi_report_is_audio_rt(report, report_len)",
+        "rollback_selection(&selection);",
+        "void bt_ds5_tx_scheduler_reset_metrics(void)",
     ):
-        assert snippet in esp32_raw_hidp_source, f"missing ESP32 BT lifecycle snippet: {snippet}"
+        assert snippet in esp32_bt_source, f"missing ESP32 BT lifecycle snippet: {snippet}"
+    for snippet in (
+        "if (generation == s_generation)",
+        "void esp32_dual_response_reset_generation(uint32_t generation)",
+        "void esp32_dual_response_reset_metrics(void)",
+        "#define RESPONSE_CONTROL_MAX_BURST 2U",
+        "#define RESPONSE_NONCONTROL_SLOTS 9U",
+        "s_control_burst < RESPONSE_CONTROL_MAX_BURST",
+        "s_noncontrol_cursor + 1U",
+        "valid = SELECT_NONCONTROL_DEFAULT();",
+    ):
+        assert snippet in esp32_response_scheduler_source, (
+            f"missing ESP32 response scheduler lifecycle snippet: {snippet}"
+        )
+    response_selection = esp32_response_scheduler_source[
+        esp32_response_scheduler_source.index("bool esp32_dual_response_stage("):
+        esp32_response_scheduler_source.index("void esp32_dual_response_finish(")
+    ]
+    for weighted_slot in ("case 1U:", "case 3U:", "case 5U:", "case 6U:", "case 8U:"):
+        assert weighted_slot in response_selection
+    assert "esp32_dual_response_reset_generation(" in esp32_dual_spi_source
+    irq_preconfigure = esp32_dual_spi_source.index(
+        "set_optional_gpio_level(CONFIG_DS5_DUAL_CHIP_ESP_IRQ_GPIO, 0);"
+    )
+    response_init = esp32_dual_spi_source.index(
+        "esp32_dual_response_scheduler_init(response_irq_set, NULL);"
+    )
+    assert irq_preconfigure < response_init
+    assert "header.length != DS5_DUAL_FEATURE_GET_PAYLOAD_LEN" in esp32_dual_spi_source
+    assert "header.length != DS5_DUAL_WIRE_TEST_PAYLOAD_LEN" in esp32_dual_spi_source
+    for removed in (
+        "static QueueHandle_t s_realtime_cmd_queue;",
+        "static QueueHandle_t s_state31_cmd_queue;",
+        "static QueueHandle_t s_state32_cmd_queue;",
+        "static send_element_t s_send_fifo[",
+        "static QueueHandle_t s_tx_queue;",
+        "xQueueCreate(CONFIG_DS5_DUAL_CHIP_TX_QUEUE_DEPTH",
+        "#if 0 /* Replaced by bt_ds5_tx_scheduler canonical typed storage. */",
+        "#if 0 /* Replaced by esp32_dual_chip_response_scheduler typed stores. */",
+        "#if 0 /* Report payloads now enter bt_ds5_tx_scheduler directly. */",
+    ):
+        assert removed not in esp32_raw_hidp_source + esp32_dual_spi_source, (
+            f"legacy ESP report queue still compiled: {removed}"
+        )
+    assert "bt_ds5_tx_scheduler_reset_generation(generation);" not in (
+        esp32_bt_tx_scheduler_source[
+            esp32_bt_tx_scheduler_source.index("int bt_ds5_tx_scheduler_submit("):
+            esp32_bt_tx_scheduler_source.index(
+                "void bt_ds5_tx_scheduler_handle_can_send_now(void)"
+            )
+        ]
+    )
     inquiry_complete_block = esp32_raw_hidp_source[
         esp32_raw_hidp_source.index("case GAP_EVENT_INQUIRY_COMPLETE:"):
         esp32_raw_hidp_source.index("case HCI_EVENT_COMMAND_STATUS:")
@@ -1629,6 +1859,7 @@ def test_c_source_contract() -> None:
         "#define HCI_VHCI_INCOMING_BUFFER_SIZE (HCI_INCOMING_PACKET_BUFFER_SIZE + 1u)",
         "space < (uint16_t)(len + 2u)",
         "btstack_ring_buffer_reset(&hci_ringbuffer)",
+        "esp_bredr_tx_power_set(ESP_PWR_LVL_N0, ESP_PWR_LVL_P9)",
     ]
     combined_btstack_port_source = "\n".join([btstack_tlv_source, btstack_vhci_source])
     for snippet in btstack_port_snippets:
@@ -1651,7 +1882,7 @@ def test_c_source_contract() -> None:
         "CONFIG_M61_ESP32_IRQ_PIN =17",
         "CONFIG_M61_ESP32_RELIABLE_RETRY_COUNT =1",
         "CONFIG_M61_ESP32_ACK_POLL_COUNT =32",
-        "CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS =1000",
+        "CONFIG_M61_ESP32_TIME_SYNC_INTERVAL_MS =0",
         "CONFIG_M61_ESP32_RECOVERY_ERROR_THRESHOLD =8",
         "CONFIG_M61_ESP32_RECOVERY_COOLDOWN_MS =5000",
         "CONFIG_DS5_DUAL_CHIP_SPI_SCLK_GPIO=27",
@@ -1684,6 +1915,15 @@ def test_c_source_contract() -> None:
     )
     for snippet in wiring_snippets:
         assert snippet in combined_wiring_source, f"missing wiring snippet: {snippet}"
+
+    def deadline_expired(deadline_us: int, now_us: int) -> bool:
+        delta = (now_us - deadline_us) & 0xFFFFFFFF
+        signed_delta = delta if delta < 0x80000000 else delta - 0x100000000
+        return deadline_us != 0 and signed_delta > 0
+
+    assert not deadline_expired(0, 100)
+    assert not deadline_expired(0x00000010, 0xFFFFFFF0)
+    assert deadline_expired(0xFFFFFFF0, 0x00000010)
 
 
 def main() -> int:

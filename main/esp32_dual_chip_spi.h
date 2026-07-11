@@ -13,6 +13,11 @@ typedef struct {
     uint32_t spi_rx_frames;
     uint32_t spi_tx_frames;
     uint32_t spi_crc_errors;
+    uint32_t spi_frame_errors;
+    uint32_t spi_driver_errors;
+    uint32_t spi_sequence_errors;
+    uint32_t spi_duplicates;
+    uint32_t spi_short_transactions;
     uint32_t spi_queue_drops;
     uint32_t hidp_tx_31;
     uint32_t hidp_tx_32;

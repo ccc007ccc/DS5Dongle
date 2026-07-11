@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -24,6 +25,16 @@ def run_step(name: str, cmd: list[str]) -> int:
 def py_compile_command() -> list[str]:
     tool_files = sorted((ROOT / "tools").glob("*.py"))
     return [sys.executable, "-m", "py_compile", *[str(path) for path in tool_files]]
+
+
+def wsl_path(path: Path) -> str:
+    result = subprocess.run(
+        ["wsl", "--exec", "wslpath", "-a", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         help="run every selected step before returning failure",
     )
     args = parser.parse_args(argv)
+    wsl_root = shlex.quote(wsl_path(ROOT))
 
     steps: list[tuple[str, list[str]]] = [
         ("project structure", [sys.executable, "tools/verify_project.py"]),
@@ -59,6 +71,25 @@ def main(argv: list[str] | None = None) -> int:
         ("M61 wake descriptors", [sys.executable, "tools/test_m61_wake_descriptors.py"]),
         ("M61 flash flow", [sys.executable, "tools/test_m61_flash_flow.py"]),
         ("M61 transport generation", [sys.executable, "tools/test_m61_transport_generation.py"]),
+        ("dual-chip scheduler model", [sys.executable, "tools/test_dual_chip_scheduler.py"]),
+        ("M61 SPI scheduler contracts", [sys.executable, "tools/test_m61_spi_scheduler.py"]),
+        ("scheduler RAM forecast", [sys.executable, "tools/scheduler_ram_budget.py"]),
+        ("scheduler memory gate tests", [sys.executable, "tools/test_scheduler_memory.py"]),
+        (
+            "M61 audio epoch host test",
+            [
+                "wsl",
+                "bash",
+                "-lc",
+                f"cd {wsl_root} && "
+                "gcc -std=c11 -Wall -Wextra -Werror "
+                "-DM61_AUDIO_EPOCH_HOST_TEST -I main -I m61/dualsense_hidp_probe "
+                "tools/test_m61_audio_epoch.c "
+                "m61/dualsense_hidp_probe/m61_audio_epoch.c "
+                "main/dual_chip_scheduler_types.c "
+                "-o /tmp/test_m61_audio_epoch && /tmp/test_m61_audio_epoch",
+            ],
+        ),
         ("stage-1 log checker self-test", [sys.executable, "tools/test_stage1_log_checker.py"]),
         ("M61 HIDP log checker self-test", [sys.executable, "tools/test_m61_hidp_log_checker.py"]),
         ("dual-chip log checker self-test", [sys.executable, "tools/check_dual_chip_log.py", "--self-test"]),
@@ -119,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check_artifacts:
         steps.append(("firmware artifact manifest", [sys.executable, "tools/firmware_manifest.py", "--strict"]))
+        steps.append(
+            (
+                "dual-chip release artifact gate",
+                [sys.executable, "tools/check_dual_chip_release.py"],
+            )
+        )
 
     first_failure = 0
     for name, cmd in steps:
