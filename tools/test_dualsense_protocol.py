@@ -595,6 +595,7 @@ def test_c_source_contract() -> None:
         "hidp_alloc_interrupt_report(DS5_OUTPUT_REPORT31_BT_LEN",
         "hidp_alloc_interrupt_report(DS5_OUTPUT_REPORT32_BT_LEN",
         "hidp_submit_interrupt_report(buf)",
+        "The Bouffalo BR/EDR L2CAP API returns bytes sent on success",
     ]
     for snippet in m61_bridge_snippets:
         assert snippet in m61_main_source, f"missing M61 bridge snippet: {snippet}"

@@ -1403,8 +1403,11 @@ static int hidp_submit_interrupt_report(struct net_buf *buf)
 
     if (err < 0) {
         net_buf_unref(buf);
+        return err;
     }
-    return err;
+
+    /* The Bouffalo BR/EDR L2CAP API returns bytes sent on success. */
+    return 0;
 }
 
 static int hidp_send_ds5_output_init(void)
