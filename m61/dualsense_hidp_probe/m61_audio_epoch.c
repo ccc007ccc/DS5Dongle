@@ -291,6 +291,79 @@ bool m61_audio_epoch_complete_encode(uint32_t generation, uint32_t epoch,
     return true;
 }
 
+bool m61_audio_epoch_fallback_due_pair(uint64_t now_us,
+                                       uint64_t deadline_us,
+                                       uint64_t encode_budget_us)
+{
+    int first = -1;
+    int second = -1;
+    uint32_t oldest = UINT32_MAX;
+    uintptr_t flags = epoch_lock();
+
+    for (uint8_t i = 0; i < M61_AUDIO_EPOCH_SLOT_COUNT; i++) {
+        m61_audio_epoch_t *slot = &s_store.slots[i];
+        if ((slot->state == M61_AUDIO_EPOCH_READY_ENCODE ||
+             slot->state == M61_AUDIO_EPOCH_COMPLETE) &&
+            slot->generation == s_store.stats.generation &&
+            slot->epoch < oldest) {
+            oldest = slot->epoch;
+            first = i;
+        }
+    }
+    if (first < 0) {
+        epoch_unlock(flags);
+        return false;
+    }
+    for (uint8_t i = 0; i < M61_AUDIO_EPOCH_SLOT_COUNT; i++) {
+        m61_audio_epoch_t *slot = &s_store.slots[i];
+        if ((slot->state == M61_AUDIO_EPOCH_READY_ENCODE ||
+             slot->state == M61_AUDIO_EPOCH_COMPLETE) &&
+            slot->generation == s_store.stats.generation &&
+            slot->epoch == oldest + 1U) {
+            second = i;
+            break;
+        }
+    }
+    if (second < 0) {
+        epoch_unlock(flags);
+        return false;
+    }
+
+    m61_audio_epoch_t *first_slot = &s_store.slots[first];
+    m61_audio_epoch_t *second_slot = &s_store.slots[second];
+    uint64_t age_us = now_us >= first_slot->captured_us
+                          ? now_us - first_slot->captured_us
+                          : 0U;
+    bool enough_slack = age_us < deadline_us &&
+                        deadline_us - age_us > encode_budget_us;
+
+    if (first_slot->state == M61_AUDIO_EPOCH_COMPLETE &&
+        second_slot->state == M61_AUDIO_EPOCH_COMPLETE) {
+        epoch_unlock(flags);
+        return false;
+    }
+    if (!first_slot->speaker_enabled || !second_slot->speaker_enabled ||
+        first_slot->speaker_enabled != second_slot->speaker_enabled ||
+        enough_slack) {
+        epoch_unlock(flags);
+        return false;
+    }
+
+    m61_audio_epoch_t *slots[2] = {first_slot, second_slot};
+    for (uint8_t i = 0; i < 2U; i++) {
+        if (slots[i]->state == M61_AUDIO_EPOCH_READY_ENCODE) {
+            slots[i]->state = M61_AUDIO_EPOCH_COMPLETE;
+            s_store.stats.epochs_completed++;
+            s_store.stats.encode_jobs_cancelled++;
+        }
+        slots[i]->speaker_enabled = 0U;
+        memset(slots[i]->speaker_opus, 0, sizeof(slots[i]->speaker_opus));
+    }
+    s_store.stats.deadline_fallback_pairs++;
+    epoch_unlock(flags);
+    return true;
+}
+
 bool m61_audio_epoch_take_adjacent_pair(m61_audio_epoch_pair_t *pair)
 {
     int first = -1;

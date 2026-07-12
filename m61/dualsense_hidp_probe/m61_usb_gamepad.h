@@ -79,11 +79,13 @@ typedef struct {
     uint32_t audio_haptic_sample_pairs;
     uint32_t audio_haptic_nonzero_blocks;
     uint32_t audio_haptic_queue_dropped;
+    uint32_t audio_haptic_deadline_pairs;
     uint32_t audio_speaker_frames;
     uint32_t audio_speaker_encoded;
     uint32_t audio_speaker_encode_errors;
     uint32_t audio_speaker_queue_dropped;
     uint32_t audio_speaker_opus_dropped;
+    uint32_t audio_speaker_encode_cancelled;
     uint32_t audio_speaker_encode_us_total;
     uint32_t audio_speaker_encode_us_last;
     uint32_t audio_speaker_encode_us_max;

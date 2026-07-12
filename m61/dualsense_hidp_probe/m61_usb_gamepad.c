@@ -75,6 +75,8 @@
 #endif
 #define AUDIO_CODEC_TASK_STACK_WORDS 8192
 #define AUDIO_CODEC_TASK_PRIORITY (configMAX_PRIORITIES - 4)
+#define AUDIO_HAPTICS_DEADLINE_US 32000ULL
+#define AUDIO_SPEAKER_ENCODE_BUDGET_US 9000ULL
 #define AUDIO_INGRESS_TASK_STACK_WORDS 1024
 #define AUDIO_INGRESS_TASK_PRIORITY (configMAX_PRIORITIES - 3)
 #define AUDIO_OPUS_ENCODER_STATE_MAX 49152U
@@ -1255,6 +1257,14 @@ static void audio_codec_task(void *pvParameters)
         uint8_t speaker_budget = 1U;
         TickType_t now;
 
+        if (m61_audio_epoch_fallback_due_pair(
+                bflb_mtimer_get_time_us(),
+                AUDIO_HAPTICS_DEADLINE_US,
+                AUDIO_SPEAKER_ENCODE_BUDGET_US)) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
         while (speaker_budget > 0 && encoder &&
                m61_audio_epoch_take_encode_job(&speaker_job)) {
             uint64_t encode_start_us;
@@ -2118,11 +2128,13 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_haptic_sample_pairs = epoch_stats.haptics_sample_pairs;
     diag->audio_haptic_nonzero_blocks = epoch_stats.haptics_nonzero_epochs;
     diag->audio_haptic_queue_dropped = epoch_stats.epochs_dropped;
+    diag->audio_haptic_deadline_pairs = epoch_stats.deadline_fallback_pairs;
     diag->audio_speaker_frames = epoch_stats.epochs_started;
     diag->audio_speaker_encoded = usb_diag.audio_speaker_encoded;
     diag->audio_speaker_encode_errors = usb_diag.audio_speaker_encode_errors;
     diag->audio_speaker_queue_dropped = epoch_stats.epochs_dropped;
     diag->audio_speaker_opus_dropped = epoch_stats.encode_failures;
+    diag->audio_speaker_encode_cancelled = epoch_stats.encode_jobs_cancelled;
     diag->audio_speaker_encode_us_total = usb_diag.audio_speaker_encode_us_total;
     diag->audio_speaker_encode_us_last = usb_diag.audio_speaker_encode_us_last;
     diag->audio_speaker_encode_us_max = usb_diag.audio_speaker_encode_us_max;

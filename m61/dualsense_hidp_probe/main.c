@@ -2634,11 +2634,12 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.audio_ingress_gaps,
                (unsigned long)usb_diag.audio_in_packets,
                (unsigned long)usb_diag.audio_in_bytes);
-        printf("usb_haptics queued=%lu sample_pairs=%lu nonzero=%lu qdrop=%lu qdepth=%u peak=%u ds=%u mode=%u gain_q8=%u\r\n",
+        printf("usb_haptics queued=%lu sample_pairs=%lu nonzero=%lu qdrop=%lu deadline=%lu qdepth=%u peak=%u ds=%u mode=%u gain_q8=%u\r\n",
                (unsigned long)usb_diag.audio_haptic_blocks,
                (unsigned long)usb_diag.audio_haptic_sample_pairs,
                (unsigned long)usb_diag.audio_haptic_nonzero_blocks,
                (unsigned long)usb_diag.audio_haptic_queue_dropped,
+               (unsigned long)usb_diag.audio_haptic_deadline_pairs,
                (unsigned int)usb_diag.audio_haptic_queue_depth,
                (unsigned int)usb_diag.audio_haptic_last_peak,
                (unsigned int)usb_diag.audio_haptic_downsample,
@@ -2650,12 +2651,13 @@ int cmd_ds5(int argc, char **argv)
             speaker_encode_attempts
                 ? (usb_diag.audio_speaker_encode_us_total / speaker_encode_attempts)
                 : 0;
-        printf("usb_speaker frames=%lu encoded=%lu enc_err=%lu qdrop=%lu odrop=%lu qdepth=%u oqdepth=%u enc_us=%lu/%lu/%lu opus_len=%u mono=%u bw=%u bitrate=%lu\r\n",
+        printf("usb_speaker frames=%lu encoded=%lu enc_err=%lu qdrop=%lu odrop=%lu cancel=%lu qdepth=%u oqdepth=%u enc_us=%lu/%lu/%lu opus_len=%u mono=%u bw=%u bitrate=%lu\r\n",
                (unsigned long)usb_diag.audio_speaker_frames,
                (unsigned long)usb_diag.audio_speaker_encoded,
                (unsigned long)usb_diag.audio_speaker_encode_errors,
                (unsigned long)usb_diag.audio_speaker_queue_dropped,
                (unsigned long)usb_diag.audio_speaker_opus_dropped,
+               (unsigned long)usb_diag.audio_speaker_encode_cancelled,
                (unsigned int)usb_diag.audio_speaker_queue_depth,
                (unsigned int)usb_diag.audio_speaker_opus_queue_depth,
                (unsigned long)usb_diag.audio_speaker_encode_us_last,

@@ -113,6 +113,15 @@ cancelled, and 4,397 completed too late. Encode p99 regressed from about
 rolled back before commit. Future deadline admission must remain inside the
 codec task and must not raise a periodic bridge task above Opus.
 
+The redesigned deadline admission kept the original priorities and ran in the
+codec task before starting another encode. With a 32 ms pair deadline and a
+9 ms encode budget, the hardware run collected 40,972 epochs over about
+7.3 minutes: four haptics-only fallbacks, four cancelled pending encodes, one
+epoch queue drop, and no ingress drops or gaps. Encode average was 7,463 us,
+p95 9,000 us, p99 9,500 us, and maximum 9,986 us. Realtime Bluetooth sent
+20,524/20,524 with zero replacement, stale, retry, or drop. The user reported
+normal haptics and speaker output. This is the validated Phase 2 result.
+
 ## Remaining Hardware Headroom
 
 ### High-confidence work

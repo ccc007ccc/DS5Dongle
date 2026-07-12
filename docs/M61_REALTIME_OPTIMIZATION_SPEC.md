@@ -134,7 +134,7 @@ Conclusion:
 
 ## Phase 2: Haptics Hard Deadline
 
-Status: first implementation failed hardware validation; redesign pending.
+Status: complete and hardware validated after redesign.
 
 Work:
 
@@ -170,6 +170,24 @@ Redesign constraint:
   the remaining pair slack cannot cover an encode, convert only the pending
   speaker epoch to haptics-only and yield one tick so the bridge can transmit.
 - Do not attempt to preempt an Opus call already in progress.
+
+Validated redesign:
+
+- Keep the original codec and bridge task priorities.
+- Before starting the next encode, compare the oldest adjacent pair against a
+  32 ms haptics deadline and a 9 ms measured encode budget.
+- If insufficient slack remains, convert only not-yet-started speaker work to
+  haptics-only and yield one tick for the existing bridge path.
+
+Measured result:
+
+- 40,972 epochs over about 7.3 minutes of active audio.
+- Four deadline fallbacks and four cancelled pending encodes.
+- One epoch queue drop; ingress drops and gaps remained zero.
+- Encode average 7,463 us, p95 9,000 us, p99 9,500 us, maximum 9,986 us.
+- Realtime Bluetooth 20,524/20,524 with zero replacement, stale, retry, or
+  drop.
+- The user reported normal, continuous haptics and speaker output.
 
 ## Phase 3: USB Audio Ingress Ownership
 
