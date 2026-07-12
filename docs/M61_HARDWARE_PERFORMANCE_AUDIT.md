@@ -202,6 +202,15 @@ from about 1.6716% to 1.6582%. The user reported no subjective regression or
 clear improvement. The alignment is retained because it is cache-line correct
 and effectively free, but it is not treated as a material performance gain.
 
+The audio epoch store was then aligned from a 16-byte-offset address to
+`0x62fe9960`. Each 2,336-byte epoch slot is an exact multiple of the 32-byte
+cache line, so this aligns all four PCM slot starts while adding only 16 bytes
+of static RAM. Across 18,948 encodes, average encode time improved from about
+7,462 us to 7,394 us, p99 from 9,500 us to 9,250 us, and D-cache read miss
+rate from about 1.6582% to 1.6394%. Deadline, epoch queue, ingress, and
+realtime Bluetooth drops remained zero. The improvement is small but
+consistent with the cache layout, so the alignment is retained.
+
 ## Implementation Order
 
 1. Keep Opus encoder code in Flash XIP. Moving its hot path into the SDK

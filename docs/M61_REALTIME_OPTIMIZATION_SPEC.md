@@ -296,8 +296,12 @@ The following are not part of the next firmware change:
   15,686 encodes, p99 remained 9,500 us, D-cache read miss rate moved from
   about 1.6716% to 1.6582%, and deadline/queue drops remained zero. The gain
   is small but the change costs only 16 bytes and produced no regression.
-- Epoch and decoder storage alignment remain untested; change them only as
-  separate A/B experiments.
+- Epoch store 32-byte alignment: hardware validated and retained. Across
+  18,948 encodes, average improved from about 7,462 us to 7,394 us, p99 from
+  9,500 us to 9,250 us, and D-cache read miss rate from about 1.6582% to
+  1.6394%; deadline and queue drops remained zero.
+- Decoder storage alignment remains untested and is deferred with microphone
+  work.
 - Set explicit Bluetooth/USB CLIC priorities after interrupt-mask duration is
   bounded and measured.
 - Develop a custom USB FIFO allocation only if ingress-age measurements show

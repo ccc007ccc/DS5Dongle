@@ -11,9 +11,12 @@
 #define USB_FRAME_BYTES (USB_CHANNELS * sizeof(int16_t))
 #define HAPTICS_BOX_FRAMES 16U
 #define INVALID_SLOT UINT8_MAX
+#define M61_CACHE_LINE_BYTES 32U
 
 _Static_assert(sizeof(m61_audio_epoch_t) <= M61_AUDIO_EPOCH_RESERVED_SLOT_BYTES,
                "M61 audio epoch slot budget drift");
+_Static_assert(sizeof(m61_audio_epoch_t) % M61_CACHE_LINE_BYTES == 0U,
+               "M61 audio epoch slot cache-line stride drift");
 
 typedef struct {
     int32_t left_sum;
@@ -29,7 +32,7 @@ typedef struct {
     uint8_t filling_slot;
 } audio_epoch_store_t;
 
-static audio_epoch_store_t s_store;
+static audio_epoch_store_t s_store __attribute__((aligned(M61_CACHE_LINE_BYTES)));
 
 static uintptr_t epoch_lock(void)
 {
