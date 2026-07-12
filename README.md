@@ -1,6 +1,6 @@
 # M61 DualSense USB Adapter
 
-这个 fork 已改成我们的 Ai-M61/BL616/BL618 DualSense 转 USB 项目。当前主线是 **M61 直接通过 Classic Bluetooth HIDP 连接 DualSense，再通过原生 USB Device 枚举成 DualSense 复合 USB 设备**。ESP32 相关代码保留为历史 fallback，不再是默认推进方向。
+这是 Ai-M61/BL616/BL618 DualSense 转 USB 项目。M61 直接通过 Classic Bluetooth HIDP 连接 DualSense，再通过原生 USB Device 枚举成 DualSense 复合 USB 设备。仓库只保留 M61 固件、工具和文档。
 
 ## 当前状态
 
@@ -129,8 +129,8 @@ python tools\ds5_windows_test_app.py
 
 - `m61/dualsense_hidp_probe/main.c`：Classic BT HIDP 连接、配对、SDP、L2CAP、输入解析、自动重连、状态灯。
 - `m61/dualsense_hidp_probe/m61_usb_gamepad.c`：CherryUSB DualSense 复合 USB 描述符、Audio 占位和 HID 输入/输出报文。
-- `main/dualsense_parser.c`：DualSense 0x31/0x01 输入报文解析。
-- `main/dualsense_output.c`：DualSense 蓝牙 output/feature 初始化报文构造。
+- `m61/dualsense_hidp_probe/dualsense_parser.c`：DualSense 0x31/0x01 输入报文解析。
+- `m61/dualsense_hidp_probe/dualsense_output.c`：DualSense 蓝牙 output/feature 初始化报文构造。
 - `tools/check_m61_usb_windows.py`：Windows 侧 USB 枚举检查，区分 DualSense 复合设备与 CH340 串口。
 - `tools/ds5_windows_test_app.py`：Windows Tkinter 桌面测试工具，直接用 Windows HID API 读写 DualSense HID interface。
 - `tools/validate_m61_usb_hardware.py`：组合 Windows 枚举和 `ds5 status` 的 M61 原生 USB 硬件 gate。

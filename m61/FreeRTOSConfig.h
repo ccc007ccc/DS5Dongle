@@ -1,5 +1,5 @@
 /*
- * FreeRTOS configuration for the M61 ESP32 programming bridge.
+ * Shared FreeRTOS configuration for M61 firmware applications.
  *
  * This is based on the Bouffalo SDK CherryUSB FreeRTOS example and keeps the
  * options needed by the CDC ACM bridge task.

@@ -39,11 +39,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-pycompile", action="store_true", help="skip Python syntax checks")
     parser.add_argument(
-        "--include-esp32-build",
-        action="store_true",
-        help="also build default and raw HIDP ESP32 firmware with tools/build_esp32_stage1.py",
-    )
-    parser.add_argument(
         "--include-m61-build",
         action="store_true",
         help="also build both M61 firmware probes through WSL",
@@ -65,7 +60,6 @@ def main(argv: list[str] | None = None) -> int:
         ("requirements audit", [sys.executable, "tools/audit_requirements.py", "--require-spec"]),
         ("requirements audit self-test", [sys.executable, "tools/test_requirements_audit.py"]),
         ("DualSense parser vectors", [sys.executable, "tools/test_dualsense_protocol.py"]),
-        ("stage-1 log checker self-test", [sys.executable, "tools/test_stage1_log_checker.py"]),
         ("M61 HIDP log checker self-test", [sys.executable, "tools/test_m61_hidp_log_checker.py"]),
         ("M61 USB Windows checker self-test", [sys.executable, "tools/check_m61_usb_windows.py", "--self-test"]),
         ("M61 USB hardware validator self-test", [sys.executable, "tools/validate_m61_usb_hardware.py", "--self-test"]),
@@ -76,23 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_pycompile:
         steps.append(("Python syntax", py_compile_command()))
 
-    if args.include_esp32_build:
-        steps.extend([
-            ("ESP32 HIDH build", [sys.executable, "tools/build_esp32_stage1.py"]),
-            (
-                "ESP32 raw HIDP build",
-                [sys.executable, "tools/build_esp32_stage1.py", "--backend", "raw-hidp"],
-            ),
-        ])
-
     if args.include_m61_build:
-        m61_bridge_build = wsl_path(ROOT / "m61" / "esp32_prog_bridge" / "build.sh")
         m61_hidp_build = wsl_path(ROOT / "m61" / "dualsense_hidp_probe" / "build.sh")
         steps.extend([
-            (
-                "M61 ESP32 bridge build",
-                ["wsl", "bash", m61_bridge_build],
-            ),
             (
                 "M61 DualSense HIDP probe build",
                 ["wsl", "bash", m61_hidp_build],

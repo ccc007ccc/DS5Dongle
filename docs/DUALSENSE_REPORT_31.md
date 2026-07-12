@@ -1,6 +1,6 @@
 # DualSense 0x31 输入报文
 
-这是当前 M61 主线和 ESP32 fallback 共享的 DualSense 输入解析约定。M61 Classic Bluetooth HIDP 路线以 `report=0x31 mode=full` 作为完整质量输入门槛，当前实现接受三种输入形态：
+这是 M61 固件使用的 DualSense 输入解析约定。M61 Classic Bluetooth HIDP 路线以 `report=0x31 mode=full` 作为完整质量输入门槛，当前实现接受三种输入形态：
 
 - `A1 31 <seq> <payload...>`：完整 BT HIDP Input 数据。
 - `31 <seq> <payload...>`：HID Host 已去掉 HIDP transaction byte。

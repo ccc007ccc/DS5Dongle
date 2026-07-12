@@ -8,15 +8,13 @@
 DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC/主机
 ```
 
-ESP32 双芯片方案仍保留为 fallback 和历史记录，但不再作为默认实现方向。除非 M61 Classic HIDP 或 USB Device 后续被硬件证据否定，否则新开发优先放在 M61 直连链路。
+仓库只保留 M61 实现，不保留其他芯片的固件、构建入口、刷写工具或 fallback 工作流。
 
 ## 已定技术边界
 
 - 单片机端代码优先使用 C/C++/Rust；当前 M61 固件使用 C，基于 Bouffalo SDK。
 - M61 负责 Classic Bluetooth BR/EDR HIDP Host：扫描、配对、安全、SDP、L2CAP HID Control/Interrupt、DualSense bring-up、输入解析。
 - M61 负责 USB Device：通过 CherryUSB 暴露 Sony `054C:0CE6` DualSense 复合设备，包含 USB Audio Control/Streaming 和 DualSense HID。
-- ESP32-WROOM-32 没有原生 USB Device/OTG，不作为 USB 手柄输出端。
-- 如果后续回退双芯片方案，ESP32 只作为蓝牙 fallback，M61/BL618 仍是 USB 输出端。
 
 ## 硬件标准
 
@@ -57,8 +55,8 @@ ds5 log [normal|quiet]
 
 - `m61/dualsense_hidp_probe/main.c`：M61 Classic HIDP、自动连接、shell、状态灯。
 - `m61/dualsense_hidp_probe/m61_usb_gamepad.c`：USB DualSense composite device。
-- `main/dualsense_parser.c`：共享 DualSense 输入解析。
-- `main/dualsense_output.c`：共享 DualSense output/feature 初始化报文。
+- `m61/dualsense_hidp_probe/dualsense_parser.c`：DualSense 输入解析。
+- `m61/dualsense_hidp_probe/dualsense_output.c`：DualSense output/feature 初始化报文。
 - `tools/flash_m61_firmware.py`：M61 固件刷写。
 - `tools/check_m61_usb_windows.py`：Windows USB 枚举诊断，检查 `VID_054C&PID_0CE6`、DualSense HID/Audio 和 CH340。
 - `tools/validate_m61_usb_hardware.py`：组合 Windows 枚举和 `ds5 status`，验证 `configured=1` 且 `sent>0`。

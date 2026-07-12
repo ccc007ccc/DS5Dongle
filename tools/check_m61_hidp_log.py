@@ -8,10 +8,65 @@ from pathlib import Path
 import re
 import sys
 
-from check_stage1_log import input_activity_failures
-
-
 REPORT_RE = re.compile(r"parsed report=0x([0-9a-fA-F]{2}) mode=([a-zA-Z]+)")
+STATE_RE = re.compile(
+    r"LX=\s*(?P<lx>\d+)\s+LY=\s*(?P<ly>\d+)\s+RX=\s*(?P<rx>\d+)\s+RY=\s*(?P<ry>\d+)\s+"
+    r"L2=\s*(?P<l2>\d+)\s+R2=\s*(?P<r2>\d+)\s+dpad=(?P<dpad>\S+)\s+buttons=(?P<buttons>\S+)"
+    r".*gyro=(?P<gyro>n/a|\([^)]+\)).*accel=(?P<accel>n/a|\([^)]+\))"
+)
+
+
+def parse_triplet(text: str) -> tuple[int, int, int] | None:
+    if text == "n/a" or not (text.startswith("(") and text.endswith(")")):
+        return None
+    parts = text[1:-1].split(",")
+    if len(parts) != 3:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+
+
+def input_activity_failures(lines: list[str], require_motion: bool) -> list[str]:
+    states: list[dict[str, object]] = []
+    for line in lines:
+        match = STATE_RE.search(line)
+        if not match:
+            continue
+        states.append({
+            "sticks": tuple(int(match.group(name)) for name in ("lx", "ly", "rx", "ry")),
+            "triggers": (int(match.group("l2")), int(match.group("r2"))),
+            "buttons": match.group("buttons"),
+            "gyro": parse_triplet(match.group("gyro")),
+            "accel": parse_triplet(match.group("accel")),
+        })
+
+    if not states:
+        return ["no parsed state lines available for input activity check"]
+
+    stick_samples = [state["sticks"] for state in states]
+    trigger_samples = [state["triggers"] for state in states]
+    stick_values = [value for sample in stick_samples for value in sample]  # type: ignore[union-attr]
+    trigger_values = [value for sample in trigger_samples for value in sample]  # type: ignore[union-attr]
+    buttons = [state["buttons"] for state in states]
+    gyro_samples = [state["gyro"] for state in states if state["gyro"] is not None]
+    accel_samples = [state["accel"] for state in states if state["accel"] is not None]
+
+    stick_changed = any(len(set(axis)) > 1 for axis in zip(*stick_samples))
+    accel_changed = any(len(set(axis)) > 1 for axis in zip(*accel_samples)) if accel_samples else False
+    gyro_nonzero = any(value != 0 for sample in gyro_samples for value in sample)  # type: ignore[union-attr]
+
+    failures: list[str] = []
+    if not stick_changed and not any(value <= 80 or value >= 176 for value in stick_values):
+        failures.append("input activity missing: move at least one stick during capture")
+    if len(set(trigger_values)) <= 1 and not any(value >= 32 for value in trigger_values):
+        failures.append("input activity missing: press L2 or R2 during capture")
+    if not any(button != "none" for button in buttons):
+        failures.append("input activity missing: press at least one button during capture")
+    if require_motion and not (gyro_nonzero or accel_changed):
+        failures.append("input activity missing: move the controller to exercise IMU fields")
+    return failures
 
 
 def contains_any(text: str, needles: list[str]) -> bool:

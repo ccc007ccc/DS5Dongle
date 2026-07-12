@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Offline checks for the DualSense 0x31 report map used by stage 1.
-
-This is not a replacement for compiling and running the ESP32 firmware. It
-keeps the documented field offsets, parser expectations, and synthetic vectors
-aligned while ESP-IDF/hardware are unavailable.
-"""
+"""Offline checks for the M61 DualSense report and output protocol."""
 
 from __future__ import annotations
 
@@ -14,12 +9,13 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PARSER = ROOT / "main" / "dualsense_parser.c"
-OUTPUT = ROOT / "main" / "dualsense_output.c"
-M61_USB = ROOT / "m61" / "dualsense_hidp_probe" / "m61_usb_gamepad.c"
-M61_AUDIO_EPOCH = ROOT / "m61" / "dualsense_hidp_probe" / "m61_audio_epoch.c"
-M61_MAIN = ROOT / "m61" / "dualsense_hidp_probe" / "main.c"
-M61_CMAKE = ROOT / "m61" / "dualsense_hidp_probe" / "CMakeLists.txt"
+M61_APP = ROOT / "m61" / "dualsense_hidp_probe"
+PARSER = M61_APP / "dualsense_parser.c"
+OUTPUT = M61_APP / "dualsense_output.c"
+M61_USB = M61_APP / "m61_usb_gamepad.c"
+M61_AUDIO_EPOCH = M61_APP / "m61_audio_epoch.c"
+M61_MAIN = M61_APP / "main.c"
+M61_CMAKE = M61_APP / "CMakeLists.txt"
 
 DS5_BT_HIDP_INPUT = 0xA1
 DS5_BT_INPUT_REPORT_ID = 0x31

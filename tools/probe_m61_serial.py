@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Probe an M61 serial port and classify the DS5Dongle helper firmware.
-
-The probe is intentionally non-flashing: it does not toggle M61 boot straps and
-does not request ESP32 download mode. It sends status commands understood by the
-two development firmwares in this repository and classifies the response.
-"""
+"""Probe an M61 serial port and classify the DS5Dongle firmware."""
 
 from __future__ import annotations
 
@@ -17,15 +12,6 @@ from serial.tools import list_ports
 
 
 DEFAULT_BAUDS = (115200, 460800, 2000000)
-
-BRIDGE_MARKERS = (
-    b"M61 bridge status",
-    b"M61 ESP32 bridge commands",
-    b"M61ESP32BRIDGE",
-    b"OK boot",
-    b"OK run",
-    b"OK reset",
-)
 
 HIDP_PROBE_MARKERS = (
     b"M61 DualSense HIDP probe ready",
@@ -68,8 +54,6 @@ def send_and_read(ser: serial.Serial, command: str, read_ms: int) -> bytes:
 
 def classify(output: bytes) -> str:
     lowered = output.lower()
-    if any(marker in output for marker in BRIDGE_MARKERS):
-        return "bridge"
     if any(marker in output for marker in HIDP_PROBE_MARKERS):
         return "hidp-probe"
     if any(marker.lower() in lowered for marker in UNKNOWN_BOOT_MARKERS):
@@ -88,11 +72,6 @@ def probe_port(port: str, baud: int, read_ms: int, listen_ms: int) -> tuple[str,
         output = read_until_deadline(ser, time.monotonic() + listen_ms / 1000.0)
         ser.reset_input_buffer()
 
-        bridge_output = send_and_read(ser, "~m61 status", read_ms)
-        output += bridge_output
-        if classify(output) == "bridge":
-            return "bridge", output
-
         hidp_output = send_and_read(ser, "ds5 status", read_ms)
         output += hidp_output
         return classify(output), output
@@ -107,7 +86,7 @@ def exit_code_for_kind(kind: str) -> int:
 
 
 def kind_priority(kind: str) -> int:
-    if kind in ("bridge", "hidp-probe"):
+    if kind == "hidp-probe":
         return 3
     if kind == "unknown-responsive":
         return 2
@@ -172,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
             best_kind = kind
             best_output = output
 
-        if kind in ("bridge", "hidp-probe"):
+        if kind == "hidp-probe":
             break
 
     if successful_probes == 0 and serial_error is not None and not best_output:

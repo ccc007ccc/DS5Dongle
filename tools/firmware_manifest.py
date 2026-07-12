@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print a manifest for built ESP32 and M61 firmware artifacts."""
+"""Print a manifest for built M61 firmware artifacts."""
 
 from __future__ import annotations
 
@@ -35,48 +35,6 @@ class ArtifactEntry:
 
 
 ARTIFACTS = [
-    ArtifactSpec(
-        name="esp32-hidh-bootloader",
-        target="esp32-hidh",
-        offset="0x1000",
-        path=ROOT / "build" / "bootloader" / "bootloader.bin",
-    ),
-    ArtifactSpec(
-        name="esp32-hidh-partition-table",
-        target="esp32-hidh",
-        offset="0x8000",
-        path=ROOT / "build" / "partition_table" / "partition-table.bin",
-    ),
-    ArtifactSpec(
-        name="esp32-hidh-app",
-        target="esp32-hidh",
-        offset="0x10000",
-        path=ROOT / "build" / "ds5_dualsense_bridge_esp32.bin",
-    ),
-    ArtifactSpec(
-        name="esp32-raw-hidp-bootloader",
-        target="esp32-raw-hidp",
-        offset="0x1000",
-        path=ROOT / "build_raw_hidp" / "bootloader" / "bootloader.bin",
-    ),
-    ArtifactSpec(
-        name="esp32-raw-hidp-partition-table",
-        target="esp32-raw-hidp",
-        offset="0x8000",
-        path=ROOT / "build_raw_hidp" / "partition_table" / "partition-table.bin",
-    ),
-    ArtifactSpec(
-        name="esp32-raw-hidp-app",
-        target="esp32-raw-hidp",
-        offset="0x10000",
-        path=ROOT / "build_raw_hidp" / "ds5_dualsense_bridge_esp32.bin",
-    ),
-    ArtifactSpec(
-        name="m61-esp32-bridge",
-        target="m61-bridge",
-        path=ROOT / "m61" / "esp32_prog_bridge" / "build" / "build_out" /
-        "m61_esp32_prog_bridge_bl616.bin",
-    ),
     ArtifactSpec(
         name="m61-dualsense-hidp-probe",
         target="m61-hidp-probe",

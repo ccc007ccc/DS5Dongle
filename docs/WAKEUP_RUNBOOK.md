@@ -10,7 +10,7 @@ DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC/主机
 
 ## 当前边界
 
-- M61-only 是默认主线；ESP32 只作为 fallback 和历史调试工具保留。
+- 仓库和调试流程均为 M61-only。
 - M61 已能连接 DualSense 并接收 `report=0x31 mode=full`，BL618 原生 USB 复合设备枚举已打通。
 - CH340 口只提供串口/刷写，不能因为固件改成 USB 手柄。
 - M61 原生 USB 必须接 BL618 `USB_DP`/`USB_DM`。
@@ -64,7 +64,6 @@ python tools\probe_m61_serial.py -p COM5 --dump
 不传 `-b` 时会依次探测 `115200`、`460800`、`2000000`。结果含义：
 
 - `kind=hidp-probe`：M61 DualSense HIDP+USB 固件已运行，可以继续验证蓝牙和 USB。
-- `kind=bridge`：M61 ESP32 调试桥已运行，这是 fallback 工具，不是当前主线固件。
 - `kind=no-response`：当前正常启动固件不是可用 helper，或串口/波特率/接线不通。
 - `unknown-responsive`：固件可能正在刷屏输出 HIDP 报文，命令回应被日志淹没；先抓日志再判断。
 
@@ -134,13 +133,3 @@ python tools\flash_m61_firmware.py --app hidp-probe -p COM5 -b 115200 --manual-h
 - 如果已经保存过 DualSense 地址，直接按手柄 `PS`，M61 会优先自动直连。
 - 如果直连失败或没有保存地址，手柄进入 `PS + Create/Share` 寻找模式，M61 扫描后会保存地址。
 - 连接中蓝灯闪烁，HIDP 成功后蓝灯常亮，正常空闲绿灯亮。
-
-## ESP32 fallback
-
-只有当 M61 Classic HIDP 或原生 USB 被硬件证据否定时，再回到 ESP32 fallback：
-
-- `m61/esp32_prog_bridge`：让 M61 控制 ESP32 下载/复位。
-- `tools/flash_stage1_m61.py`、`tools/flash_stage1_auto.py`、`tools/flash_stage1_manual.py`：刷 ESP32 stage-1 固件。
-- `docs/M61_DEBUG_BRIDGE.md`、`docs/STAGE1_VALIDATION.md`：fallback 操作说明。
-
-当前不要因为 USB 只看到 CH340 就回退 ESP32；这首先是 M61 原生 USB D+/D- 未接到 PC 的硬件链路问题。

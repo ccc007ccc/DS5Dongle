@@ -33,11 +33,6 @@ class FirmwareApp:
 
 
 FIRMWARE_APPS = {
-    "bridge": FirmwareApp(
-        directory=ROOT / "m61" / "esp32_prog_bridge",
-        bl616_bin="m61_esp32_prog_bridge_bl616.bin",
-        build_command="wsl bash /mnt/c/code/MCU/DS5Dongle/m61/esp32_prog_bridge/build.sh",
-    ),
     "hidp-probe": FirmwareApp(
         directory=ROOT / "m61" / "dualsense_hidp_probe",
         bl616_bin="m61_dualsense_hidp_probe_bl616.bin",
@@ -106,7 +101,7 @@ def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--app", choices=sorted(FIRMWARE_APPS), default="bridge", help="M61 firmware app")
+    parser.add_argument("--app", choices=sorted(FIRMWARE_APPS), default="hidp-probe", help="M61 firmware app")
     parser.add_argument("-p", "--port", required=True, help="M61 UART COM port, for example COM5")
     parser.add_argument("-b", "--baud", type=int, default=460800, help="download baudrate")
     parser.add_argument("--chip", default="bl616", help="Bouffalo chip name")

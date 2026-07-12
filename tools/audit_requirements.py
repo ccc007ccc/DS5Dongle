@@ -124,7 +124,7 @@ def collect_audit(args: argparse.Namespace) -> list[AuditItem]:
             "docs/PROJECT_STANDARD.md",
         [
             "DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC",
-            "ESP32 双芯片方案仍保留为 fallback",
+            "仓库只保留 M61 实现",
             "USB_DP",
             "USB_DM",
             "usb_gamepad configured=1",
@@ -237,7 +237,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spec", type=Path, help="path to the original pasted project specification")
     parser.add_argument("--require-spec", action="store_true", help="fail if the original spec file cannot be read")
     parser.add_argument("--m61-log", type=Path, help="real M61 HIDP/USB status log to check")
-    parser.add_argument("--stage1-log", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "--strict-complete",
         action="store_true",

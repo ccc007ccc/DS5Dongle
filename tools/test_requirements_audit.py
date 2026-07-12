@@ -73,7 +73,6 @@ def main() -> int:
             "spec": spec,
             "require_spec": True,
             "m61_log": log,
-            "stage1_log": None,
         })()
         items = audit_requirements.collect_audit(args)
         m61_gate = find_item(items, "M61 hardware log proves full DualSense report=0x31 input")
@@ -87,7 +86,6 @@ def main() -> int:
             "spec": spec,
             "require_spec": True,
             "m61_log": configured_no_sent_log,
-            "stage1_log": None,
         })()
         no_sent_items = audit_requirements.collect_audit(args_no_sent)
         no_sent_usb_gate = find_item(

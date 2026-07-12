@@ -5,7 +5,7 @@
 - 原始附件规格：`C:\Users\MengChao\.codex\attachments\e710f4ea-e236-4654-af18-80e961383da9\pasted-text-1.txt`
 - 后续实机调试结论：M61 已能跑通 Classic Bluetooth HIDP，当前主线改为 M61 单芯片直连 DualSense 并输出 USB HID。
 
-后续指令和硬件证据已经覆盖了原附件中的“必须先 ESP32、BL618 不做蓝牙”阶段边界。当前审计以 `docs/PROJECT_STANDARD.md` 的 M61-first 标准为准，同时保留 ESP32 双芯片方案作为 fallback 记录。
+后续指令和硬件证据已经覆盖了原附件中的双芯片阶段边界。当前审计以 `docs/PROJECT_STANDARD.md` 的纯 M61 标准为准；原附件只作为需求演进证据，不对应仓库中的可构建实现。
 
 ## 总体结论
 
@@ -37,24 +37,23 @@ DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC/主机
 | 仓库主线改为 M61 直连链路 | 已完成 | `README.md`、`docs/PROJECT_STANDARD.md` |
 | 移除旧 Pico/RP2040/RP2350 主线 | 已完成 | `src/`、`boards/`、`lib/`、`cmake/`、`.gitmodules` 不存在 |
 | M61 Classic HIDP Host | 已实现并实机打通 | `m61/dualsense_hidp_probe/main.c`，运行日志出现连续 `report=0x31 mode=full` |
-| DualSense 输入解析 | 已实现 | `main/dualsense_parser.c`、`tools/test_dualsense_protocol.py` |
+| DualSense 输入解析 | 已实现 | `m61/dualsense_hidp_probe/dualsense_parser.c`、`tools/test_dualsense_protocol.py` |
 | 自动连接/保存地址 | 已实现 | `ds5 auto`、`ds5 autoconnect`、EasyFlash 保存 last address |
 | M61 状态灯 | 已实现 | `m61 led ...`，默认 GPIO12/14/15，高电平点亮 |
 | M61 USB DualSense composite | 已实现并实机枚举 | `m61/dualsense_hidp_probe/m61_usb_gamepad.c`，Windows 看到 `VID_054C&PID_0CE6`、HID 和音频端点 |
 | CH340 与原生 USB 边界 | 已记录 | `README.md`、`docs/PROJECT_STANDARD.md` |
-| ESP32 双芯片方案 | 保留为 fallback/历史工具 | `main/`、`tools/*stage1*`、`m61/esp32_prog_bridge` |
+| 纯 M61 仓库边界 | 已完成 | 根 ESP-IDF、`main/`、stage-1 工具和编程桥目录均不存在 |
 | Arduino 禁止 | 已覆盖 | `tools/verify_project.py` 禁止 `.ino` |
 
 ## 原附件要求的处理
 
 | 原附件要求 | 当前处理 |
 | --- | --- |
-| ESP32-WROOM-32 作为蓝牙主控 | 保留 fallback 代码，不再是默认推进方向 |
+| 原附件中的外部蓝牙主控 | 被 M61 BR/EDR 实机证据取代，不保留实现代码 |
 | Ai-M61/BL618 作为 USB 输出端 | M61 当前既负责蓝牙 HIDP Host，也负责 USB DualSense composite Device |
-| ESP32 UART2 -> BL618 UART 产品链路 | 当前不实现，除非 M61-only 被硬件证据否定 |
+| 原附件中的双芯片 UART 产品链路 | 不实现 |
 | BL618 SDK 不支持经典蓝牙 | 已被本地 SDK 库和实机 HIDP 数据流推翻 |
 | 阶段 1 未过不写 BL618 USB | 后续 M61-only 指令覆盖；M61 USB DualSense composite 已实现、构建、刷入并枚举 |
-| ESP32 不做 USB Device/OTG | 仍成立，ESP32 fallback 不作为 USB 输出端 |
 | MCU 代码优先 C/C++/Rust | 当前固件为 C |
 
 ## 验收门槛
