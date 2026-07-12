@@ -141,10 +141,9 @@ normal haptics and speaker output. This is the validated Phase 2 result.
 
 ### Measurement-gated experiments
 
-1. Align the large Opus encoder/decoder states and epoch store to the 32-byte
-   cache line. They are currently only 16-byte aligned; the encoder state
-   starts at an address offset by 16 bytes from a cache-line boundary. This is
-   low risk but must still demonstrate a p99 improvement.
+1. Evaluate decoder-state and epoch-store 32-byte alignment separately. The
+   encoder state is now hardware validated at 32-byte alignment; the remaining
+   objects stay at their existing alignment until an independent A/B test.
 2. Set explicit CLIC priorities for Bluetooth and USB only after long global
    interrupt masks are removed and IRQ latency is measured. Priority changes
    cannot preempt code while global interrupts are disabled and can violate
@@ -191,6 +190,17 @@ normal haptics and speaker output. This is the validated Phase 2 result.
 9. Do not raise flash clock above 80 MHz as a first-line optimization. Keep
    measured XIP hotspots in Flash unless a small RAM-code A/B test proves a
    p99 improvement.
+
+## Cache-Line Alignment A/B
+
+The Opus encoder state was aligned from 16 to 32 bytes as a single-variable
+experiment. The linked address became `0x62fdb760`, static RAM increased by
+16 bytes, and all RAM/ITCM gates remained satisfied. The hardware run
+collected 15,686 encodes with zero deadline fallback and zero epoch queue
+drops. Encode p99 remained 9,500 us; D-cache read miss rate decreased slightly
+from about 1.6716% to 1.6582%. The user reported no subjective regression or
+clear improvement. The alignment is retained because it is cache-line correct
+and effectively free, but it is not treated as a material performance gain.
 
 ## Implementation Order
 

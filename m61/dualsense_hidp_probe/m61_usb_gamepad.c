@@ -464,7 +464,7 @@ static StackType_t audio_codec_task_stack[AUDIO_CODEC_TASK_STACK_WORDS] __attrib
 static StaticTask_t audio_ingress_task_tcb;
 static StackType_t audio_ingress_task_stack[AUDIO_INGRESS_TASK_STACK_WORDS]
     __attribute__((aligned(16)));
-static uint32_t audio_opus_encoder_state[(AUDIO_OPUS_ENCODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
+static uint32_t audio_opus_encoder_state[(AUDIO_OPUS_ENCODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(32)));
 static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static TaskHandle_t audio_codec_task_handle;
 static TaskHandle_t audio_ingress_task_handle;
