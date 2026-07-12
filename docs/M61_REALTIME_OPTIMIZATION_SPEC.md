@@ -134,7 +134,7 @@ Conclusion:
 
 ## Phase 2: Haptics Hard Deadline
 
-Status: pending Phase 1B measurements.
+Status: next implementation step.
 
 Work:
 
@@ -153,7 +153,7 @@ Acceptance:
 
 ## Phase 3: USB Audio Ingress Ownership
 
-Status: next implementation step.
+Status: failed hardware validation and rolled back.
 
 Work:
 
@@ -168,6 +168,23 @@ Acceptance:
   disabled.
 - No WRITING-slot reuse race during reset.
 - Zero ingress corruption and bounded whole-packet drops under overload.
+
+Measured result:
+
+- The ownership implementation passed host ownership and reset-race tests.
+- Hardware status showed 5,166 haptics queue drops and 5,166 speaker queue
+  drops; the protected baseline had zero audio epoch drops.
+- Encode p99 regressed from about 9,000 us to 11,500 us.
+- The user reported frequent, clearly audible speaker and haptics stutter.
+
+Conclusion:
+
+- The five-state slot design is rejected in its tested form. Moving the
+  payload copy outside the IRQ-disabled region changed ingress production and
+  cache/scheduling behavior enough to overflow the downstream realtime queue.
+- Restore the validated bounded ring-copy implementation. Do not revisit
+  ingress ownership until haptics have an independent hard deadline and a
+  narrower zero-copy design can preserve the baseline queue cadence.
 
 ## Phase 4: Hardware Performance Counters
 

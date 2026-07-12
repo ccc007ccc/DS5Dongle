@@ -84,9 +84,25 @@ haptics and speaker load:
 - Realtime Bluetooth: 28,605/28,605 transmitted with zero replacement,
   stale, retry, or drop; audio epoch drops remained zero.
 
-This run does not show sustained Opus overload. The largest directly
-actionable software tail is the approximately 212 us interrupt-masked queue
-copy, so USB ingress ownership precedes further codec placement experiments.
+This run does not show sustained Opus overload. The approximately 212 us
+interrupt-masked queue copy was selected for the next experiment, but the
+result below shows that reducing an isolated latency metric is not sufficient
+when the replacement changes the cadence of the downstream realtime queue.
+
+The Phase 3 five-state USB ingress ownership experiment then moved the
+392-byte payload copy outside the IRQ-disabled region. Host ownership and
+reset-race tests passed, but hardware validation failed:
+
+- Haptics queue drops: 5,166.
+- Speaker queue drops: 5,166.
+- Encode p99: about 11,500 us, regressed from about 9,000 us.
+- Subjective result: frequent, clearly audible haptics and speaker stutter.
+
+The experiment was rolled back before commit. The restored Flash-XIP baseline
+returned to the previously smooth behavior. The tested ownership design must
+not be reintroduced; a future ingress optimization must preserve packet
+cadence and prove zero downstream queue drops before latency improvements are
+considered.
 
 ## Remaining Hardware Headroom
 
@@ -95,16 +111,15 @@ copy, so USB ingress ownership precedes further codec placement experiments.
 1. Add E907 HPM instrumentation before changing placement or clocks. The SDK
    already exposes cycle, retired-instruction, L1 I-cache miss, L1 D-cache
    read-miss, and branch-miss counters.
-2. Remove whole-packet copies from global interrupt-disabled sections. The
-   current USB audio ingress path copies a 392-byte payload into a roughly
-   416-byte queue record while all interrupts are masked, and copies the full
-   record again when dequeuing it.
-3. Bound haptics latency independently of Opus. Speaker encoding can exceed
+2. Bound haptics latency independently of Opus. Speaker encoding can exceed
    the 10.667 ms epoch period, so haptics need a deadline-based fallback even
    when the average encode time is acceptable.
-4. Measure p50/p95/p99 encode time, cycles per frame, cache misses, ingress
+3. Measure p50/p95/p99 encode time, cycles per frame, cache misses, ingress
    age, and maximum interrupt-mask duration. Average and maximum encode time
    alone cannot distinguish CPU load from memory or scheduling stalls.
+4. Revisit the interrupt-masked ingress copy only with a cadence-preserving
+   design. The tested five-state ownership queue overflowed the downstream
+   haptics/speaker queue despite passing host race tests.
 
 ### Measurement-gated experiments
 
@@ -172,9 +187,9 @@ copy, so USB ingress ownership precedes further codec placement experiments.
    duration.
 3. Add a haptics deadline that emits a haptics-only 0x39 packet when speaker
    encoding is late.
-4. Convert USB audio ingress to explicit slot ownership so the 392-byte
-   payload and roughly 416-byte queue record are not copied under a global
-   IRQ lock.
+4. Keep the validated bounded USB audio ring-copy implementation. The tested
+   explicit slot ownership replacement is rejected because it caused 5,166
+   downstream audio queue drops and audible stutter.
 5. Revisit microphone full duplex only after measured p99 CPU demand leaves a
    minimum 25% realtime reserve.
 6. Evaluate PSRAM only after the realtime path is stable; use it to increase
