@@ -183,6 +183,9 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
 - release/profile 使用独立构建目录或每次彻底重新配置，禁止配置残留。
 - release 默认关闭 HPM、shell、coredump、USB INFO 日志和非必要蓝牙调试日志。
 - profile 固件启用 HPM 和扩展实时指标，但不得作为 release 产物发布。
+- profile 配置宏只能加到应用目标，禁止使用 SDK 全局 compile definition。2026-07-12
+  曾因 `CONFIG_M61_HPM_PROFILE` 传播到 RF/PHY/BT/驱动目标导致真机启动报
+  `PHY RF init failed`；改为 `target_compile_definitions(app PRIVATE ...)` 后恢复。
 - LTO 只有在编译和链接阶段同时启用时才算有效。
 - 全局保持保守优化；热点文件优先比较 `-Os` 与 `-O2`，不默认使用 `-O3`。
 
@@ -200,6 +203,21 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
 
 硬门槛：重构不得增加数据损坏、epoch 顺序错误、USB 枚举失败或长期稳定性回归。
 若平均值改善但 P99、drop 或 underflow 恶化，则判定优化失败。
+
+### 2026-07-12：首轮 HPM profile 基线
+
+- 20,197 个持续 speaker encode 样本：last/average/max=
+  6.426/6.592/9.558 ms，P50/P95/P99=6.50/8.25/8.75 ms。
+- cycle last/average/max=2,055,798/2,110,105/3,058,161，平均 retired
+  instructions=287,598。该区间包含 encode 期间的中断抢占，不能解释为纯 Opus CPI。
+- I-cache access/miss=291,140/4,206，miss rate=1.4447%；D-cache read/miss=
+  59,981/1,123，miss rate=1.8730%。
+- USB ingress age last/P95/P99/max=36/500/750/885 us；最大关中断=6,607 cycles。
+- speaker qdrop/odrop/cancel=0，haptics qdrop/deadline=0，BT realtime
+  stale/retry/drop=0，USB ingress drop/gap=0；mic仍关闭且没有执行Opus decode。
+- profile 平均值相对同版本 release 的6.550 ms约增加0.6%，采样开销可接受；但
+  P99仍占10 ms帧周期的87.5%，未达到7 ms硬目标。下一阶段停止优化小型复制，集中
+  审计Opus/CELT热点、预编译库优化参数、DSP内核覆盖和cache布局。
 
 ## 10. 分阶段实施
 
