@@ -21,7 +21,9 @@ typedef enum {
     M61_AUDIO_EPOCH_READY_ENCODE,
     M61_AUDIO_EPOCH_ENCODING,
     M61_AUDIO_EPOCH_COMPLETE,
+    M61_AUDIO_EPOCH_READING,
     M61_AUDIO_EPOCH_CANCELLED_ENCODING,
+    M61_AUDIO_EPOCH_CANCELLED_READING,
 } m61_audio_epoch_state_t;
 
 typedef struct {
@@ -98,6 +100,11 @@ bool m61_audio_epoch_fallback_due_pair(uint64_t now_us,
                                        uint64_t encode_budget_us);
 bool m61_audio_epoch_take_adjacent_pair(m61_audio_epoch_pair_t *pair);
 void m61_audio_epoch_get_stats(m61_audio_epoch_stats_t *stats);
+
+#ifdef M61_AUDIO_EPOCH_HOST_TEST
+void m61_audio_epoch_host_reset_lock_count(void);
+uint32_t m61_audio_epoch_host_lock_count(void);
+#endif
 
 #ifdef __cplusplus
 }

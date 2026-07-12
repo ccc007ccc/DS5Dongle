@@ -7,6 +7,25 @@
 
 #define USB_FRAME_BYTES 8U
 
+static bool reset_before_encode_copy;
+static bool reset_after_read_claim;
+
+void m61_audio_epoch_host_before_encode_copy(void)
+{
+    if (reset_before_encode_copy) {
+        reset_before_encode_copy = false;
+        m61_audio_epoch_reset(11);
+    }
+}
+
+void m61_audio_epoch_host_after_read_claim(void)
+{
+    if (reset_after_read_claim) {
+        reset_after_read_claim = false;
+        m61_audio_epoch_reset(13);
+    }
+}
+
 static void write_i16_le(uint8_t *dst, int16_t value)
 {
     uint16_t raw = (uint16_t)value;
@@ -122,6 +141,52 @@ static void test_generation_retires_encode_owner(void)
     assert(pair.generation == 5 && pair.first_epoch == 0);
 }
 
+static void test_reset_during_encode_copy_does_not_reuse_slot(void)
+{
+    uint8_t one[M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
+    uint8_t two[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
+    uint8_t opus[M61_AUDIO_EPOCH_OPUS_LEN] = {0x7a};
+    m61_audio_epoch_encode_job_t job;
+    m61_audio_epoch_pair_t pair;
+
+    fill_constant(one, M61_AUDIO_EPOCH_USB_FRAMES, 1000, 1000);
+    fill_constant(two, 2U * M61_AUDIO_EPOCH_USB_FRAMES, 0, 0);
+    m61_audio_epoch_init(10);
+    m61_audio_epoch_ingest_usb(one, sizeof(one), 10, 100, true, 256);
+    assert(m61_audio_epoch_take_encode_job(&job));
+    reset_before_encode_copy = true;
+    assert(!m61_audio_epoch_complete_encode(10, 0, opus, sizeof(opus)));
+    m61_audio_epoch_ingest_usb(two, sizeof(two), 11, 200, false, 256);
+    assert(m61_audio_epoch_take_adjacent_pair(&pair));
+    assert(pair.generation == 11);
+}
+
+static void test_reset_during_pair_copy_does_not_publish_stale_pair(void)
+{
+    uint8_t audio[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
+    m61_audio_epoch_pair_t pair;
+
+    fill_constant(audio, 2U * M61_AUDIO_EPOCH_USB_FRAMES, 0, 1000);
+    m61_audio_epoch_init(12);
+    m61_audio_epoch_ingest_usb(audio, sizeof(audio), 12, 100, false, 256);
+    reset_after_read_claim = true;
+    assert(!m61_audio_epoch_take_adjacent_pair(&pair));
+    m61_audio_epoch_ingest_usb(audio, sizeof(audio), 13, 200, false, 256);
+    assert(m61_audio_epoch_take_adjacent_pair(&pair));
+    assert(pair.generation == 13);
+}
+
+static void test_ingress_lock_count_is_per_chunk_not_per_frame(void)
+{
+    uint8_t audio[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
+
+    fill_constant(audio, 2U * M61_AUDIO_EPOCH_USB_FRAMES, 1000, 500);
+    m61_audio_epoch_init(9);
+    m61_audio_epoch_host_reset_lock_count();
+    m61_audio_epoch_ingest_usb(audio, sizeof(audio), 9, 100, false, 256);
+    assert(m61_audio_epoch_host_lock_count() == 4U);
+}
+
 static void test_deadline_admission_preserves_normal_pair(void)
 {
     uint8_t audio[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
@@ -180,9 +245,12 @@ int main(void)
 {
     assert(sizeof(m61_audio_epoch_t) <= M61_AUDIO_EPOCH_RESERVED_SLOT_BYTES);
     test_box_average_and_pair();
+    test_ingress_lock_count_is_per_chunk_not_per_frame();
     test_keyed_encode_pair();
     test_capacity_drops_oldest();
     test_generation_retires_encode_owner();
+    test_reset_during_encode_copy_does_not_reuse_slot();
+    test_reset_during_pair_copy_does_not_publish_stale_pair();
     test_deadline_admission_preserves_normal_pair();
     test_deadline_admission_falls_back_pending_pair();
     test_deadline_admission_discards_completed_first_encode();

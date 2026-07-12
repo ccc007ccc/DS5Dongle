@@ -122,6 +122,22 @@ _Static_assert(CONFIG_BT_L2CAP_TX_MTU >= HIDP_TX_MAX_LEN,
 #define CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS 1
 #endif
 
+/*
+ * SDK defaults: HCI TX=max-3, BT/controller RX=max-4.  Codec/BT RX use max-4;
+ * the bridge uses max-5 and is guaranteed a bounded window because codec
+ * blocks for one tick after every encoded frame instead of catch-up spinning.
+ */
+#define M61_BT_BRIDGE_TASK_PRIORITY (configMAX_PRIORITIES - 5)
+#define M61_AUTO_TASK_PRIORITY      (configMAX_PRIORITIES - 8)
+#define M61_LED_TASK_PRIORITY       (configMAX_PRIORITIES - 9)
+
+_Static_assert(CONFIG_BT_HCI_TX_PRIO > M61_BT_BRIDGE_TASK_PRIORITY,
+               "HCI TX must outrank the M61 bridge");
+_Static_assert(CONFIG_BT_RX_PRIO > M61_BT_BRIDGE_TASK_PRIORITY,
+               "BT RX must outrank the M61 bridge");
+_Static_assert(CONFIG_BT_CTLR_RX_PRIO > M61_BT_BRIDGE_TASK_PRIORITY,
+               "controller RX must outrank the M61 bridge");
+
 #ifndef CONFIG_M61_DS5_BT_AUDIO_ALLOC_TIMEOUT_MS
 #define CONFIG_M61_DS5_BT_AUDIO_ALLOC_TIMEOUT_MS 0
 #endif
@@ -1795,8 +1811,7 @@ static void usb_hid_bridge_task(void *pvParameters)
         uint8_t feature_reports_this_tick = 0;
         uint8_t host_reports_this_tick = 0;
         bool host_mic_active = m61_usb_gamepad_audio_in_active();
-        bool speaker_active = m61_usb_gamepad_audio_speaker_active();
-        bool bt_mic_active = host_mic_active && !speaker_active;
+        bool bt_mic_active = host_mic_active;
         bool link_ready = hid_interrupt.connected;
         uint32_t eligible_classes = 0;
 
@@ -1813,13 +1828,7 @@ static void usb_hid_bridge_task(void *pvParameters)
         }
         scheduler_link_ready = link_ready;
 
-        while (1) {
-            m61_audio_epoch_pair_t pair;
-
-            if (!m61_audio_epoch_take_adjacent_pair(&pair)) {
-                break;
-            }
-            m61_bt_tx_scheduler_publish_realtime(&hidp_tx_scheduler, &pair);
+        while (m61_bt_tx_scheduler_ingest_epoch_pair(&hidp_tx_scheduler)) {
         }
 
         if (link_ready &&
@@ -1884,19 +1893,19 @@ static void usb_hid_bridge_task(void *pvParameters)
                 switch (selection.tx_class) {
                 case M61_BT_TX_CLASS_REALTIME:
                     err = hidp_send_audio_pair(
-                        &selection.payload.realtime,
+                        selection.payload.realtime,
                         dualsense_headphones_connected,
                         bt_mic_active);
                     break;
                 case M61_BT_TX_CLASS_STATE31:
                     err = hidp_send_usb_output_report(
-                        selection.payload.state31.report,
-                        selection.payload.state31.len,
-                        selection.payload.state31.includes_id);
+                        selection.payload.state31->report,
+                        selection.payload.state31->len,
+                        selection.payload.state31->includes_id);
                     break;
                 case M61_BT_TX_CLASS_STATE32:
                     err = hidp_send_audio_status_report(
-                        selection.payload.state32.mic_active);
+                        selection.payload.state32->mic_active);
                     break;
                 default:
                     err = -EINVAL;
@@ -1932,7 +1941,7 @@ static void usb_hid_bridge_task(void *pvParameters)
                            err == 0) {
                     hidp_mic_status_known = true;
                     hidp_last_mic_active =
-                        selection.payload.state32.mic_active;
+                        selection.payload.state32->mic_active;
                     hidp_next_mic_status_tick =
                         now + pdMS_TO_TICKS(
                                   CONFIG_M61_DS5_MIC_STATUS_REFRESH_MS);
@@ -3103,19 +3112,19 @@ int main(void)
                 "ds5_auto",
                 2048,
                 NULL,
-                configMAX_PRIORITIES - 3,
+                M61_AUTO_TASK_PRIORITY,
                 &auto_task_handle);
     xTaskCreate(usb_hid_bridge_task,
                 "usb_hid_bridge",
                 1536,
                 NULL,
-                configMAX_PRIORITIES - 5,
+                M61_BT_BRIDGE_TASK_PRIORITY,
                 &bridge_task_handle);
     xTaskCreate(status_led_task,
                 "m61_led",
                 512,
                 NULL,
-                configMAX_PRIORITIES - 6,
+                M61_LED_TASK_PRIORITY,
                 &led_task_handle);
 
     vTaskStartScheduler();

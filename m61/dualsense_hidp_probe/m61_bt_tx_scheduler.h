@@ -66,9 +66,9 @@ typedef struct {
     uint32_t version;
     uint64_t created_us;
     union {
-        m61_audio_epoch_pair_t realtime;
-        m61_bt_tx_state31_payload_t state31;
-        m61_bt_tx_state32_payload_t state32;
+        const m61_audio_epoch_pair_t *realtime;
+        const m61_bt_tx_state31_payload_t *state31;
+        const m61_bt_tx_state32_payload_t *state32;
     } payload;
 } m61_bt_tx_selection_t;
 
@@ -108,7 +108,7 @@ typedef struct {
     m61_bt_tx_metrics_t metrics;
 } m61_bt_tx_scheduler_t;
 
-/* Callers serialize access; selections are payload copies and do not dequeue. */
+/* Callers serialize access; selections borrow immutable slot payloads. */
 void m61_bt_tx_scheduler_init(m61_bt_tx_scheduler_t *scheduler,
                               uint32_t generation);
 void m61_bt_tx_scheduler_reset_generation(m61_bt_tx_scheduler_t *scheduler,
@@ -116,6 +116,8 @@ void m61_bt_tx_scheduler_reset_generation(m61_bt_tx_scheduler_t *scheduler,
 bool m61_bt_tx_scheduler_publish_realtime(
     m61_bt_tx_scheduler_t *scheduler,
     const m61_audio_epoch_pair_t *pair);
+bool m61_bt_tx_scheduler_ingest_epoch_pair(
+    m61_bt_tx_scheduler_t *scheduler);
 bool m61_bt_tx_scheduler_publish_state31(m61_bt_tx_scheduler_t *scheduler,
                                          const uint8_t *report,
                                          size_t len,

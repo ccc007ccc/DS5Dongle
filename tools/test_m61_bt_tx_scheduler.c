@@ -5,6 +5,17 @@
 
 #include "m61_bt_tx_scheduler.h"
 
+#define USB_FRAME_BYTES 8U
+
+static void ingest_silent_epoch_pair(uint32_t generation,
+                                     uint64_t captured_us)
+{
+    uint8_t audio[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES] = {0};
+
+    m61_audio_epoch_ingest_usb(audio, sizeof(audio), generation,
+                               captured_us, false, 256);
+}
+
 static m61_audio_epoch_pair_t make_pair(uint32_t generation,
                                         uint32_t epoch,
                                         uint64_t captured_us,
@@ -57,12 +68,12 @@ static void test_realtime_replacement_and_order(void)
     assert(m61_bt_tx_scheduler_publish_realtime(&scheduler, &third));
     assert(m61_bt_tx_scheduler_select(&scheduler, 4000,
                                       M61_BT_TX_ELIGIBLE_ALL, &selection));
-    assert(selection.payload.realtime.first_epoch == 12);
+    assert(selection.payload.realtime->first_epoch == 12);
     assert(m61_bt_tx_scheduler_finish(&scheduler, &selection,
                                       M61_BT_TX_FINISH_SUCCESS));
     assert(m61_bt_tx_scheduler_select(&scheduler, 4000,
                                       M61_BT_TX_ELIGIBLE_ALL, &selection));
-    assert(selection.payload.realtime.first_epoch == 14);
+    assert(selection.payload.realtime->first_epoch == 14);
     assert(m61_bt_tx_scheduler_finish(&scheduler, &selection,
                                       M61_BT_TX_FINISH_SUCCESS));
     m61_bt_tx_scheduler_get_metrics(&scheduler, &metrics);
@@ -170,7 +181,7 @@ static void test_versioned_finish_keeps_new_mailbox(void)
                                       M61_BT_TX_ELIGIBLE_ALL,
                                       &new_selection));
     assert(new_selection.version != old_selection.version);
-    assert(new_selection.payload.state31.report[1] == 2);
+    assert(new_selection.payload.state31->report[1] == 2);
     assert(m61_bt_tx_scheduler_finish(&scheduler, &new_selection,
                                       M61_BT_TX_FINISH_SUCCESS));
 }
@@ -207,9 +218,9 @@ static void test_mailbox_and_fairness(void)
     assert(m61_bt_tx_scheduler_select(&scheduler, 1201,
                                       M61_BT_TX_ELIGIBLE_ALL, &selection));
     assert(selection.tx_class == M61_BT_TX_CLASS_STATE31);
-    assert(selection.payload.state31.len == sizeof(new31));
-    assert(selection.payload.state31.includes_id);
-    assert(memcmp(selection.payload.state31.report, new31,
+    assert(selection.payload.state31->len == sizeof(new31));
+    assert(selection.payload.state31->includes_id);
+    assert(memcmp(selection.payload.state31->report, new31,
                   sizeof(new31)) == 0);
     assert(m61_bt_tx_scheduler_finish(&scheduler, &selection,
                                       M61_BT_TX_FINISH_RETRY));
@@ -313,6 +324,33 @@ static void test_dropped_realtime_consumes_fairness_budget(void)
     assert(selection.tx_class == M61_BT_TX_CLASS_STATE31);
 }
 
+static void test_direct_epoch_ingest_backpressure(void)
+{
+    m61_bt_tx_scheduler_t scheduler;
+    m61_bt_tx_selection_t selection;
+
+    m61_audio_epoch_init(51);
+    m61_bt_tx_scheduler_init(&scheduler, 51);
+    ingest_silent_epoch_pair(51, 1000);
+    assert(m61_bt_tx_scheduler_ingest_epoch_pair(&scheduler));
+    ingest_silent_epoch_pair(51, 22000);
+    assert(m61_bt_tx_scheduler_ingest_epoch_pair(&scheduler));
+    ingest_silent_epoch_pair(51, 43000);
+    assert(!m61_bt_tx_scheduler_ingest_epoch_pair(&scheduler));
+
+    assert(m61_bt_tx_scheduler_select(&scheduler, 44000,
+                                      M61_BT_TX_ELIGIBLE_ALL,
+                                      &selection));
+    assert(selection.payload.realtime->first_epoch == 0U);
+    assert(m61_bt_tx_scheduler_finish(&scheduler, &selection,
+                                      M61_BT_TX_FINISH_SUCCESS));
+    assert(m61_bt_tx_scheduler_ingest_epoch_pair(&scheduler));
+    assert(m61_bt_tx_scheduler_select(&scheduler, 45000,
+                                      M61_BT_TX_ELIGIBLE_ALL,
+                                      &selection));
+    assert(selection.payload.realtime->first_epoch == 2U);
+}
+
 int main(void)
 {
     test_realtime_replacement_and_order();
@@ -323,6 +361,7 @@ int main(void)
     test_eligibility_does_not_block_realtime();
     test_same_generation_reset_and_invalid_finish();
     test_dropped_realtime_consumes_fairness_budget();
+    test_direct_epoch_ingest_backpressure();
     puts("M61 Bluetooth TX scheduler tests passed.");
     return 0;
 }

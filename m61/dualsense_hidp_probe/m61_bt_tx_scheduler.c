@@ -194,6 +194,45 @@ bool m61_bt_tx_scheduler_publish_realtime(
     return true;
 }
 
+bool m61_bt_tx_scheduler_ingest_epoch_pair(
+    m61_bt_tx_scheduler_t *scheduler)
+{
+    int selected = -1;
+    m61_bt_tx_class_metrics_t *metrics;
+    m61_bt_tx_rt_slot_t *slot;
+
+    if (scheduler == NULL) {
+        return false;
+    }
+    metrics = class_metrics(scheduler, M61_BT_TX_CLASS_REALTIME);
+    for (size_t i = 0; i < M61_BT_TX_RT_DEPTH; i++) {
+        if (!scheduler->realtime[i].pending) {
+            selected = (int)i;
+            break;
+        }
+    }
+    if (selected < 0) {
+        return false;
+    }
+
+    slot = &scheduler->realtime[selected];
+    if (!m61_audio_epoch_take_adjacent_pair(&slot->payload)) {
+        return false;
+    }
+    if (slot->payload.generation != scheduler->generation) {
+        metrics->rejected++;
+        return false;
+    }
+
+    slot->version = next_version(scheduler);
+    slot->sequence = scheduler->next_sequence++;
+    slot->created_us = slot->payload.first_captured_us;
+    slot->pending = true;
+    metrics->pending++;
+    metrics->accepted++;
+    return true;
+}
+
 bool m61_bt_tx_scheduler_publish_state31(m61_bt_tx_scheduler_t *scheduler,
                                          const uint8_t *report,
                                          size_t len,
@@ -270,7 +309,12 @@ bool m61_bt_tx_scheduler_select(m61_bt_tx_scheduler_t *scheduler,
     if (scheduler == NULL || selection == NULL) {
         return false;
     }
-    memset(selection, 0, sizeof(*selection));
+    selection->tx_class = M61_BT_TX_CLASS_NONE;
+    selection->slot = 0U;
+    selection->generation = 0U;
+    selection->version = 0U;
+    selection->created_us = 0U;
+    selection->payload.realtime = NULL;
     drop_stale_realtime(scheduler, now_us);
     drop_wrong_generation_state(scheduler);
     rt_slot = oldest_realtime(scheduler);
@@ -287,7 +331,7 @@ bool m61_bt_tx_scheduler_select(m61_bt_tx_scheduler_t *scheduler,
         selection->generation = slot->payload.generation;
         selection->version = slot->version;
         selection->created_us = slot->created_us;
-        selection->payload.realtime = slot->payload;
+        selection->payload.realtime = &slot->payload;
         return true;
     }
 
@@ -296,7 +340,7 @@ bool m61_bt_tx_scheduler_select(m61_bt_tx_scheduler_t *scheduler,
         selection->generation = scheduler->state31.generation;
         selection->version = scheduler->state31.version;
         selection->created_us = scheduler->state31.created_us;
-        selection->payload.state31 = scheduler->state31.payload;
+        selection->payload.state31 = &scheduler->state31.payload;
         return true;
     }
     if (state_class == M61_BT_TX_CLASS_STATE32) {
@@ -304,7 +348,7 @@ bool m61_bt_tx_scheduler_select(m61_bt_tx_scheduler_t *scheduler,
         selection->generation = scheduler->state32.generation;
         selection->version = scheduler->state32.version;
         selection->created_us = scheduler->state32.created_us;
-        selection->payload.state32 = scheduler->state32.payload;
+        selection->payload.state32 = &scheduler->state32.payload;
         return true;
     }
 
@@ -317,7 +361,7 @@ bool m61_bt_tx_scheduler_select(m61_bt_tx_scheduler_t *scheduler,
         selection->generation = slot->payload.generation;
         selection->version = slot->version;
         selection->created_us = slot->created_us;
-        selection->payload.realtime = slot->payload;
+        selection->payload.realtime = &slot->payload;
         return true;
     }
     return false;

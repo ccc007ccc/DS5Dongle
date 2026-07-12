@@ -34,9 +34,14 @@ typedef struct {
 
 static audio_epoch_store_t s_store __attribute__((aligned(M61_CACHE_LINE_BYTES)));
 
+#ifdef M61_AUDIO_EPOCH_HOST_TEST
+static uint32_t s_host_lock_count;
+#endif
+
 static uintptr_t epoch_lock(void)
 {
 #ifdef M61_AUDIO_EPOCH_HOST_TEST
+    s_host_lock_count++;
     return 0;
 #else
     return bflb_irq_save();
@@ -111,11 +116,11 @@ static int allocate_slot_locked(uint64_t captured_us, bool speaker_enabled)
     }
 
     m61_audio_epoch_t *slot = &s_store.slots[selected];
-    memset(slot, 0, sizeof(*slot));
     memset(&s_store.haptics[selected], 0, sizeof(s_store.haptics[selected]));
     slot->generation = s_store.stats.generation;
     slot->epoch = s_store.stats.next_epoch++;
     slot->captured_us = captured_us;
+    slot->pcm_frames = 0U;
     slot->speaker_enabled = speaker_enabled ? 1U : 0U;
     slot->state = M61_AUDIO_EPOCH_FILLING;
     s_store.filling_slot = (uint8_t)selected;
@@ -143,14 +148,36 @@ void m61_audio_epoch_reset(uint32_t generation)
         if (slot->state == M61_AUDIO_EPOCH_ENCODING ||
             slot->state == M61_AUDIO_EPOCH_CANCELLED_ENCODING) {
             slot->state = M61_AUDIO_EPOCH_CANCELLED_ENCODING;
+        } else if (slot->state == M61_AUDIO_EPOCH_READING ||
+                   slot->state == M61_AUDIO_EPOCH_CANCELLED_READING) {
+            slot->state = M61_AUDIO_EPOCH_CANCELLED_READING;
         } else if (slot->state != M61_AUDIO_EPOCH_FREE) {
             slot->state = M61_AUDIO_EPOCH_FREE;
             s_store.stats.epochs_stale++;
         }
-        memset(&s_store.haptics[i], 0, sizeof(s_store.haptics[i]));
     }
     epoch_unlock(flags);
 }
+
+#ifdef M61_AUDIO_EPOCH_HOST_TEST
+void m61_audio_epoch_host_reset_lock_count(void)
+{
+    s_host_lock_count = 0U;
+}
+
+uint32_t m61_audio_epoch_host_lock_count(void)
+{
+    return s_host_lock_count;
+}
+
+__attribute__((weak)) void m61_audio_epoch_host_before_encode_copy(void)
+{
+}
+
+__attribute__((weak)) void m61_audio_epoch_host_after_read_claim(void)
+{
+}
+#endif
 
 void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
                                 uint32_t generation, uint64_t captured_us,
@@ -164,6 +191,11 @@ void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
     while (frame < frames) {
         uintptr_t flags = epoch_lock();
         int selected;
+        uint16_t pcm_frame;
+        size_t chunk_frames;
+        uint8_t peak = 0U;
+        bool nonzero = false;
+        bool epoch_complete;
 
         if (generation != s_store.stats.generation) {
             epoch_unlock(flags);
@@ -185,37 +217,59 @@ void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
             epoch_unlock(flags);
             continue;
         }
-
-        const uint8_t *usb = data + frame * USB_FRAME_BYTES;
-        uint16_t pcm_frame = slot->pcm_frames;
-        slot->speaker_pcm[pcm_frame * 2U] = read_i16_le(usb);
-        slot->speaker_pcm[pcm_frame * 2U + 1U] = read_i16_le(usb + 2U);
-        box->left_sum += read_i16_le(usb + 4U);
-        box->right_sum += read_i16_le(usb + 6U);
-        box->count++;
-        if (box->count == HAPTICS_BOX_FRAMES) {
-            uint8_t out = (uint8_t)(box->output_pairs * 2U);
-            slot->haptics[out] = (uint8_t)pcm16_to_i8(
-                box->left_sum / (int32_t)HAPTICS_BOX_FRAMES, haptics_gain_q8);
-            slot->haptics[out + 1U] = (uint8_t)pcm16_to_i8(
-                box->right_sum / (int32_t)HAPTICS_BOX_FRAMES, haptics_gain_q8);
-            box->left_sum = 0;
-            box->right_sum = 0;
-            box->count = 0;
-            box->output_pairs++;
+        pcm_frame = slot->pcm_frames;
+        chunk_frames = frames - frame;
+        if (chunk_frames > M61_AUDIO_EPOCH_USB_FRAMES - pcm_frame) {
+            chunk_frames = M61_AUDIO_EPOCH_USB_FRAMES - pcm_frame;
         }
-        slot->pcm_frames++;
-        frame++;
-        if (slot->pcm_frames == M61_AUDIO_EPOCH_USB_FRAMES) {
-            uint8_t peak = 0;
-            bool nonzero = false;
+        epoch_unlock(flags);
+
+        for (size_t i = 0; i < chunk_frames; i++) {
+            const uint8_t *usb = data + (frame + i) * USB_FRAME_BYTES;
+            uint16_t dst_frame = (uint16_t)(pcm_frame + i);
+
+            slot->speaker_pcm[dst_frame * 2U] = read_i16_le(usb);
+            slot->speaker_pcm[dst_frame * 2U + 1U] = read_i16_le(usb + 2U);
+            box->left_sum += read_i16_le(usb + 4U);
+            box->right_sum += read_i16_le(usb + 6U);
+            box->count++;
+            if (box->count == HAPTICS_BOX_FRAMES) {
+                uint8_t out = (uint8_t)(box->output_pairs * 2U);
+                slot->haptics[out] = (uint8_t)pcm16_to_i8(
+                    box->left_sum / (int32_t)HAPTICS_BOX_FRAMES,
+                    haptics_gain_q8);
+                slot->haptics[out + 1U] = (uint8_t)pcm16_to_i8(
+                    box->right_sum / (int32_t)HAPTICS_BOX_FRAMES,
+                    haptics_gain_q8);
+                box->left_sum = 0;
+                box->right_sum = 0;
+                box->count = 0;
+                box->output_pairs++;
+            }
+        }
+        slot->pcm_frames = (uint16_t)(pcm_frame + chunk_frames);
+        frame += chunk_frames;
+        epoch_complete = slot->pcm_frames == M61_AUDIO_EPOCH_USB_FRAMES;
+        if (epoch_complete) {
             for (uint8_t i = 0; i < M61_AUDIO_EPOCH_HAPTICS_LEN; i++) {
                 int8_t sample = (int8_t)slot->haptics[i];
                 uint8_t magnitude = sample == INT8_MIN ? 128U :
                     (uint8_t)(sample < 0 ? -sample : sample);
+
                 if (magnitude != 0U) nonzero = true;
                 if (magnitude > peak) peak = magnitude;
             }
+        }
+
+        flags = epoch_lock();
+        if (generation != s_store.stats.generation ||
+            s_store.filling_slot != (uint8_t)selected ||
+            slot->generation != generation ||
+            slot->state != M61_AUDIO_EPOCH_FILLING) {
+            epoch_unlock(flags);
+            return;
+        }
+        if (epoch_complete) {
             s_store.stats.haptics_sample_pairs += 32U;
             if (nonzero) s_store.stats.haptics_nonzero_epochs++;
             s_store.stats.haptics_last_peak = peak;
@@ -262,14 +316,18 @@ bool m61_audio_epoch_take_encode_job(m61_audio_epoch_encode_job_t *job)
 bool m61_audio_epoch_complete_encode(uint32_t generation, uint32_t epoch,
                                      const uint8_t *opus, size_t opus_len)
 {
-    uintptr_t flags = epoch_lock();
-    int selected = find_slot_locked(generation, epoch);
+    uintptr_t flags;
+    int selected;
+    m61_audio_epoch_t *slot;
+
+    flags = epoch_lock();
+    selected = find_slot_locked(generation, epoch);
 
     if (selected < 0) {
         epoch_unlock(flags);
         return false;
     }
-    m61_audio_epoch_t *slot = &s_store.slots[selected];
+    slot = &s_store.slots[selected];
     if (slot->state == M61_AUDIO_EPOCH_CANCELLED_ENCODING ||
         generation != s_store.stats.generation) {
         slot->state = M61_AUDIO_EPOCH_FREE;
@@ -287,7 +345,26 @@ bool m61_audio_epoch_complete_encode(uint32_t generation, uint32_t epoch,
         epoch_unlock(flags);
         return false;
     }
+    epoch_unlock(flags);
+
+#ifdef M61_AUDIO_EPOCH_HOST_TEST
+    m61_audio_epoch_host_before_encode_copy();
+#endif
     memcpy(slot->speaker_opus, opus, M61_AUDIO_EPOCH_OPUS_LEN);
+
+    flags = epoch_lock();
+    if (slot->state == M61_AUDIO_EPOCH_CANCELLED_ENCODING ||
+        generation != s_store.stats.generation) {
+        slot->state = M61_AUDIO_EPOCH_FREE;
+        s_store.stats.epochs_stale++;
+        epoch_unlock(flags);
+        return false;
+    }
+    if (slot->state != M61_AUDIO_EPOCH_ENCODING ||
+        slot->generation != generation || slot->epoch != epoch) {
+        epoch_unlock(flags);
+        return false;
+    }
     slot->state = M61_AUDIO_EPOCH_COMPLETE;
     s_store.stats.epochs_completed++;
     epoch_unlock(flags);
@@ -360,7 +437,6 @@ bool m61_audio_epoch_fallback_due_pair(uint64_t now_us,
             s_store.stats.encode_jobs_cancelled++;
         }
         slots[i]->speaker_enabled = 0U;
-        memset(slots[i]->speaker_opus, 0, sizeof(slots[i]->speaker_opus));
     }
     s_store.stats.deadline_fallback_pairs++;
     epoch_unlock(flags);
@@ -425,20 +501,53 @@ bool m61_audio_epoch_take_adjacent_pair(m61_audio_epoch_pair_t *pair)
         epoch_unlock(flags);
         return false;
     }
-    pair->generation = first_slot->generation;
-    pair->first_epoch = first_slot->epoch;
-    pair->first_captured_us = first_slot->captured_us;
-    pair->second_captured_us = second_slot->captured_us;
-    pair->speaker_enabled = first_slot->speaker_enabled != 0U;
+    uint32_t generation = first_slot->generation;
+    uint32_t first_epoch = first_slot->epoch;
+    uint64_t first_captured_us = first_slot->captured_us;
+    uint64_t second_captured_us = second_slot->captured_us;
+    bool speaker_enabled = first_slot->speaker_enabled != 0U;
+
+    first_slot->state = M61_AUDIO_EPOCH_READING;
+    second_slot->state = M61_AUDIO_EPOCH_READING;
+    epoch_unlock(flags);
+
+#ifdef M61_AUDIO_EPOCH_HOST_TEST
+    m61_audio_epoch_host_after_read_claim();
+#endif
+    pair->generation = generation;
+    pair->first_epoch = first_epoch;
+    pair->first_captured_us = first_captured_us;
+    pair->second_captured_us = second_captured_us;
+    pair->speaker_enabled = speaker_enabled;
     memcpy(pair->haptics[0], first_slot->haptics, M61_AUDIO_EPOCH_HAPTICS_LEN);
     memcpy(pair->haptics[1], second_slot->haptics, M61_AUDIO_EPOCH_HAPTICS_LEN);
-    if (pair->speaker_enabled) {
+    if (speaker_enabled) {
         memcpy(pair->speaker_opus[0], first_slot->speaker_opus,
                M61_AUDIO_EPOCH_OPUS_LEN);
         memcpy(pair->speaker_opus[1], second_slot->speaker_opus,
                M61_AUDIO_EPOCH_OPUS_LEN);
     } else {
         memset(pair->speaker_opus, 0, sizeof(pair->speaker_opus));
+    }
+
+    flags = epoch_lock();
+    if (first_slot->state == M61_AUDIO_EPOCH_CANCELLED_READING ||
+        second_slot->state == M61_AUDIO_EPOCH_CANCELLED_READING ||
+        generation != s_store.stats.generation) {
+        first_slot->state = M61_AUDIO_EPOCH_FREE;
+        second_slot->state = M61_AUDIO_EPOCH_FREE;
+        s_store.stats.epochs_stale += 2U;
+        epoch_unlock(flags);
+        return false;
+    }
+    if (first_slot->state != M61_AUDIO_EPOCH_READING ||
+        second_slot->state != M61_AUDIO_EPOCH_READING ||
+        first_slot->generation != generation ||
+        second_slot->generation != generation ||
+        first_slot->epoch != first_epoch ||
+        second_slot->epoch != first_epoch + 1U) {
+        epoch_unlock(flags);
+        return false;
     }
     first_slot->state = M61_AUDIO_EPOCH_FREE;
     second_slot->state = M61_AUDIO_EPOCH_FREE;
@@ -465,6 +574,7 @@ void m61_audio_epoch_get_stats(m61_audio_epoch_stats_t *stats)
             case M61_AUDIO_EPOCH_READY_ENCODE: stats->encode_ready_slots++; break;
             case M61_AUDIO_EPOCH_ENCODING: stats->encoding_slots++; break;
             case M61_AUDIO_EPOCH_COMPLETE: stats->complete_slots++; break;
+            case M61_AUDIO_EPOCH_READING: stats->complete_slots++; break;
             default: break;
         }
     }
