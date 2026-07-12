@@ -42,9 +42,13 @@ fi
 ROOT="$PROJECT_DIR/.cache/third_party/opus-${VERSION}"
 ARCHIVE="$ROOT/opus-${VERSION}.tar.gz"
 SOURCE="$ROOT/opus-${VERSION}"
+PATCH_FILE="$PROJECT_DIR/patches/opus-${VERSION}-disabled-prefilter-fastpath.patch"
 BUILD="$ROOT/build-${VARIANT}"
 STAMP="$BUILD/.m61-config"
-EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
+PATCH_SHA256="$(sha256sum "$PATCH_FILE" | awk '{print $1}')"
+SOURCE_STAMP="$SOURCE/.m61-source-patch"
+EXPECTED_SOURCE_STAMP="patch=${PATCH_SHA256}"
+EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
 
 mkdir -p "$ROOT"
 if [[ ! -f "$ARCHIVE" ]]; then
@@ -57,8 +61,19 @@ printf '%s  %s\n' "$ARCHIVE_SHA256" "$ARCHIVE" | sha256sum --check --status || {
     exit 1
 }
 
-if [[ ! -d "$SOURCE" ]]; then
+if [[ ! -f "$SOURCE_STAMP" || "$(cat "$SOURCE_STAMP" 2>/dev/null || true)" != "$EXPECTED_SOURCE_STAMP" ]]; then
+    if [[ -d "$SOURCE" ]]; then
+        source_real="$(realpath "$SOURCE")"
+        root_real="$(realpath "$ROOT")"
+        [[ "$source_real" == "$root_real/opus-${VERSION}" ]] || {
+            printf '[m61-opus-build] ERROR: refusing to remove %s\n' "$source_real" >&2
+            exit 1
+        }
+        rm -rf "$source_real"
+    fi
     tar -xzf "$ARCHIVE" -C "$ROOT"
+    patch -d "$SOURCE" -p1 < "$PATCH_FILE" >&2
+    printf '%s\n' "$EXPECTED_SOURCE_STAMP" > "$SOURCE_STAMP"
 fi
 
 if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then

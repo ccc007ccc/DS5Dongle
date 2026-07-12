@@ -87,6 +87,22 @@ ds5 reboot-isp
 m61 reboot-isp
 ```
 
+Run the deterministic speaker, HD-haptics, and HID-output performance load
+from Windows (requires `numpy`, `sounddevice`, `pyserial`, and the four-channel
+DualSense USB audio endpoint):
+
+```powershell
+python tools\run_m61_full_load.py --duration 90 `
+  --status-log artifacts\m61_full_load_status.log
+python tools\compare_m61_perf_status.py `
+  artifacts\m61_full_load_status_before.log `
+  artifacts\m61_full_load_status.log
+```
+
+The default amplitudes are intentionally quiet. The sample rate, four-channel
+layout, 10 ms audio blocks, and 20 ms HID output cadence remain fixed so A/B
+results are comparable without requiring loud playback.
+
 On boot, the probe now starts this automatic sequence:
 
 ```text
