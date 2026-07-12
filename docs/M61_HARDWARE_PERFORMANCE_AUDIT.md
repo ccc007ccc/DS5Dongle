@@ -70,6 +70,24 @@ After rolling the failed encoder RAM-code experiment back to Flash XIP, the
 user could not hear obvious stutter in the same haptics and speaker test. This
 Flash-XIP image is now the protected performance baseline for later A/B tests.
 
+The Phase 1B HPM run then collected 57,143 speaker encodes under sustained
+haptics and speaker load:
+
+- Encode average: 6,976 us; p95: 8,750 us; p99: 9,000 us; maximum: 9,816 us.
+- Average cycles: 2,232,670; maximum cycles: 3,141,204.
+- Average retired instructions: 383,174 per encode.
+- I-cache miss rate: 10,572 ppm (1.0572%).
+- D-cache read miss rate: 15,947 ppm (1.5947%).
+- USB ingress age p95: 1,000 us; p99: 1,250 us; maximum: 1,794 us.
+- Maximum measured global interrupt mask: 67,699 cycles, about 212 us at
+  320 MHz.
+- Realtime Bluetooth: 28,605/28,605 transmitted with zero replacement,
+  stale, retry, or drop; audio epoch drops remained zero.
+
+This run does not show sustained Opus overload. The largest directly
+actionable software tail is the approximately 212 us interrupt-masked queue
+copy, so USB ingress ownership precedes further codec placement experiments.
+
 ## Remaining Hardware Headroom
 
 ### High-confidence work

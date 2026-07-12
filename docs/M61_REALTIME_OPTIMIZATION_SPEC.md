@@ -98,7 +98,7 @@ Rollback validation:
 
 ## Phase 1B: Baseline Counters
 
-Status: next implementation step.
+Status: complete and hardware validated.
 
 Work:
 
@@ -114,6 +114,23 @@ Acceptance:
   baseline.
 - Enabled instrumentation adds less than 1% to average encode time.
 - Counters remain monotonic and do not overflow during a ten-minute run.
+
+Measured result:
+
+- 57,143 speaker encodes: average 6,976 us, p95 8,750 us, p99 9,000 us,
+  maximum 9,816 us.
+- Average 2,232,670 cycles and 383,174 retired instructions per encode.
+- I-cache miss rate 1.0572%; D-cache read miss rate 1.5947%.
+- USB ingress age p95 1,000 us, p99 1,250 us, maximum 1,794 us.
+- Maximum global interrupt mask 67,699 cycles, approximately 212 us.
+- Realtime Bluetooth 28,605/28,605 with zero drop, stale, retry, or
+  replacement; audio epoch drops remained zero.
+
+Conclusion:
+
+- The sustained encoder fits inside one 10.667 ms epoch in this run.
+- Phase 3 USB ingress ownership is the next behavioral change because the
+  interrupt-masked 416-byte record copy is the clearest measured latency tail.
 
 ## Phase 2: Haptics Hard Deadline
 
@@ -136,7 +153,7 @@ Acceptance:
 
 ## Phase 3: USB Audio Ingress Ownership
 
-Status: pending.
+Status: next implementation step.
 
 Work:
 

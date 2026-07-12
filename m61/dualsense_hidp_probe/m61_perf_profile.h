@@ -1,0 +1,62 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifndef CONFIG_M61_HPM_PROFILE
+#define CONFIG_M61_HPM_PROFILE 0
+#endif
+
+#define M61_PERF_HISTOGRAM_BUCKET_US 250U
+#define M61_PERF_HISTOGRAM_BUCKETS 64U
+
+typedef struct {
+    uint32_t cycle;
+    uint32_t instret;
+    uint32_t icache_access;
+    uint32_t icache_miss;
+    uint32_t dcache_read;
+    uint32_t dcache_read_miss;
+} m61_perf_counter_sample_t;
+
+typedef struct {
+    bool enabled;
+    uint32_t encode_samples;
+    uint32_t encode_us_last;
+    uint32_t encode_us_average;
+    uint32_t encode_us_max;
+    uint32_t encode_us_p50;
+    uint32_t encode_us_p95;
+    uint32_t encode_us_p99;
+    uint32_t cycles_last;
+    uint32_t cycles_average;
+    uint32_t cycles_max;
+    uint32_t instret_average;
+    uint32_t icache_access_average;
+    uint32_t icache_miss_average;
+    uint32_t icache_miss_ppm;
+    uint32_t dcache_read_average;
+    uint32_t dcache_read_miss_average;
+    uint32_t dcache_read_miss_ppm;
+    uint32_t ingress_samples;
+    uint32_t ingress_age_us_last;
+    uint32_t ingress_age_us_max;
+    uint32_t ingress_age_us_p95;
+    uint32_t ingress_age_us_p99;
+    uint32_t irq_mask_cycles_max;
+} m61_perf_profile_snapshot_t;
+
+void m61_perf_profile_init(void);
+void m61_perf_profile_counter_begin(m61_perf_counter_sample_t *sample);
+void m61_perf_profile_counter_end(const m61_perf_counter_sample_t *start,
+                                  uint32_t elapsed_us);
+void m61_perf_profile_record_encode(uint32_t elapsed_us,
+                                    uint32_t cycles,
+                                    uint32_t instret,
+                                    uint32_t icache_access,
+                                    uint32_t icache_miss,
+                                    uint32_t dcache_read,
+                                    uint32_t dcache_read_miss);
+void m61_perf_profile_record_ingress_age(uint32_t age_us);
+void m61_perf_profile_record_irq_mask_cycles(uint32_t cycles);
+void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot);

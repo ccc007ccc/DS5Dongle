@@ -1,5 +1,6 @@
 #include "m61_usb_gamepad.h"
 #include "m61_audio_epoch.h"
+#include "m61_perf_profile.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -474,19 +475,45 @@ static volatile uint8_t feature_set_queue_count;
 static volatile uint8_t feature_set_queue_high_water;
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
+#if CONFIG_M61_HPM_PROFILE
+static uint8_t usb_lock_depth;
+static uint32_t usb_lock_start_cycle;
+#endif
 
 typedef char ds5_report_desc_size_check[(sizeof(dualsense_report_desc) == HID_DUALSENSE_REPORT_DESC_SIZE) ? 1 : -1];
 typedef char ds5_config_desc_size_check[(sizeof(config_descriptor) == USB_DUALSENSE_CONFIG_DESC_SIZE) ? 1 : -1];
 
 static uintptr_t usb_lock(void)
 {
-    return bflb_irq_save();
+    uintptr_t flags = bflb_irq_save();
+
+#if CONFIG_M61_HPM_PROFILE
+    if (usb_lock_depth++ == 0U) {
+        __asm volatile("csrr %0, mcycle"
+                       : "=r"(usb_lock_start_cycle)
+                       :
+                       : "memory");
+    }
+#endif
+    return flags;
 }
 
 static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src);
 
 static void usb_unlock(uintptr_t flags)
 {
+#if CONFIG_M61_HPM_PROFILE
+    uint32_t end_cycle;
+
+    if (usb_lock_depth > 0U && --usb_lock_depth == 0U) {
+        __asm volatile("csrr %0, mcycle"
+                       : "=r"(end_cycle)
+                       :
+                       : "memory");
+        m61_perf_profile_record_irq_mask_cycles(end_cycle -
+                                                usb_lock_start_cycle);
+    }
+#endif
     bflb_irq_restore(flags);
 }
 
@@ -1108,6 +1135,15 @@ static void audio_ingress_task(void *pvParameters)
         bool did_work = false;
 
         while (budget > 0 && take_audio_ingress(&packet)) {
+#if CONFIG_M61_HPM_PROFILE
+            uint64_t now_us = bflb_mtimer_get_time_us();
+            uint64_t age_us = now_us >= packet.captured_us
+                                  ? now_us - packet.captured_us
+                                  : 0U;
+
+            m61_perf_profile_record_ingress_age(
+                age_us > UINT32_MAX ? UINT32_MAX : (uint32_t)age_us);
+#endif
             if (!sequence_valid || packet.generation != ingress_generation) {
                 ingress_generation = packet.generation;
                 expected_sequence = packet.sequence;
@@ -1223,10 +1259,16 @@ static void audio_codec_task(void *pvParameters)
                m61_audio_epoch_take_encode_job(&speaker_job)) {
             uint64_t encode_start_us;
             uint64_t encode_elapsed_us;
+#if CONFIG_M61_HPM_PROFILE
+            m61_perf_counter_sample_t perf_start;
+#endif
             usb_diag.audio_codec_stage = 3;
             resample_epoch_speaker_mono(speaker_frame,
                                         speaker_job.speaker_pcm);
             encode_start_us = bflb_mtimer_get_time_us();
+#if CONFIG_M61_HPM_PROFILE
+            m61_perf_profile_counter_begin(&perf_start);
+#endif
             int encoded = opus_encode(encoder,
                                       speaker_frame,
                                       AUDIO_SPEAKER_FRAME_SAMPLES,
@@ -1244,6 +1286,10 @@ static void audio_codec_task(void *pvParameters)
             if (encode_elapsed_us > UINT32_MAX) {
                 encode_elapsed_us = UINT32_MAX;
             }
+#if CONFIG_M61_HPM_PROFILE
+            m61_perf_profile_counter_end(&perf_start,
+                                         (uint32_t)encode_elapsed_us);
+#endif
             record_speaker_encode_diag((uint32_t)encode_elapsed_us, encoded);
             did_work = true;
             pause_mic_until_tick =
@@ -1749,6 +1795,7 @@ static void register_usb_dualsense_device(void)
 void m61_usb_gamepad_init(void)
 {
     m61_usb_clock_recover();
+    m61_perf_profile_init();
     memcpy(last_input_payload, ds5_idle_payload, sizeof(last_input_payload));
     memset(audio_in_buffer, 0, sizeof(audio_in_buffer));
     flush_mic_queues();
@@ -2033,11 +2080,13 @@ uint32_t m61_usb_gamepad_event_count(uint8_t event)
 void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
 {
     m61_audio_epoch_stats_t epoch_stats;
+    m61_perf_profile_snapshot_t perf;
 
     if (!diag) {
         return;
     }
     m61_audio_epoch_get_stats(&epoch_stats);
+    m61_perf_profile_get_snapshot(&perf);
 
     diag->device_desc = usb_diag.device_desc;
     diag->config_desc = usb_diag.config_desc;
@@ -2077,6 +2126,27 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_speaker_encode_us_total = usb_diag.audio_speaker_encode_us_total;
     diag->audio_speaker_encode_us_last = usb_diag.audio_speaker_encode_us_last;
     diag->audio_speaker_encode_us_max = usb_diag.audio_speaker_encode_us_max;
+    diag->perf_profile_enabled = perf.enabled ? 1U : 0U;
+    diag->perf_encode_samples = perf.encode_samples;
+    diag->perf_encode_us_p50 = perf.encode_us_p50;
+    diag->perf_encode_us_p95 = perf.encode_us_p95;
+    diag->perf_encode_us_p99 = perf.encode_us_p99;
+    diag->perf_encode_cycles_last = perf.cycles_last;
+    diag->perf_encode_cycles_average = perf.cycles_average;
+    diag->perf_encode_cycles_max = perf.cycles_max;
+    diag->perf_encode_instret_average = perf.instret_average;
+    diag->perf_icache_access_average = perf.icache_access_average;
+    diag->perf_icache_miss_average = perf.icache_miss_average;
+    diag->perf_icache_miss_ppm = perf.icache_miss_ppm;
+    diag->perf_dcache_read_average = perf.dcache_read_average;
+    diag->perf_dcache_read_miss_average = perf.dcache_read_miss_average;
+    diag->perf_dcache_read_miss_ppm = perf.dcache_read_miss_ppm;
+    diag->perf_ingress_samples = perf.ingress_samples;
+    diag->perf_ingress_age_us_last = perf.ingress_age_us_last;
+    diag->perf_ingress_age_us_max = perf.ingress_age_us_max;
+    diag->perf_ingress_age_us_p95 = perf.ingress_age_us_p95;
+    diag->perf_ingress_age_us_p99 = perf.ingress_age_us_p99;
+    diag->perf_irq_mask_cycles_max = perf.irq_mask_cycles_max;
     diag->audio_speaker_last_opus_len = usb_diag.audio_speaker_last_opus_len;
     diag->audio_mic_opus_packets = usb_diag.audio_mic_opus_packets;
     diag->audio_mic_opus_nonzero = usb_diag.audio_mic_opus_nonzero;

@@ -12,6 +12,7 @@ CHIP="bl616"
 BOARD="bl616dk"
 CPU_ID=""
 COMMAND="build"
+HPM_PROFILE="n"
 
 log() {
     printf '[m61-hidp-build] %s\n' "$*"
@@ -24,7 +25,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -35,6 +36,7 @@ Environment:
 Example:
   ./build.sh
   ./build.sh all
+  ./build.sh all --hpm-profile
 EOF
 }
 
@@ -98,6 +100,7 @@ build_project() {
         "CHIP=$CHIP"
         "BOARD=$BOARD"
         "CROSS_COMPILE=$toolchain_bin/riscv64-unknown-elf-"
+        "CONFIG_M61_HPM_PROFILE=$HPM_PROFILE"
     )
 
     if [[ -n "$CPU_ID" ]]; then
@@ -130,6 +133,10 @@ while [[ $# -gt 0 ]]; do
         --cpu-id)
             CPU_ID="${2:?missing value for --cpu-id}"
             shift 2
+            ;;
+        --hpm-profile)
+            HPM_PROFILE="y"
+            shift
             ;;
         -h|--help|help)
             show_help
