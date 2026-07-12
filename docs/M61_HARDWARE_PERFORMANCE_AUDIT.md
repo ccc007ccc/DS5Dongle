@@ -104,6 +104,15 @@ not be reintroduced; a future ingress optimization must preserve packet
 cadence and prove zero downstream queue drops before latency improvements are
 considered.
 
+The first haptics-deadline implementation also failed hardware validation. It
+raised the USB/HID bridge task above the codec task so a 32 ms deadline could
+preempt speaker work. Haptics remained continuous, but speaker output became
+almost silent: 4,586 pairs fell back to haptics-only, 5,388 encodes were
+cancelled, and 4,397 completed too late. Encode p99 regressed from about
+9,000 us to 15,500 us and the maximum reached 17,570 us. The change was
+rolled back before commit. Future deadline admission must remain inside the
+codec task and must not raise a periodic bridge task above Opus.
+
 ## Remaining Hardware Headroom
 
 ### High-confidence work

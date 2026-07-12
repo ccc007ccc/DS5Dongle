@@ -134,7 +134,7 @@ Conclusion:
 
 ## Phase 2: Haptics Hard Deadline
 
-Status: next implementation step.
+Status: first implementation failed hardware validation; redesign pending.
 
 Work:
 
@@ -150,6 +150,26 @@ Acceptance:
 - Haptics-only fallback is counted and bounded.
 - No duplicate or partial speaker pair is transmitted.
 - Basic controller operations remain unaffected.
+
+Failed implementation:
+
+- Added a 32 ms fallback and raised the USB/HID bridge task above the Opus
+  codec task so the bridge could enforce the deadline.
+- Haptics remained continuous, but the user reported that the speaker was
+  almost silent.
+- Hardware counters recorded 4,586 deadline fallbacks, 5,388 cancelled
+  encodes, and 4,397 late encode completions.
+- Encode p99 regressed from about 9,000 us to 15,500 us; maximum reached
+  17,570 us. The priority change caused frequent Opus preemption and made the
+  overload substantially worse.
+
+Redesign constraint:
+
+- Keep the validated codec and bridge priorities unchanged.
+- Perform admission in the codec task before starting the next encode. When
+  the remaining pair slack cannot cover an encode, convert only the pending
+  speaker epoch to haptics-only and yield one tick so the bridge can transmit.
+- Do not attempt to preempt an Opus call already in progress.
 
 ## Phase 3: USB Audio Ingress Ownership
 
