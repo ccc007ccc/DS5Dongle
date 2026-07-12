@@ -541,11 +541,10 @@ def test_c_source_contract() -> None:
         assert snippet in output_source, f"missing C output snippet: {snippet}"
 
     m61_haptics_snippets = [
-        "HAPTICS_BOX_FRAMES",
-        "left_sum += read_i16_le(usb + 4U)",
-        "right_sum += read_i16_le(usb + 6U)",
-        "box->left_sum / (int32_t)HAPTICS_BOX_FRAMES",
-        "box->right_sum / (int32_t)HAPTICS_BOX_FRAMES",
+        "HAPTICS_DECIMATION_FRAMES",
+        "(dst_frame % HAPTICS_DECIMATION_FRAMES) == 0U",
+        "read_i16_le(usb + 4U)",
+        "read_i16_le(usb + 6U)",
         "m61_audio_epoch_take_adjacent_pair",
     ]
     for snippet in m61_haptics_snippets:
@@ -558,7 +557,7 @@ def test_c_source_contract() -> None:
         "OPUS_SET_FORCE_CHANNELS",
         "OPUS_SET_MAX_BANDWIDTH",
         "OPUS_BANDWIDTH_MEDIUMBAND",
-        "CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE 64000",
+        "CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE 160000",
         "opus_decoder_get_size",
         "opus_decoder_init",
         "opus_decode(decoder",
@@ -599,6 +598,19 @@ def test_c_source_contract() -> None:
         "hidp_alloc_interrupt_report(DS5_OUTPUT_REPORT32_BT_LEN",
         "hidp_submit_interrupt_report(buf)",
         "The Bouffalo BR/EDR L2CAP API returns bytes sent on success",
+        "#define CONFIG_M61_DS5_AUTO_START 0",
+        "CONFIG_M61_PAIR_BUTTON_PIN GPIO_PIN_2",
+        "pair button long press: entering pairing mode",
+        "br_set_scan_mode(true, false, \"bt-ready-passive\")",
+        "channel->br.rx.mtu = CONFIG_BT_L2CAP_TX_MTU;",
+        "HIDP %s unusable MTU: need >=%u, negotiated %u",
+        "bflb_device_get_by_name(\"pwm_v2_0\")",
+        "PWM_IO_SEL_DIFF_END",
+        "CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE 120U",
+        "status_led_apply_mode(STATUS_LED_BOOT, true);",
+        "status_led_finish_boot();",
+        "if (auto_start_enabled && !pairing_mode_active",
+        "return STATUS_LED_OFF;",
     ]
     for snippet in m61_bridge_snippets:
         assert snippet in m61_main_source, f"missing M61 bridge snippet: {snippet}"

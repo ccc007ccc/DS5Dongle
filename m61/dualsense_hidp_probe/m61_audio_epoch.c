@@ -9,7 +9,7 @@
 
 #define USB_CHANNELS 4U
 #define USB_FRAME_BYTES (USB_CHANNELS * sizeof(int16_t))
-#define HAPTICS_BOX_FRAMES 16U
+#define HAPTICS_DECIMATION_FRAMES 16U
 #define INVALID_SLOT UINT8_MAX
 #define M61_CACHE_LINE_BYTES 32U
 
@@ -19,15 +19,7 @@ _Static_assert(sizeof(m61_audio_epoch_t) % M61_CACHE_LINE_BYTES == 0U,
                "M61 audio epoch slot cache-line stride drift");
 
 typedef struct {
-    int32_t left_sum;
-    int32_t right_sum;
-    uint8_t count;
-    uint8_t output_pairs;
-} haptics_box_t;
-
-typedef struct {
     m61_audio_epoch_t slots[M61_AUDIO_EPOCH_SLOT_COUNT];
-    haptics_box_t haptics[M61_AUDIO_EPOCH_SLOT_COUNT];
     m61_audio_epoch_stats_t stats;
     uint8_t filling_slot;
 } audio_epoch_store_t;
@@ -116,7 +108,6 @@ static int allocate_slot_locked(uint64_t captured_us, bool speaker_enabled)
     }
 
     m61_audio_epoch_t *slot = &s_store.slots[selected];
-    memset(&s_store.haptics[selected], 0, sizeof(s_store.haptics[selected]));
     slot->generation = s_store.stats.generation;
     slot->epoch = s_store.stats.next_epoch++;
     slot->captured_us = captured_us;
@@ -211,7 +202,6 @@ void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
             selected = s_store.filling_slot;
         }
         m61_audio_epoch_t *slot = &s_store.slots[selected];
-        haptics_box_t *box = &s_store.haptics[selected];
         if (slot->state != M61_AUDIO_EPOCH_FILLING) {
             s_store.filling_slot = INVALID_SLOT;
             epoch_unlock(flags);
@@ -230,21 +220,15 @@ void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
 
             slot->speaker_pcm[dst_frame * 2U] = read_i16_le(usb);
             slot->speaker_pcm[dst_frame * 2U + 1U] = read_i16_le(usb + 2U);
-            box->left_sum += read_i16_le(usb + 4U);
-            box->right_sum += read_i16_le(usb + 6U);
-            box->count++;
-            if (box->count == HAPTICS_BOX_FRAMES) {
-                uint8_t out = (uint8_t)(box->output_pairs * 2U);
+            if ((dst_frame % HAPTICS_DECIMATION_FRAMES) == 0U) {
+                uint8_t out =
+                    (uint8_t)((dst_frame / HAPTICS_DECIMATION_FRAMES) * 2U);
                 slot->haptics[out] = (uint8_t)pcm16_to_i8(
-                    box->left_sum / (int32_t)HAPTICS_BOX_FRAMES,
+                    read_i16_le(usb + 4U),
                     haptics_gain_q8);
                 slot->haptics[out + 1U] = (uint8_t)pcm16_to_i8(
-                    box->right_sum / (int32_t)HAPTICS_BOX_FRAMES,
+                    read_i16_le(usb + 6U),
                     haptics_gain_q8);
-                box->left_sum = 0;
-                box->right_sum = 0;
-                box->count = 0;
-                box->output_pairs++;
             }
         }
         slot->pcm_frames = (uint16_t)(pcm_frame + chunk_frames);

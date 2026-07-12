@@ -67,7 +67,7 @@
 #define AUDIO_SPEAKER_OPUS_FORCE_CHANNELS 1
 #define AUDIO_SPEAKER_OPUS_BANDWIDTH OPUS_BANDWIDTH_MEDIUMBAND
 #ifndef CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE
-#define CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE 64000
+#define CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE 160000
 #endif
 #define AUDIO_SPEAKER_OPUS_BITRATE CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE
 #define AUDIO_MIC_CHANNELS 1
@@ -89,7 +89,7 @@
 #define AUDIO_CODEC_DIAG_PERIOD_MS 1000U
 #define AUDIO_CODEC_ERR_STATE_TOO_SMALL -1001
 #define HAPTICS_DOWNSAMPLE_FACTOR 16
-#define HAPTICS_RESAMPLE_MODE_BOX_FILTER 3
+#define HAPTICS_RESAMPLE_MODE_PHASE_DECIMATE 4
 #ifndef HAPTICS_GAIN_Q8
 #define HAPTICS_GAIN_Q8 256
 #endif
@@ -2399,7 +2399,7 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_speaker_opus_bitrate = usb_diag.audio_speaker_opus_bitrate;
     diag->audio_haptic_last_peak = epoch_stats.haptics_last_peak;
     diag->audio_haptic_downsample = HAPTICS_DOWNSAMPLE_FACTOR;
-    diag->audio_haptic_resample_mode = HAPTICS_RESAMPLE_MODE_BOX_FILTER;
+    diag->audio_haptic_resample_mode = HAPTICS_RESAMPLE_MODE_PHASE_DECIMATE;
     diag->audio_haptic_gain_q8 = HAPTICS_GAIN_Q8;
     diag->audio_speaker_mute = audio_speaker_mute ? 1 : 0;
     diag->audio_mic_mute = audio_mic_mute ? 1 : 0;

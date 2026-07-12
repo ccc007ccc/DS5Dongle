@@ -51,14 +51,14 @@ static void fill_constant(uint8_t *data, size_t frames, int16_t speaker,
     }
 }
 
-static void test_box_average_and_pair(void)
+static void test_phase_decimation_and_pair(void)
 {
     uint8_t audio[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
     m61_audio_epoch_pair_t pair;
 
     memset(audio, 0, sizeof(audio));
     for (size_t frame = 0; frame < 2U * M61_AUDIO_EPOCH_USB_FRAMES; frame++) {
-        int16_t sample = (frame % 16U) == 15U ? 16000 : 0;
+        int16_t sample = (frame % 16U) == 0U ? 16000 : 0;
         set_frame(audio + frame * USB_FRAME_BYTES, 1000, sample,
                   (int16_t)-sample);
     }
@@ -67,10 +67,10 @@ static void test_box_average_and_pair(void)
     assert(m61_audio_epoch_take_adjacent_pair(&pair));
     assert(pair.generation == 1 && pair.first_epoch == 0);
     assert(!pair.speaker_enabled);
-    /* 16000 / 16 = 1000: verifies box averaging instead of decimation. */
-    assert((int8_t)pair.haptics[0][0] == 3);
-    assert((int8_t)pair.haptics[0][1] == -3);
-    assert((int8_t)pair.haptics[1][62] == 3);
+    /* 48 kHz -> 3 kHz uses one phase-continuous sample every 16 frames. */
+    assert((int8_t)pair.haptics[0][0] == 62);
+    assert((int8_t)pair.haptics[0][1] == -62);
+    assert((int8_t)pair.haptics[1][62] == 62);
     assert(!m61_audio_epoch_take_adjacent_pair(&pair));
 }
 
@@ -244,7 +244,7 @@ static void test_deadline_admission_discards_completed_first_encode(void)
 int main(void)
 {
     assert(sizeof(m61_audio_epoch_t) <= M61_AUDIO_EPOCH_RESERVED_SLOT_BYTES);
-    test_box_average_and_pair();
+    test_phase_decimation_and_pair();
     test_ingress_lock_count_is_per_chunk_not_per_frame();
     test_keyed_encode_pair();
     test_capacity_drops_oldest();

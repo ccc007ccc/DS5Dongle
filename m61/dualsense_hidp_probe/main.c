@@ -19,8 +19,10 @@
 #include "shell.h"
 
 #include "bflb_gpio.h"
+#include "bflb_clock.h"
 #include "bflb_mtimer.h"
 #include "bflb_mtd.h"
+#include "bflb_pwm_v2.h"
 #include "easyflash.h"
 #include "rfparam_adapter.h"
 
@@ -79,7 +81,7 @@ _Static_assert(CONFIG_BT_L2CAP_TX_MTU >= HIDP_TX_MAX_LEN,
 #define DS5_STATE_LED_RED 44
 
 #ifndef CONFIG_M61_DS5_AUTO_START
-#define CONFIG_M61_DS5_AUTO_START 1
+#define CONFIG_M61_DS5_AUTO_START 0
 #endif
 
 #ifndef CONFIG_M61_DS5_AUTO_START_DELAY_MS
@@ -184,6 +186,36 @@ _Static_assert(CONFIG_BT_CTLR_RX_PRIO > M61_BT_BRIDGE_TASK_PRIORITY,
 #define CONFIG_M61_STATUS_LED_BLINK_MS 250
 #endif
 
+#ifndef CONFIG_M61_STATUS_LED_PWM_PERIOD
+#define CONFIG_M61_STATUS_LED_PWM_PERIOD 1000U
+#endif
+
+#ifndef CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE
+#define CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE 120U
+#endif
+
+_Static_assert(CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE <= 1000U,
+               "status LED brightness must be 0..1000 permille");
+
+#ifndef CONFIG_M61_PAIR_BUTTON_ENABLE
+#define CONFIG_M61_PAIR_BUTTON_ENABLE 1
+#endif
+
+/* Ai-M61-32S-Kit BOOT is BL616 GPIO2, active high.  Override this with
+ * GPIO_PIN_0 when using an external button on boards where BOOT is not readable
+ * after startup. */
+#ifndef CONFIG_M61_PAIR_BUTTON_PIN
+#define CONFIG_M61_PAIR_BUTTON_PIN GPIO_PIN_2
+#endif
+
+#ifndef CONFIG_M61_PAIR_BUTTON_ACTIVE_HIGH
+#define CONFIG_M61_PAIR_BUTTON_ACTIVE_HIGH 1
+#endif
+
+#ifndef CONFIG_M61_PAIR_BUTTON_HOLD_MS
+#define CONFIG_M61_PAIR_BUTTON_HOLD_MS 1500U
+#endif
+
 #define DS5_AUTO_TASK_PERIOD_MS 250
 #define DS5_DISCONNECT_CLEANUP_DELAY_MS 750
 
@@ -218,6 +250,9 @@ static bool have_last_dualsense_addr;
 static bool bt_ready;
 static bool storage_ready;
 static bool br_discovery_active;
+static bool br_discovery_found_dualsense;
+static bool pairing_mode_active;
+static bool pairing_mode_after_disconnect;
 static bool auto_connect_after_scan;
 static bool auto_sequence_started;
 static bool auto_security_requested;
@@ -262,6 +297,15 @@ static TickType_t auto_next_hidp_tick;
 static TickType_t auto_next_bringup_tick;
 static dualsense_output_context_t output_ctx;
 static struct bflb_device_s *status_led_gpio;
+static struct bflb_device_s *status_led_pwm;
+static bool status_led_pwm_ready;
+static bool status_led_red_on;
+static bool status_led_green_on;
+static bool status_led_blue_on;
+static bool status_led_booting = true;
+static struct bflb_device_s *pair_button_gpio;
+static uint16_t pair_button_hold_ms;
+static bool pair_button_hold_fired;
 static bool status_led_override;
 static enum status_led_mode status_led_override_mode;
 static bool hid_control_prepare_pending;
@@ -282,6 +326,7 @@ static struct bt_sdp_discover_params sdp_params;
 
 static int hidp_control_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan);
 static int hidp_interrupt_l2cap_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan);
+static int request_pairing_mode(void);
 
 static struct hidp_channel hid_control = {
     .name = "control",
@@ -408,7 +453,8 @@ static int br_scan_state_result(const char *action, int err, bool *state, bool t
     return err;
 }
 
-static void br_set_pairable(bool enable, const char *reason)
+static void br_set_scan_mode(bool connectable, bool discoverable,
+                             const char *reason)
 {
     int err;
 
@@ -416,20 +462,22 @@ static void br_set_pairable(bool enable, const char *reason)
         return;
     }
 
-    if (enable) {
+    if (connectable) {
         err = bt_br_set_connectable(true);
         br_scan_state_result("set connectable", err, &br_connectable_enabled, true);
+    } else {
+        err = bt_br_set_connectable(false);
+        br_scan_state_result("clear connectable", err, &br_connectable_enabled, false);
+    }
+    if (discoverable) {
         err = bt_br_set_discoverable(true);
         br_scan_state_result("set discoverable", err, &br_discoverable_enabled, true);
     } else {
         err = bt_br_set_discoverable(false);
         br_scan_state_result("clear discoverable", err, &br_discoverable_enabled, false);
-        err = bt_br_set_connectable(false);
-        br_scan_state_result("clear connectable", err, &br_connectable_enabled, false);
     }
 
-    printf("BR/EDR pairable=%d reason=%s connectable=%d discoverable=%d\r\n",
-           enable ? 1 : 0,
+    printf("BR/EDR scan mode reason=%s connectable=%d discoverable=%d\r\n",
            reason ? reason : "manual",
            br_connectable_enabled ? 1 : 0,
            br_discoverable_enabled ? 1 : 0);
@@ -786,11 +834,88 @@ static int m61_usb_cycle_command(void)
     return m61_usb_gamepad_reinit();
 }
 
+static void pair_button_init(void)
+{
+#if CONFIG_M61_PAIR_BUTTON_ENABLE
+    pair_button_gpio = bflb_device_get_by_name("gpio");
+    if (!pair_button_gpio) {
+        printf("pair button gpio device not found\r\n");
+        return;
+    }
+
+    bflb_gpio_init(pair_button_gpio,
+                   CONFIG_M61_PAIR_BUTTON_PIN,
+                   GPIO_INPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_0);
+    printf("pair button pin=%u active_high=%u hold_ms=%u\r\n",
+           (unsigned int)CONFIG_M61_PAIR_BUTTON_PIN,
+           (unsigned int)CONFIG_M61_PAIR_BUTTON_ACTIVE_HIGH,
+           (unsigned int)CONFIG_M61_PAIR_BUTTON_HOLD_MS);
+#endif
+}
+
+static void pair_button_poll(void)
+{
+#if CONFIG_M61_PAIR_BUTTON_ENABLE
+    bool level;
+    bool pressed;
+
+    if (!pair_button_gpio) {
+        return;
+    }
+    level = bflb_gpio_read(pair_button_gpio, CONFIG_M61_PAIR_BUTTON_PIN);
+    pressed = CONFIG_M61_PAIR_BUTTON_ACTIVE_HIGH ? level : !level;
+    if (!pressed) {
+        pair_button_hold_ms = 0U;
+        pair_button_hold_fired = false;
+        return;
+    }
+    if (pair_button_hold_fired) {
+        return;
+    }
+    if (pair_button_hold_ms < CONFIG_M61_PAIR_BUTTON_HOLD_MS) {
+        pair_button_hold_ms = (uint16_t)(pair_button_hold_ms +
+                                         DS5_AUTO_TASK_PERIOD_MS);
+    }
+    if (pair_button_hold_ms >= CONFIG_M61_PAIR_BUTTON_HOLD_MS) {
+        pair_button_hold_fired = true;
+        printf("pair button long press: entering pairing mode\r\n");
+        (void)request_pairing_mode();
+    }
+#endif
+}
+
 #if CONFIG_M61_STATUS_LED_ENABLE
 static void status_led_write_pin(uint32_t pin, bool on)
 {
     if (!status_led_gpio) {
         return;
+    }
+
+    if (status_led_pwm_ready) {
+        if (pin == CONFIG_M61_STATUS_LED_RED_PIN) {
+            if (on) {
+                bflb_pwm_v2_channel_positive_start(status_led_pwm, PWM_CH2);
+            } else {
+                bflb_pwm_v2_channel_positive_stop(status_led_pwm, PWM_CH2);
+            }
+            return;
+        }
+        if (pin == CONFIG_M61_STATUS_LED_GREEN_PIN) {
+            if (on) {
+                bflb_pwm_v2_channel_positive_start(status_led_pwm, PWM_CH3);
+            } else {
+                bflb_pwm_v2_channel_positive_stop(status_led_pwm, PWM_CH3);
+            }
+            return;
+        }
+        if (pin == CONFIG_M61_STATUS_LED_BLUE_PIN) {
+            if (on) {
+                bflb_pwm_v2_channel_negative_start(status_led_pwm, PWM_CH3);
+            } else {
+                bflb_pwm_v2_channel_negative_stop(status_led_pwm, PWM_CH3);
+            }
+            return;
+        }
     }
 
 #if CONFIG_M61_STATUS_LED_ACTIVE_HIGH
@@ -810,9 +935,17 @@ static void status_led_write_pin(uint32_t pin, bool on)
 
 static void status_led_set_rgb(bool red, bool green, bool blue)
 {
+    if (red == status_led_red_on && green == status_led_green_on &&
+        blue == status_led_blue_on) {
+        return;
+    }
+
     status_led_write_pin(CONFIG_M61_STATUS_LED_RED_PIN, red);
     status_led_write_pin(CONFIG_M61_STATUS_LED_GREEN_PIN, green);
     status_led_write_pin(CONFIG_M61_STATUS_LED_BLUE_PIN, blue);
+    status_led_red_on = red;
+    status_led_green_on = green;
+    status_led_blue_on = blue;
 }
 
 static const char *status_led_mode_name(enum status_led_mode mode)
@@ -841,6 +974,8 @@ static void status_led_apply_mode(enum status_led_mode mode, bool blink_on)
 {
     switch (mode) {
         case STATUS_LED_BOOT:
+            status_led_set_rgb(true, false, false);
+            break;
         case STATUS_LED_GREEN:
             status_led_set_rgb(false, true, false);
             break;
@@ -863,34 +998,104 @@ static void status_led_apply_mode(enum status_led_mode mode, bool blink_on)
 
 static enum status_led_mode status_led_auto_mode(void)
 {
-    if (default_conn && hid_interrupt.connected) {
+    if (status_led_booting) {
+        return STATUS_LED_BOOT;
+    }
+
+    if (default_conn && hid_control.connected && hid_interrupt.connected) {
         return STATUS_LED_CONNECTED;
     }
 
-    if (bt_ready && auto_start_enabled) {
+    if (pairing_mode_active) {
         return STATUS_LED_CONNECTING;
     }
 
-    return STATUS_LED_BOOT;
+    return STATUS_LED_OFF;
 }
 
 static void status_led_init(void)
 {
+    const struct bflb_pwm_v2_config_s pwm_config = {
+        .clk_source = BFLB_SYSTEM_PBCLK,
+        .clk_div = 80,
+        .period = CONFIG_M61_STATUS_LED_PWM_PERIOD,
+    };
+    struct bflb_pwm_v2_channel_config_s channel_config = {
+        .positive_polarity = PWM_POLARITY_ACTIVE_HIGH,
+        .negative_polarity = PWM_POLARITY_ACTIVE_HIGH,
+        .positive_stop_state = PWM_STATE_INACTIVE,
+        .negative_stop_state = PWM_STATE_INACTIVE,
+        .positive_brake_state = PWM_STATE_INACTIVE,
+        .negative_brake_state = PWM_STATE_INACTIVE,
+        .dead_time = 0,
+    };
+    uint16_t high_threshold =
+        (uint16_t)(((uint32_t)CONFIG_M61_STATUS_LED_PWM_PERIOD *
+                    CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE) /
+                   1000U);
+
     status_led_gpio = bflb_device_get_by_name("gpio");
     if (!status_led_gpio) {
         printf("status LED gpio device not found\r\n");
         return;
     }
 
-    bflb_gpio_init(status_led_gpio,
-                   CONFIG_M61_STATUS_LED_RED_PIN,
-                   GPIO_OUTPUT | GPIO_PULLUP | GPIO_SMT_EN | GPIO_DRV_1);
-    bflb_gpio_init(status_led_gpio,
-                   CONFIG_M61_STATUS_LED_GREEN_PIN,
-                   GPIO_OUTPUT | GPIO_PULLUP | GPIO_SMT_EN | GPIO_DRV_1);
-    bflb_gpio_init(status_led_gpio,
-                   CONFIG_M61_STATUS_LED_BLUE_PIN,
-                   GPIO_OUTPUT | GPIO_PULLUP | GPIO_SMT_EN | GPIO_DRV_1);
+    status_led_pwm = bflb_device_get_by_name("pwm_v2_0");
+    if (status_led_pwm && CONFIG_M61_STATUS_LED_ACTIVE_HIGH &&
+        CONFIG_M61_STATUS_LED_RED_PIN == GPIO_PIN_12 &&
+        CONFIG_M61_STATUS_LED_GREEN_PIN == GPIO_PIN_14 &&
+        CONFIG_M61_STATUS_LED_BLUE_PIN == GPIO_PIN_15) {
+        /* BL616 PWM0 pin group repeats every eight GPIOs: GPIO12 is CH2P,
+         * GPIO14 is CH3P and GPIO15 is CH3N.  Hardware PWM keeps LED dimming
+         * entirely outside the realtime audio/Bluetooth task path. */
+        bflb_gpio_init(status_led_gpio,
+                       CONFIG_M61_STATUS_LED_RED_PIN,
+                       GPIO_FUNC_PWM0 | GPIO_ALTERNATE | GPIO_PULLDOWN |
+                           GPIO_SMT_EN | GPIO_DRV_1);
+        bflb_gpio_init(status_led_gpio,
+                       CONFIG_M61_STATUS_LED_GREEN_PIN,
+                       GPIO_FUNC_PWM0 | GPIO_ALTERNATE | GPIO_PULLDOWN |
+                           GPIO_SMT_EN | GPIO_DRV_1);
+        bflb_gpio_init(status_led_gpio,
+                       CONFIG_M61_STATUS_LED_BLUE_PIN,
+                       GPIO_FUNC_PWM0 | GPIO_ALTERNATE | GPIO_PULLDOWN |
+                           GPIO_SMT_EN | GPIO_DRV_1);
+        /* GPIO15 carries CH3N.  BL616 defaults PWM0 to single-ended routing,
+         * which leaves negative endpoints disconnected even if NEN is set. */
+        bflb_pwm_v2_feature_control(status_led_pwm,
+                                    PWM_CMD_IO_SEL,
+                                    PWM_IO_SEL_DIFF_END);
+        bflb_pwm_v2_init(status_led_pwm, &pwm_config);
+        bflb_pwm_v2_channel_init(status_led_pwm, PWM_CH2, &channel_config);
+        bflb_pwm_v2_channel_init(status_led_pwm, PWM_CH3, &channel_config);
+        bflb_pwm_v2_channel_set_threshold(status_led_pwm,
+                                          PWM_CH2,
+                                          0,
+                                          high_threshold);
+        bflb_pwm_v2_channel_set_threshold(status_led_pwm,
+                                          PWM_CH3,
+                                          0,
+                                          high_threshold);
+        bflb_pwm_v2_start(status_led_pwm);
+        status_led_pwm_ready = true;
+        printf("status LED hardware PWM brightness=%u/1000\r\n",
+               (unsigned int)CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE);
+    } else {
+        bflb_gpio_init(status_led_gpio,
+                       CONFIG_M61_STATUS_LED_RED_PIN,
+                       GPIO_OUTPUT | GPIO_PULLUP | GPIO_SMT_EN | GPIO_DRV_1);
+        bflb_gpio_init(status_led_gpio,
+                       CONFIG_M61_STATUS_LED_GREEN_PIN,
+                       GPIO_OUTPUT | GPIO_PULLUP | GPIO_SMT_EN | GPIO_DRV_1);
+        bflb_gpio_init(status_led_gpio,
+                       CONFIG_M61_STATUS_LED_BLUE_PIN,
+                       GPIO_OUTPUT | GPIO_PULLUP | GPIO_SMT_EN | GPIO_DRV_1);
+        printf("status LED PWM unavailable; using digital GPIO fallback\r\n");
+    }
+
+    status_led_red_on = false;
+    status_led_green_on = false;
+    status_led_blue_on = false;
     status_led_apply_mode(STATUS_LED_BOOT, true);
 }
 
@@ -915,8 +1120,10 @@ static void status_led_print(void)
     enum status_led_mode mode =
         status_led_override ? status_led_override_mode : status_led_auto_mode();
 
-    printf("led enabled=1 active_high=%d red=%u green=%u blue=%u override=%d mode=%s\r\n",
+    printf("led enabled=1 active_high=%d pwm=%d brightness=%u/1000 red=%u green=%u blue=%u override=%d mode=%s\r\n",
            CONFIG_M61_STATUS_LED_ACTIVE_HIGH ? 1 : 0,
+           status_led_pwm_ready ? 1 : 0,
+           (unsigned int)CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE,
            (unsigned int)CONFIG_M61_STATUS_LED_RED_PIN,
            (unsigned int)CONFIG_M61_STATUS_LED_GREEN_PIN,
            (unsigned int)CONFIG_M61_STATUS_LED_BLUE_PIN,
@@ -934,7 +1141,9 @@ static int status_led_set_override_from_name(const char *name)
 
     if (strcmp(name, "off") == 0) {
         status_led_override_mode = STATUS_LED_OFF;
-    } else if (strcmp(name, "boot") == 0 || strcmp(name, "green") == 0) {
+    } else if (strcmp(name, "boot") == 0) {
+        status_led_override_mode = STATUS_LED_BOOT;
+    } else if (strcmp(name, "green") == 0) {
         status_led_override_mode = STATUS_LED_GREEN;
     } else if (strcmp(name, "connecting") == 0) {
         status_led_override_mode = STATUS_LED_CONNECTING;
@@ -972,6 +1181,12 @@ static void status_led_self_test(void)
     status_led_apply_mode(status_led_auto_mode(), true);
     printf("led self-test complete; returned to auto mode\r\n");
 }
+
+static void status_led_finish_boot(void)
+{
+    status_led_booting = false;
+    status_led_apply_mode(status_led_auto_mode(), false);
+}
 #else
 static void status_led_init(void)
 {
@@ -998,6 +1213,11 @@ static int status_led_set_override_from_name(const char *name)
 static void status_led_self_test(void)
 {
     printf("led disabled\r\n");
+}
+
+
+static void status_led_finish_boot(void)
+{
 }
 #endif
 
@@ -1054,8 +1274,16 @@ static void hidp_l2cap_connected(struct bt_l2cap_chan *chan)
            channel->br.rx.mtu,
            channel->br.tx.mtu);
 
+    if (channel->br.tx.mtu < HIDP_TX_MAX_LEN) {
+        printf("HIDP %s unusable MTU: need >=%u, negotiated %u\r\n",
+               channel->name,
+               (unsigned int)HIDP_TX_MAX_LEN,
+               channel->br.tx.mtu);
+    }
+
     if (hid_control.connected && hid_interrupt.connected) {
-        br_set_pairable(false, "hidp-ready");
+        pairing_mode_active = false;
+        br_set_scan_mode(false, false, "hidp-ready");
         auto_next_bringup_tick = xTaskGetTickCount();
     }
 }
@@ -1158,6 +1386,11 @@ static void hidp_channel_prepare(struct hidp_channel *channel)
 {
     memset(&channel->br, 0, sizeof(channel->br));
     channel->br.chan.ops = &hidp_l2cap_ops;
+    /* The BR/EDR stack defaults an application-created outgoing channel to
+     * the Bluetooth minimum MTU (48).  Explicitly advertise the same 672-byte
+     * receive capacity used by the registered incoming HIDP servers so the
+     * DualSense may negotiate full 0x31/0x32 reports in either direction. */
+    channel->br.rx.mtu = CONFIG_BT_L2CAP_TX_MTU;
 #if defined(CONFIG_BT_L2CAP_DYNAMIC_CHANNEL)
     channel->br.chan.required_sec_level = BT_SECURITY_L2;
 #endif
@@ -2063,6 +2296,7 @@ static int start_inquiry(void)
     }
 
     memset(discovery_results, 0, sizeof(discovery_results));
+    br_discovery_found_dualsense = false;
     err = bt_br_discovery_start(&param,
                                 discovery_results,
                                 HIDP_DISCOVERY_SLOTS,
@@ -2072,6 +2306,45 @@ static int start_inquiry(void)
     } else {
         br_discovery_active = true;
         printf("BR/EDR discovery started\r\n");
+    }
+    return err;
+}
+
+static int request_pairing_mode(void)
+{
+    int err;
+
+    if (!bt_ready) {
+        return -EAGAIN;
+    }
+    pairing_mode_active = true;
+    auto_connect_after_scan = true;
+
+    if (default_conn) {
+        pairing_mode_after_disconnect = true;
+        err = bt_conn_disconnect(default_conn,
+                                 BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        if (err) {
+            pairing_mode_after_disconnect = false;
+            pairing_mode_active = false;
+        }
+        return err;
+    }
+    if (pending_conn) {
+        printf("pairing mode deferred: outgoing connection pending\r\n");
+        pairing_mode_active = false;
+        auto_connect_after_scan = false;
+        return -EBUSY;
+    }
+    if (br_discovery_active) {
+        return 0;
+    }
+
+    br_set_scan_mode(true, false, "pairing-inquiry");
+    err = start_inquiry();
+    if (err && err != -EALREADY) {
+        pairing_mode_active = false;
+        auto_connect_after_scan = false;
     }
     return err;
 }
@@ -2132,7 +2405,9 @@ static void connected(struct bt_conn *conn, uint8_t err)
         if (auto_start_enabled) {
             auto_schedule_retry(CONFIG_M61_DS5_AUTO_RETRY_MS);
         }
-        br_set_pairable(true, "connect-failed");
+        pairing_mode_active = false;
+        pairing_mode_after_disconnect = false;
+        br_set_scan_mode(true, false, "connect-failed");
         return;
     }
 
@@ -2141,6 +2416,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
            addr_str,
            outgoing_conn ? "outgoing" : "incoming");
     auto_reset_saved_addr_attempts();
+    pairing_mode_after_disconnect = false;
+    auto_connect_after_scan = false;
     if (outgoing_conn) {
         default_conn = pending_conn;
         pending_conn = NULL;
@@ -2187,9 +2464,15 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     auto_reset_saved_addr_attempts();
     schedule_hidp_channel_prepare(&hid_control, DS5_DISCONNECT_CLEANUP_DELAY_MS);
     schedule_hidp_channel_prepare(&hid_interrupt, DS5_DISCONNECT_CLEANUP_DELAY_MS);
-    br_set_pairable(true, "disconnected");
+    br_set_scan_mode(true, false, "disconnected");
     auto_sequence_started = true;
     printf("auto: idle after disconnect; waiting for incoming reconnect or 'ds5 auto now'\r\n");
+    if (pairing_mode_after_disconnect) {
+        pairing_mode_after_disconnect = false;
+        (void)request_pairing_mode();
+    } else {
+        pairing_mode_active = false;
+    }
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
@@ -2288,6 +2571,7 @@ static void bt_br_discv_cb(struct bt_br_discovery_result *results, size_t count)
                                         HIDP_EIR_MAX_LEN,
                                         "Wireless Controller");
         if (is_dualsense) {
+            br_discovery_found_dualsense = true;
             remember_dualsense_addr(&results[i].addr, true);
         }
     }
@@ -2295,13 +2579,18 @@ static void bt_br_discv_cb(struct bt_br_discovery_result *results, size_t count)
     printf("BR/EDR discovery complete, count=%u\r\n", (unsigned int)count);
     if (auto_connect_after_scan) {
         auto_connect_after_scan = false;
-        if (have_last_dualsense_addr && !default_conn) {
+        if (br_discovery_found_dualsense && have_last_dualsense_addr &&
+            !default_conn) {
             int err = connect_addr(&last_dualsense_addr);
             if (err && auto_start_enabled) {
                 auto_schedule_retry(CONFIG_M61_DS5_AUTO_RETRY_MS);
             }
-        } else if (!have_last_dualsense_addr) {
+            if (err) {
+                pairing_mode_active = false;
+            }
+        } else {
             printf("autoconnect scan did not find DualSense\r\n");
+            pairing_mode_active = false;
             if (auto_start_enabled) {
                 auto_schedule_retry(CONFIG_M61_DS5_AUTO_RETRY_MS);
             }
@@ -2331,9 +2620,10 @@ static void bt_enable_cb(int err)
     bt_set_bondable(true);
     bt_ready = true;
     hidp_l2cap_servers_register();
-    br_set_pairable(true, "bt-ready");
+    br_set_scan_mode(true, false, "bt-ready-passive");
 
     printf("M61 DualSense HIDP probe ready. Use 'ds5 scan'.\r\n");
+    status_led_finish_boot();
 }
 
 static void app_start_task(void *pvParameters)
@@ -2377,15 +2667,17 @@ static void auto_connect_task(void *pvParameters)
     while (1) {
         TickType_t now = xTaskGetTickCount();
 
+        pair_button_poll();
         process_deferred_disconnect_cleanup(now);
 
-        if (!auto_start_enabled || !bt_ready) {
+        if (!bt_ready) {
             vTaskDelay(pdMS_TO_TICKS(DS5_AUTO_TASK_PERIOD_MS));
             continue;
         }
 
         if (!default_conn) {
-            if (!auto_sequence_started && tick_due(now, auto_next_action_tick)) {
+            if (auto_start_enabled && !pairing_mode_active &&
+                !auto_sequence_started && tick_due(now, auto_next_action_tick)) {
                 int err;
 
                 if (have_last_dualsense_addr &&
@@ -2486,7 +2778,7 @@ static void print_help(void)
     printf("Usage:\r\n");
     printf("  ds5 status\r\n");
     printf("  ds5 auto [on|off|now]\r\n");
-    printf("  ds5 scan\r\n");
+    printf("  ds5 pair|scan\r\n");
     printf("  ds5 autoconnect\r\n");
     printf("  ds5 connect <aa:bb:cc:dd:ee:ff|last>\r\n");
     printf("  ds5 security\r\n");
@@ -2522,9 +2814,10 @@ int cmd_ds5(int argc, char **argv)
         m61_usb_gamepad_diag_t usb_diag;
         m61_usb_gamepad_get_diag(&usb_diag);
 
-        printf("bt_ready=%d discovery=%d pending=%d connected=%d hid_control=%d hid_interrupt=%d have_last=%d\r\n",
+        printf("bt_ready=%d discovery=%d pairing=%d pending=%d connected=%d hid_control=%d hid_interrupt=%d have_last=%d\r\n",
                bt_ready ? 1 : 0,
                br_discovery_active ? 1 : 0,
+               pairing_mode_active ? 1 : 0,
                pending_conn ? 1 : 0,
                default_conn ? 1 : 0,
                hid_control.connected ? 1 : 0,
@@ -2871,9 +3164,8 @@ int cmd_ds5(int argc, char **argv)
         return -EINVAL;
     }
 
-    if (strcmp(argv[1], "scan") == 0) {
-        start_inquiry();
-        return 0;
+    if (strcmp(argv[1], "scan") == 0 || strcmp(argv[1], "pair") == 0) {
+        return request_pairing_mode();
     }
 
     if (strcmp(argv[1], "autoconnect") == 0) {
@@ -3079,6 +3371,7 @@ int main(void)
     uart0 = bflb_device_get_by_name("uart0");
     shell_init_with_task(uart0);
     status_led_init();
+    pair_button_init();
 
 #if defined(CONFIG_BT_SETTINGS)
     bflb_mtd_init();
