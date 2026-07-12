@@ -2,6 +2,21 @@ cmake_minimum_required(VERSION 3.15)
 
 find_package(bouffalo_sdk REQUIRED HINTS $ENV{BL_SDK_BASE})
 
+# Allow reproducible A/B tests against a source-built Opus without modifying
+# the shared Bouffalo SDK checkout.  The SDK registers its prebuilt archive
+# before this project is evaluated, so replace that one entry in SDK_LIBS.
+if(DEFINED ENV{M61_OPUS_LIBRARY} AND NOT "$ENV{M61_OPUS_LIBRARY}" STREQUAL "")
+    file(REAL_PATH "$ENV{M61_OPUS_LIBRARY}" M61_OPUS_LIBRARY_PATH)
+    if(NOT EXISTS "${M61_OPUS_LIBRARY_PATH}")
+        message(FATAL_ERROR "M61_OPUS_LIBRARY not found: ${M61_OPUS_LIBRARY_PATH}")
+    endif()
+    get_property(M61_SDK_LIBS GLOBAL PROPERTY SDK_LIBS)
+    list(FILTER M61_SDK_LIBS EXCLUDE REGEX "/components/multimedia/opus/libs/.*/libopus\\.a$")
+    set_property(GLOBAL PROPERTY SDK_LIBS "${M61_SDK_LIBS}")
+    sdk_add_static_library("${M61_OPUS_LIBRARY_PATH}")
+    message(STATUS "M61 Opus override: ${M61_OPUS_LIBRARY_PATH}")
+endif()
+
 sdk_add_include_directories(.)
 sdk_add_compile_definitions(-DCONFIG_BT_L2CAP_TX_MTU=672)
 target_sources(app PRIVATE m61_usb_gamepad.c)

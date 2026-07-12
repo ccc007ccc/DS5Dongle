@@ -13,6 +13,8 @@ BOARD="bl616dk"
 CPU_ID=""
 COMMAND="build"
 HPM_PROFILE="n"
+OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
+OPUS_VARIANT="${M61_OPUS_VARIANT:-source-o2}"
 
 log() {
     printf '[m61-hidp-build] %s\n' "$*"
@@ -25,13 +27,15 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--opus-sdk|--opus-source-o2|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
 Environment:
   BL_SDK_BASE       Optional Bouffalo SDK path.
   M61_TOOLCHAIN_BIN Optional T-HEAD toolchain bin directory.
+  M61_OPUS_LIBRARY  Optional source-built libopus.a used instead of the SDK archive.
+  M61_OPUS_VARIANT  source-o2 (default), source-o3, sdk, or custom.
 
 Example:
   ./build.sh
@@ -87,12 +91,32 @@ build_project() {
     local toolchain_bin
     toolchain_bin="$(find_toolchain_bin)" || fail "T-HEAD riscv64-unknown-elf-gcc not found"
 
+    case "$OPUS_VARIANT" in
+        source-o2)
+            OPUS_LIBRARY="$(bash "$PROJECT_DIR/build_opus.sh" O2 "$toolchain_bin")"
+            ;;
+        source-o3)
+            OPUS_LIBRARY="$(bash "$PROJECT_DIR/build_opus.sh" O3 "$toolchain_bin")"
+            ;;
+        sdk)
+            OPUS_LIBRARY=""
+            ;;
+        custom)
+            [[ -n "$OPUS_LIBRARY" ]] || fail "custom Opus variant requires --opus-library"
+            ;;
+        *)
+            fail "unknown Opus variant: $OPUS_VARIANT"
+            ;;
+    esac
+
     export BL_SDK_BASE="$SDK_PATH"
     export PATH="$toolchain_bin:$PATH"
+    export M61_OPUS_LIBRARY="$OPUS_LIBRARY"
 
     log "SDK: $BL_SDK_BASE"
     log "Toolchain: $("$toolchain_bin/riscv64-unknown-elf-gcc" --version | head -1)"
     log "Target: CHIP=$CHIP BOARD=$BOARD CPU_ID=${CPU_ID:-<empty>}"
+    log "Opus: ${OPUS_LIBRARY:-SDK prebuilt}"
 
     cd "$PROJECT_DIR"
 
@@ -136,6 +160,23 @@ while [[ $# -gt 0 ]]; do
             ;;
         --hpm-profile)
             HPM_PROFILE="y"
+            shift
+            ;;
+        --opus-library)
+            OPUS_LIBRARY="${2:?missing value for --opus-library}"
+            OPUS_VARIANT="custom"
+            shift 2
+            ;;
+        --opus-sdk)
+            OPUS_VARIANT="sdk"
+            shift
+            ;;
+        --opus-source-o2)
+            OPUS_VARIANT="source-o2"
+            shift
+            ;;
+        --opus-source-o3)
+            OPUS_VARIANT="source-o3"
             shift
             ;;
         -h|--help|help)
