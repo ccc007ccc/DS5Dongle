@@ -107,6 +107,17 @@ queue drop、deadline、BT stale 和最大关中断周期。只有 cycles、P99 
 组合配置已达到保留门槛，但仍需分别测试 preload-only 与 AMR-only，确认收益来源并避免
 保留无效或负收益配置位。
 
+拆分 A/B 随后完成：
+
+- preload-only 两轮平均约 5103 us / 1,634,573 cycles / 225,558 instret，D-cache
+  read miss 约 758/encode；
+- AMR-only 两轮平均约 5107 us / 1,635,953 cycles / 225,281 instret，D-cache
+  read miss 约 1006/encode；
+- 两个单项分别都比旧基线快约 3%，但都稳定慢于 combined 约 1.5%；
+- preload 主要降低 read miss，AMR 在 write miss 处理上提供额外收益，两者互补。
+
+最终决策是同时保留 preload 和 AMR；单项固件只作为实验归档，不进入默认配置。
+
 ### P1：严格的 Flash 与 OCRAM 取指微基准
 
 使用相同位精确小内核生成两个副本，一个留在 XIP，一个放入 `.tcm_code`。分别测试小于
