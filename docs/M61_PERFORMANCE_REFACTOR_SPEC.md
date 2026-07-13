@@ -398,6 +398,31 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
   使用`--decoder-bench`临时启用并在正常退出或异常退出时自动关闭；日常功能测试必须
   保持`usb_decode_perf enabled=0`。
 
+### 2026-07-13：FFT/MDCT固定表32字节对齐（否决）
+
+- 将bitrev、twiddle和window固定表提升到32字节对齐；最终ELF确认目标表地址均满足
+  对齐，1200帧encoder输出逐字节一致，24万帧decoder PCM checksum一致。
+- no-PVQ严格基线为5370 us/1720199 cycles/255034 instret；对齐候选为5628 us/
+  1802717 cycles，时间和cycles均恶化约4.8%，I-cache miss从3397升至3636。
+- 固定表的额外padding和布局变化扩大了热指令/数据工作集，没有减少真机cache压力。
+  候选已从源码移除；该结果再次证明对齐不能只凭静态直觉保留，必须以最终ELF和真机
+  baseline-v1共同验收。
+
+### 2026-07-13：E907位精确Q16乘法（通过）
+
+- E907 `smmwb`返回signed word与signed low16乘积的bits 47:16，严格等价于
+  `MULT16_32_Q16(a,b)`的`((int64_t)(int16_t)a*b)>>16`语义。与曾产生1 LSB差异的
+  Q15候选不同，本候选不需要额外移位，也不改变任何编码决策或PCM结果。
+- 边界组合和100万组随机输入与Opus非`OPUS_FAST_INT64`通用拆分公式完全一致；1200帧
+  encoder流逐字节相同，SHA256均为`681a4b66369f631056a54bf8612f058922e0e713b78a566f5034c43c77e62060`；
+  71 B mic流重复解码24万帧，两版checksum均为`08cbb480`。
+- 最终LTO ELF确认生成5条`smmwb`，静态RAM门槛通过且未增加ITCM放置。两轮独立
+  baseline-v1共17,163帧，平均5340 us/1708397 cycles/251818 instret；相对no-PVQ
+  基线5370 us/1720199/255034分别改善0.56%/0.69%/1.26%。P99保持6500 us，speaker、
+  haptics、BT和USB的drop/deadline/stale/error均为0。
+- 该候选位精确且两轮时间、cycles和instret方向一致，因此进入默认O2+LTO构建。当前
+  可复现累计平均约5.34 ms，相对源码O2+LTO的6.240 ms改善约14.4%。
+
 ### 阶段 A：epoch 所有权
 
 - 消除逐 PCM 帧关中断。
