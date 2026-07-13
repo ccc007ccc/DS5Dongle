@@ -38,6 +38,23 @@ typedef struct {
     uint32_t dcache_read_average;
     uint32_t dcache_read_miss_average;
     uint32_t dcache_read_miss_ppm;
+    uint32_t decode_samples;
+    uint32_t decode_us_last;
+    uint32_t decode_us_average;
+    uint32_t decode_us_max;
+    uint32_t decode_us_p50;
+    uint32_t decode_us_p95;
+    uint32_t decode_us_p99;
+    uint32_t decode_cycles_last;
+    uint32_t decode_cycles_average;
+    uint32_t decode_cycles_max;
+    uint32_t decode_instret_average;
+    uint32_t decode_icache_access_average;
+    uint32_t decode_icache_miss_average;
+    uint32_t decode_icache_miss_ppm;
+    uint32_t decode_dcache_read_average;
+    uint32_t decode_dcache_read_miss_average;
+    uint32_t decode_dcache_read_miss_ppm;
     uint32_t ingress_samples;
     uint32_t ingress_age_us_last;
     uint32_t ingress_age_us_max;
@@ -50,7 +67,16 @@ void m61_perf_profile_init(void);
 void m61_perf_profile_counter_begin(m61_perf_counter_sample_t *sample);
 void m61_perf_profile_counter_end(const m61_perf_counter_sample_t *start,
                                   uint32_t elapsed_us);
+void m61_perf_profile_counter_end_decode(const m61_perf_counter_sample_t *start,
+                                         uint32_t elapsed_us);
 void m61_perf_profile_record_encode(uint32_t elapsed_us,
+                                    uint32_t cycles,
+                                    uint32_t instret,
+                                    uint32_t icache_access,
+                                    uint32_t icache_miss,
+                                    uint32_t dcache_read,
+                                    uint32_t dcache_read_miss);
+void m61_perf_profile_record_decode(uint32_t elapsed_us,
                                     uint32_t cycles,
                                     uint32_t instret,
                                     uint32_t icache_access,

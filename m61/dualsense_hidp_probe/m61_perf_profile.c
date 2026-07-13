@@ -33,6 +33,7 @@ typedef struct {
 } ingress_profile_t;
 
 static encode_profile_t s_encode;
+static encode_profile_t s_decode;
 static ingress_profile_t s_ingress;
 static volatile uint32_t s_irq_mask_cycles_max;
 static bool s_enabled;
@@ -105,6 +106,7 @@ static uint32_t read_mcountinhibit(void)
 void m61_perf_profile_init(void)
 {
     memset(&s_encode, 0, sizeof(s_encode));
+    memset(&s_decode, 0, sizeof(s_decode));
     memset(&s_ingress, 0, sizeof(s_ingress));
     s_irq_mask_cycles_max = 0U;
     s_enabled = false;
@@ -172,6 +174,67 @@ void m61_perf_profile_counter_end(const m61_perf_counter_sample_t *start,
 #endif
 }
 
+void m61_perf_profile_counter_end_decode(const m61_perf_counter_sample_t *start,
+                                         uint32_t elapsed_us)
+{
+#if CONFIG_M61_HPM_PROFILE
+    m61_perf_counter_sample_t end;
+
+    if (!start || !s_enabled) {
+        return;
+    }
+    READ_COUNTER_LOW(mcycle, end.cycle);
+    READ_COUNTER_LOW(minstret, end.instret);
+    READ_COUNTER_LOW(mhpmcounter3, end.icache_access);
+    READ_COUNTER_LOW(mhpmcounter4, end.icache_miss);
+    READ_COUNTER_LOW(mhpmcounter14, end.dcache_read);
+    READ_COUNTER_LOW(mhpmcounter15, end.dcache_read_miss);
+    m61_perf_profile_record_decode(elapsed_us,
+                                   end.cycle - start->cycle,
+                                   end.instret - start->instret,
+                                   end.icache_access - start->icache_access,
+                                   end.icache_miss - start->icache_miss,
+                                   end.dcache_read - start->dcache_read,
+                                   end.dcache_read_miss -
+                                       start->dcache_read_miss);
+#else
+    (void)start;
+    (void)elapsed_us;
+#endif
+}
+
+static void record_codec_profile(encode_profile_t *profile,
+                                 uint32_t elapsed_us,
+                                 uint32_t cycles,
+                                 uint32_t instret,
+                                 uint32_t icache_access,
+                                 uint32_t icache_miss,
+                                 uint32_t dcache_read,
+                                 uint32_t dcache_read_miss)
+{
+    profile->sequence++;
+    profile_barrier();
+    profile->samples++;
+    profile->last_us = elapsed_us;
+    profile->total_us += elapsed_us;
+    if (elapsed_us > profile->max_us) {
+        profile->max_us = elapsed_us;
+    }
+    profile->histogram[histogram_bucket(elapsed_us)]++;
+    profile->last_cycles = cycles;
+    profile->total_cycles += cycles;
+    if (cycles > profile->max_cycles) {
+        profile->max_cycles = cycles;
+    }
+    profile->total_instret += instret;
+    profile->total_icache_access += icache_access;
+    profile->total_icache_miss += icache_miss;
+    profile->total_dcache_read += dcache_read;
+    profile->total_dcache_read_miss += dcache_read_miss;
+    profile_barrier();
+    profile->sequence++;
+}
+
 void m61_perf_profile_record_encode(uint32_t elapsed_us,
                                     uint32_t cycles,
                                     uint32_t instret,
@@ -180,27 +243,22 @@ void m61_perf_profile_record_encode(uint32_t elapsed_us,
                                     uint32_t dcache_read,
                                     uint32_t dcache_read_miss)
 {
-    s_encode.sequence++;
-    profile_barrier();
-    s_encode.samples++;
-    s_encode.last_us = elapsed_us;
-    s_encode.total_us += elapsed_us;
-    if (elapsed_us > s_encode.max_us) {
-        s_encode.max_us = elapsed_us;
-    }
-    s_encode.histogram[histogram_bucket(elapsed_us)]++;
-    s_encode.last_cycles = cycles;
-    s_encode.total_cycles += cycles;
-    if (cycles > s_encode.max_cycles) {
-        s_encode.max_cycles = cycles;
-    }
-    s_encode.total_instret += instret;
-    s_encode.total_icache_access += icache_access;
-    s_encode.total_icache_miss += icache_miss;
-    s_encode.total_dcache_read += dcache_read;
-    s_encode.total_dcache_read_miss += dcache_read_miss;
-    profile_barrier();
-    s_encode.sequence++;
+    record_codec_profile(&s_encode, elapsed_us, cycles, instret,
+                         icache_access, icache_miss,
+                         dcache_read, dcache_read_miss);
+}
+
+void m61_perf_profile_record_decode(uint32_t elapsed_us,
+                                    uint32_t cycles,
+                                    uint32_t instret,
+                                    uint32_t icache_access,
+                                    uint32_t icache_miss,
+                                    uint32_t dcache_read,
+                                    uint32_t dcache_read_miss)
+{
+    record_codec_profile(&s_decode, elapsed_us, cycles, instret,
+                         icache_access, icache_miss,
+                         dcache_read, dcache_read_miss);
 }
 
 void m61_perf_profile_record_ingress_age(uint32_t age_us)
@@ -227,6 +285,7 @@ void m61_perf_profile_record_irq_mask_cycles(uint32_t cycles)
 void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
 {
     encode_profile_t encode;
+    encode_profile_t decode;
     ingress_profile_t ingress;
     uint32_t sequence;
 
@@ -242,6 +301,15 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
         encode = s_encode;
         profile_barrier();
     } while (sequence != s_encode.sequence || (sequence & 1U));
+    do {
+        sequence = s_decode.sequence;
+        if (sequence & 1U) {
+            continue;
+        }
+        profile_barrier();
+        decode = s_decode;
+        profile_barrier();
+    } while (sequence != s_decode.sequence || (sequence & 1U));
     do {
         sequence = s_ingress.sequence;
         if (sequence & 1U) {
@@ -279,12 +347,43 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
                                          encode.total_icache_access);
     snapshot->dcache_read_miss_ppm = rate_ppm(
         encode.total_dcache_read_miss, encode.total_dcache_read);
+    snapshot->decode_samples = decode.samples;
+    snapshot->decode_us_last = decode.last_us;
+    snapshot->decode_us_max = decode.max_us;
+    snapshot->decode_cycles_last = decode.last_cycles;
+    snapshot->decode_cycles_max = decode.max_cycles;
+    if (decode.samples != 0U) {
+        snapshot->decode_us_average =
+            saturate_u32(decode.total_us / decode.samples);
+        snapshot->decode_cycles_average =
+            saturate_u32(decode.total_cycles / decode.samples);
+        snapshot->decode_instret_average =
+            saturate_u32(decode.total_instret / decode.samples);
+        snapshot->decode_icache_access_average =
+            saturate_u32(decode.total_icache_access / decode.samples);
+        snapshot->decode_icache_miss_average =
+            saturate_u32(decode.total_icache_miss / decode.samples);
+        snapshot->decode_dcache_read_average =
+            saturate_u32(decode.total_dcache_read / decode.samples);
+        snapshot->decode_dcache_read_miss_average =
+            saturate_u32(decode.total_dcache_read_miss / decode.samples);
+    }
+    snapshot->decode_icache_miss_ppm = rate_ppm(
+        decode.total_icache_miss, decode.total_icache_access);
+    snapshot->decode_dcache_read_miss_ppm = rate_ppm(
+        decode.total_dcache_read_miss, decode.total_dcache_read);
     snapshot->encode_us_p50 = histogram_percentile(
         encode.histogram, encode.samples, 50U);
     snapshot->encode_us_p95 = histogram_percentile(
         encode.histogram, encode.samples, 95U);
     snapshot->encode_us_p99 = histogram_percentile(
         encode.histogram, encode.samples, 99U);
+    snapshot->decode_us_p50 = histogram_percentile(
+        decode.histogram, decode.samples, 50U);
+    snapshot->decode_us_p95 = histogram_percentile(
+        decode.histogram, decode.samples, 95U);
+    snapshot->decode_us_p99 = histogram_percentile(
+        decode.histogram, decode.samples, 99U);
     snapshot->ingress_samples = ingress.samples;
     snapshot->ingress_age_us_last = ingress.last_us;
     snapshot->ingress_age_us_max = ingress.max_us;

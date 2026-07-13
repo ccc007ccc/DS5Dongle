@@ -355,6 +355,28 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
 - decoder约为同环境encoder耗时的一半；这说明当前mono speaker约5 ms的真机预算叠加mic
   后很可能接近10 ms，尚未包含speaker stereo增量，必须继续降低共用变换和数据流成本。
 
+### 2026-07-13：位精确`mul+mulh` 32x16 Q15（否决）
+
+- 用`mul+mulh+srli+slli+or`重建完整48-bit乘积右移15位；边界组合和100万组随机
+  输入均与`(int64_t)a*b>>15`位精确。1200帧encoder流逐字节相同，24,000帧71 B
+  decoder PCM checksum相同。静态FFT 3272降至3008 B，MDCT 1860降至1660 B。
+- 真机第一轮却为5779 us/1850990 cycles/258080 instret，P50/P95/P99=
+  6000/6750/7000 us；相对PVQ基线5025 us/1609246 cycles/249576 instret，时间与
+  cycles恶化约15%，I-cache miss从3137增至3758。E907 `mulh`高延迟超过所省ALU
+  指令，单轮已越过硬门槛，因此停止第二轮并回退。
+
+### 2026-07-13：真机decoder并发基准设施
+
+- profile固件新增`ds5 decoder-bench on/off`。它不启用mic USB Audio IN，也不向
+  Bluetooth发送mic-active；仅在每次真实speaker encode成功后，用真实48 kHz mono、
+  10 ms、71 B CBR非静音Opus包解码一帧并丢弃PCM。
+- decoder状态只由codec task在开关边界执行`OPUS_RESET_STATE`，避免shell task并发修改
+  Opus状态。独立记录decode us/cycles/instret、I/D-cache和P50/P95/P99；benchmark帧和
+  错误不混入真实mic统计。
+- 非profile固件拒绝该命令，真实mic路径也不增加计时器读取开销。该设施用于判断现有
+  `encode -> decode -> 1 tick让步 -> BT bridge`调度是否越过10 ms，并为后续是否拆分
+  encoder/decoder task、bridge是否事件驱动提供真机证据。
+
 ### 阶段 A：epoch 所有权
 
 - 消除逐 PCM 帧关中断。

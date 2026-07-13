@@ -378,6 +378,18 @@ static const uint8_t ds5_idle_payload[M61_DS5_USB_INPUT_PAYLOAD_LEN] = {
     0x53, 0x9f, 0x28, 0x35, 0xa5, 0xa8, 0x0c, 0x8b
 };
 
+#if CONFIG_M61_HPM_PROFILE
+/* Real 48 kHz mono, 10 ms, 71-byte CBR packet from the mic stream fixture. */
+static const uint8_t decoder_benchmark_opus[M61_DS5_MIC_OPUS_LEN] = {
+    0xb0, 0x53, 0xfc, 0xaa, 0xa5, 0x93, 0x9b, 0x45, 0x44, 0x04, 0x53, 0x15,
+    0x32, 0x58, 0xc9, 0xde, 0x7b, 0x57, 0x19, 0x98, 0xc8, 0x59, 0x1a, 0x20,
+    0x89, 0x4e, 0x94, 0xc9, 0xc3, 0x15, 0xc3, 0x59, 0xe2, 0xce, 0x6b, 0x83,
+    0xc4, 0x01, 0x44, 0x7f, 0x81, 0x6e, 0xdb, 0x92, 0xe0, 0xaf, 0x48, 0x6f,
+    0x4e, 0xb0, 0x06, 0x2a, 0xb8, 0x06, 0x94, 0x5e, 0xcf, 0x0e, 0x75, 0x09,
+    0xda, 0xa1, 0x8a, 0x42, 0x79, 0x64, 0x15, 0xb8, 0x1a, 0x20, 0xfc,
+};
+#endif
+
 static volatile bool usb_ready;
 static volatile bool usb_configured;
 static volatile bool usb_busy;
@@ -389,6 +401,10 @@ static volatile bool audio_out_armed;
 static volatile bool audio_in_open;
 static volatile bool audio_in_busy;
 static volatile bool audio_codec_task_started;
+#if CONFIG_M61_HPM_PROFILE
+static volatile bool decoder_benchmark_requested;
+static volatile bool decoder_benchmark_active;
+#endif
 static volatile uint32_t audio_generation = 1;
 static volatile bool pending_feature_request_valid;
 static volatile bool pending_host_report_valid;
@@ -1307,7 +1323,22 @@ static void audio_codec_task(void *pvParameters)
 
     while (1) {
         uint8_t speaker_budget = 1U;
+        bool speaker_encoded = false;
         TickType_t now;
+
+#if CONFIG_M61_HPM_PROFILE
+        if (decoder && decoder_benchmark_requested != decoder_benchmark_active) {
+            int reset_error = opus_decoder_ctl(decoder, OPUS_RESET_STATE);
+
+            if (reset_error == OPUS_OK) {
+                decoder_benchmark_active = decoder_benchmark_requested;
+            } else {
+                decoder_benchmark_active = false;
+                decoder_benchmark_requested = false;
+                usb_diag.audio_decoder_benchmark_errors++;
+            }
+        }
+#endif
 
         if (m61_audio_epoch_fallback_due_pair(
                 bflb_mtimer_get_time_us(),
@@ -1354,6 +1385,7 @@ static void audio_codec_task(void *pvParameters)
 #endif
             record_speaker_encode_diag((uint32_t)encode_elapsed_us, encoded);
             if (encoded > 0) {
+                speaker_encoded = true;
                 if (m61_audio_epoch_complete_encode(speaker_job.generation,
                                                     speaker_job.epoch,
                                                     speaker_opus,
@@ -1374,14 +1406,60 @@ static void audio_codec_task(void *pvParameters)
             speaker_budget--;
         }
 
-        if (decoder && take_mic_opus(mic_opus)) {
+#if CONFIG_M61_HPM_PROFILE
+        if (decoder && decoder_benchmark_active && speaker_encoded) {
+            uint64_t decode_start_us;
+            uint64_t decode_elapsed_us;
+            m61_perf_counter_sample_t perf_start;
+
             usb_diag.audio_codec_stage = 4;
+            decode_start_us = bflb_mtimer_get_time_us();
+            m61_perf_profile_counter_begin(&perf_start);
+            int decoded = opus_decode(decoder,
+                                      decoder_benchmark_opus,
+                                      M61_DS5_MIC_OPUS_LEN,
+                                      mic_pcm,
+                                      AUDIO_MIC_FRAME_SAMPLES,
+                                      0);
+            decode_elapsed_us = bflb_mtimer_get_time_us() - decode_start_us;
+            if (decode_elapsed_us > UINT32_MAX) {
+                decode_elapsed_us = UINT32_MAX;
+            }
+            m61_perf_profile_counter_end_decode(&perf_start,
+                                                (uint32_t)decode_elapsed_us);
+            if (decoded == AUDIO_MIC_FRAME_SAMPLES) {
+                usb_diag.audio_decoder_benchmark_frames++;
+            } else {
+                usb_diag.audio_decoder_benchmark_errors++;
+            }
+        }
+#endif
+
+        if (decoder && take_mic_opus(mic_opus)) {
+#if CONFIG_M61_HPM_PROFILE
+            uint64_t decode_start_us;
+            uint64_t decode_elapsed_us;
+            m61_perf_counter_sample_t perf_start;
+#endif
+            usb_diag.audio_codec_stage = 4;
+#if CONFIG_M61_HPM_PROFILE
+            decode_start_us = bflb_mtimer_get_time_us();
+            m61_perf_profile_counter_begin(&perf_start);
+#endif
             int decoded = opus_decode(decoder,
                                       mic_opus,
                                       M61_DS5_MIC_OPUS_LEN,
                                       mic_pcm,
                                       AUDIO_MIC_FRAME_SAMPLES,
                                       0);
+#if CONFIG_M61_HPM_PROFILE
+            decode_elapsed_us = bflb_mtimer_get_time_us() - decode_start_us;
+            if (decode_elapsed_us > UINT32_MAX) {
+                decode_elapsed_us = UINT32_MAX;
+            }
+            m61_perf_profile_counter_end_decode(&perf_start,
+                                                (uint32_t)decode_elapsed_us);
+#endif
             if (decoded > 0) {
                 uintptr_t flags = usb_lock();
                 usb_diag.audio_mic_decoded++;
@@ -2195,6 +2273,26 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
     usb_unlock(flags);
 }
 
+int m61_usb_gamepad_set_decoder_benchmark(bool enabled)
+{
+#if CONFIG_M61_HPM_PROFILE
+    decoder_benchmark_requested = enabled;
+    return 0;
+#else
+    (void)enabled;
+    return -1;
+#endif
+}
+
+bool m61_usb_gamepad_decoder_benchmark_enabled(void)
+{
+#if CONFIG_M61_HPM_PROFILE
+    return decoder_benchmark_active;
+#else
+    return false;
+#endif
+}
+
 bool m61_usb_gamepad_audio_mic_enabled(void)
 {
     return CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ? true : false;
@@ -2332,6 +2430,27 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->perf_dcache_read_average = perf.dcache_read_average;
     diag->perf_dcache_read_miss_average = perf.dcache_read_miss_average;
     diag->perf_dcache_read_miss_ppm = perf.dcache_read_miss_ppm;
+    diag->perf_decode_samples = perf.decode_samples;
+    diag->perf_decode_us_last = perf.decode_us_last;
+    diag->perf_decode_us_average = perf.decode_us_average;
+    diag->perf_decode_us_max = perf.decode_us_max;
+    diag->perf_decode_us_p50 = perf.decode_us_p50;
+    diag->perf_decode_us_p95 = perf.decode_us_p95;
+    diag->perf_decode_us_p99 = perf.decode_us_p99;
+    diag->perf_decode_cycles_last = perf.decode_cycles_last;
+    diag->perf_decode_cycles_average = perf.decode_cycles_average;
+    diag->perf_decode_cycles_max = perf.decode_cycles_max;
+    diag->perf_decode_instret_average = perf.decode_instret_average;
+    diag->perf_decode_icache_access_average =
+        perf.decode_icache_access_average;
+    diag->perf_decode_icache_miss_average = perf.decode_icache_miss_average;
+    diag->perf_decode_icache_miss_ppm = perf.decode_icache_miss_ppm;
+    diag->perf_decode_dcache_read_average =
+        perf.decode_dcache_read_average;
+    diag->perf_decode_dcache_read_miss_average =
+        perf.decode_dcache_read_miss_average;
+    diag->perf_decode_dcache_read_miss_ppm =
+        perf.decode_dcache_read_miss_ppm;
     diag->perf_ingress_samples = perf.ingress_samples;
     diag->perf_ingress_age_us_last = perf.ingress_age_us_last;
     diag->perf_ingress_age_us_max = perf.ingress_age_us_max;
@@ -2344,6 +2463,10 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_mic_opus_dropped = usb_diag.audio_mic_opus_dropped;
     diag->audio_mic_decoded = usb_diag.audio_mic_decoded;
     diag->audio_mic_decode_errors = usb_diag.audio_mic_decode_errors;
+    diag->audio_decoder_benchmark_frames =
+        usb_diag.audio_decoder_benchmark_frames;
+    diag->audio_decoder_benchmark_errors =
+        usb_diag.audio_decoder_benchmark_errors;
     diag->audio_mic_pcm_bytes = usb_diag.audio_mic_pcm_bytes;
     diag->audio_mic_pcm_nonzero_samples = usb_diag.audio_mic_pcm_nonzero_samples;
     diag->audio_mic_usb_nonzero_packets = usb_diag.audio_mic_usb_nonzero_packets;
@@ -2354,6 +2477,11 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_codec_heap_min = usb_diag.audio_codec_heap_min;
     diag->audio_codec_encoder_size = usb_diag.audio_codec_encoder_size;
     diag->audio_codec_decoder_size = usb_diag.audio_codec_decoder_size;
+#if CONFIG_M61_HPM_PROFILE
+    diag->audio_decoder_benchmark_enabled = decoder_benchmark_active ? 1U : 0U;
+#else
+    diag->audio_decoder_benchmark_enabled = 0U;
+#endif
     diag->audio_codec_encoder_error = usb_diag.audio_codec_encoder_error;
     diag->audio_codec_decoder_error = usb_diag.audio_codec_decoder_error;
     diag->audio_set_volume = usb_diag.audio_set_volume;
@@ -2676,6 +2804,12 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
     (void)data;
     (void)len;
 }
+int m61_usb_gamepad_set_decoder_benchmark(bool enabled)
+{
+    (void)enabled;
+    return -1;
+}
+bool m61_usb_gamepad_decoder_benchmark_enabled(void) { return false; }
 bool m61_usb_gamepad_audio_mic_enabled(void) { return false; }
 bool m61_usb_gamepad_audio_in_active(void) { return false; }
 bool m61_usb_gamepad_audio_speaker_active(void) { return false; }

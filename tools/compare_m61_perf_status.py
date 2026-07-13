@@ -53,6 +53,10 @@ def main() -> int:
     perf1 = line_fields(after_data, "usb_perf ")
     cache0 = line_fields(before_data, "usb_cache ")
     cache1 = line_fields(after_data, "usb_cache ")
+    decode0 = line_fields(before_data, "usb_decode_perf ")
+    decode1 = line_fields(after_data, "usb_decode_perf ")
+    decode_cache0 = line_fields(before_data, "usb_decode_cache ")
+    decode_cache1 = line_fields(after_data, "usb_decode_cache ")
     haptics0 = line_fields(before_data, "usb_haptics ")
     haptics1 = line_fields(after_data, "usb_haptics ")
     audio0 = line_fields(before_data, "hidp_audio ")
@@ -75,6 +79,31 @@ def main() -> int:
         f"{interval_average(samples0, integer(perf0, 'instret_avg'), samples1, integer(perf1, 'instret_avg')):.3f}"
     )
 
+    decode_samples0 = integer(decode0, "samples")
+    decode_samples1 = integer(decode1, "samples")
+    if decode_samples1 > decode_samples0:
+        decode_cycles0 = split_integers(decode0, "cycles")
+        decode_cycles1 = split_integers(decode1, "cycles")
+        decode_us0 = split_integers(decode0, "dec_us")
+        decode_us1 = split_integers(decode1, "dec_us")
+        print(f"decode_samples={decode_samples1 - decode_samples0}")
+        print(
+            "decode_us_avg="
+            f"{interval_average(decode_samples0, decode_us0[1], decode_samples1, decode_us1[1]):.3f}"
+        )
+        print(
+            "decode_cycles_avg="
+            f"{interval_average(decode_samples0, decode_cycles0[1], decode_samples1, decode_cycles1[1]):.3f}"
+        )
+        print(
+            "decode_instret_avg="
+            f"{interval_average(decode_samples0, integer(decode0, 'instret_avg'), decode_samples1, integer(decode1, 'instret_avg')):.3f}"
+        )
+        print(
+            f"decode_bench_frames={integer(decode1, 'bench_frames') - integer(decode0, 'bench_frames')} "
+            f"decode_bench_errors={integer(decode1, 'bench_errors') - integer(decode0, 'bench_errors')}"
+        )
+
     for key, label in (
         ("ic_access/miss/ppm", "icache"),
         ("dc_read/miss/ppm", "dcache"),
@@ -85,6 +114,21 @@ def main() -> int:
         misses = interval_average(samples0, values0[1], samples1, values1[1])
         ppm = misses * 1_000_000.0 / access if access else 0.0
         print(f"{label}_access_avg={access:.3f} {label}_miss_avg={misses:.3f} {label}_miss_ppm={ppm:.1f}")
+
+    if decode_samples1 > decode_samples0:
+        for key, label in (
+            ("ic_access/miss/ppm", "decode_icache"),
+            ("dc_read/miss/ppm", "decode_dcache"),
+        ):
+            values0 = split_integers(decode_cache0, key)
+            values1 = split_integers(decode_cache1, key)
+            access = interval_average(decode_samples0, values0[0], decode_samples1, values1[0])
+            misses = interval_average(decode_samples0, values0[1], decode_samples1, values1[1])
+            ppm = misses * 1_000_000.0 / access if access else 0.0
+            print(
+                f"{label}_access_avg={access:.3f} "
+                f"{label}_miss_avg={misses:.3f} {label}_miss_ppm={ppm:.1f}"
+            )
 
     for fields0, fields1, keys in (
         (speaker0, speaker1, ("qdrop", "odrop", "cancel", "enc_err")),

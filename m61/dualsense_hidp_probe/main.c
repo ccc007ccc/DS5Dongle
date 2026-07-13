@@ -2795,6 +2795,7 @@ static void print_help(void)
     printf("  ds5 disconnect\r\n");
     printf("  ds5 usb-reinit\r\n");
     printf("  ds5 usb-cycle\r\n");
+    printf("  ds5 decoder-bench [on|off]\r\n");
     printf("  ds5 usb-pins [status|dp-high|dm-high|both-low|both-high|restore]\r\n");
     printf("  ds5 reboot-isp\r\n");
 }
@@ -2986,6 +2987,28 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.perf_dcache_read_average,
                (unsigned long)usb_diag.perf_dcache_read_miss_average,
                (unsigned long)usb_diag.perf_dcache_read_miss_ppm);
+        printf("usb_decode_perf enabled=%u samples=%lu dec_us=%lu/%lu/%lu dec_p50/p95/p99=%lu/%lu/%lu cycles=%lu/%lu/%lu instret_avg=%lu bench_frames=%lu bench_errors=%lu\r\n",
+               (unsigned int)usb_diag.audio_decoder_benchmark_enabled,
+               (unsigned long)usb_diag.perf_decode_samples,
+               (unsigned long)usb_diag.perf_decode_us_last,
+               (unsigned long)usb_diag.perf_decode_us_average,
+               (unsigned long)usb_diag.perf_decode_us_max,
+               (unsigned long)usb_diag.perf_decode_us_p50,
+               (unsigned long)usb_diag.perf_decode_us_p95,
+               (unsigned long)usb_diag.perf_decode_us_p99,
+               (unsigned long)usb_diag.perf_decode_cycles_last,
+               (unsigned long)usb_diag.perf_decode_cycles_average,
+               (unsigned long)usb_diag.perf_decode_cycles_max,
+               (unsigned long)usb_diag.perf_decode_instret_average,
+               (unsigned long)usb_diag.audio_decoder_benchmark_frames,
+               (unsigned long)usb_diag.audio_decoder_benchmark_errors);
+        printf("usb_decode_cache ic_access/miss/ppm=%lu/%lu/%lu dc_read/miss/ppm=%lu/%lu/%lu\r\n",
+               (unsigned long)usb_diag.perf_decode_icache_access_average,
+               (unsigned long)usb_diag.perf_decode_icache_miss_average,
+               (unsigned long)usb_diag.perf_decode_icache_miss_ppm,
+               (unsigned long)usb_diag.perf_decode_dcache_read_average,
+               (unsigned long)usb_diag.perf_decode_dcache_read_miss_average,
+               (unsigned long)usb_diag.perf_decode_dcache_read_miss_ppm);
         printf("usb_latency ingress=%lu age_us=%lu/%lu/%lu/%lu irq_mask_cycles_max=%lu\r\n",
                (unsigned long)usb_diag.perf_ingress_samples,
                (unsigned long)usb_diag.perf_ingress_age_us_last,
@@ -3131,6 +3154,30 @@ int cmd_ds5(int argc, char **argv)
 
     if (strcmp(argv[1], "usb-cycle") == 0) {
         return m61_usb_cycle_command();
+    }
+
+    if (strcmp(argv[1], "decoder-bench") == 0) {
+        if (argc < 3) {
+            printf("decoder benchmark=%s\r\n",
+                   m61_usb_gamepad_decoder_benchmark_enabled()
+                       ? "on"
+                       : "off");
+            return 0;
+        }
+        if (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0) {
+            bool enabled = strcmp(argv[2], "on") == 0;
+            int result = m61_usb_gamepad_set_decoder_benchmark(enabled);
+
+            if (result != 0) {
+                printf("decoder benchmark unavailable: profile build required\r\n");
+                return result;
+            }
+            printf("decoder benchmark requested=%s\r\n",
+                   enabled ? "on" : "off");
+            return 0;
+        }
+        printf("Usage: ds5 decoder-bench [on|off]\r\n");
+        return -1;
     }
 
     if (strcmp(argv[1], "auto") == 0) {

@@ -18,6 +18,13 @@ int main(void)
                                        20U,
                                        3000U,
                                        60U);
+        m61_perf_profile_record_decode(1000U + i * 10U,
+                                       320000U + i * 3200U,
+                                       500U,
+                                       1200U,
+                                       24U,
+                                       1800U,
+                                       54U);
         m61_perf_profile_record_ingress_age(i < 99U ? 1000U : 5000U);
     }
     m61_perf_profile_record_irq_mask_cycles(3200U);
@@ -33,6 +40,15 @@ int main(void)
     assert(snapshot.cycles_average == 2608000U);
     assert(snapshot.icache_miss_ppm == 10000U);
     assert(snapshot.dcache_read_miss_ppm == 20000U);
+    assert(snapshot.decode_samples == 100U);
+    assert(snapshot.decode_us_average == 1495U);
+    assert(snapshot.decode_us_p50 == 1500U);
+    assert(snapshot.decode_us_p95 == 2000U);
+    assert(snapshot.decode_us_p99 == 2000U);
+    assert(snapshot.decode_cycles_average == 478400U);
+    assert(snapshot.decode_instret_average == 500U);
+    assert(snapshot.decode_icache_miss_ppm == 20000U);
+    assert(snapshot.decode_dcache_read_miss_ppm == 30000U);
     assert(snapshot.ingress_age_us_p95 == 1250U);
     assert(snapshot.ingress_age_us_p99 == 1250U);
     assert(snapshot.ingress_age_us_max == 5000U);
