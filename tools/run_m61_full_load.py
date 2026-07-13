@@ -10,6 +10,7 @@ so the USB output and Bluetooth state-report paths cannot coalesce as idle.
 from __future__ import annotations
 
 import argparse
+import atexit
 from pathlib import Path
 import threading
 import time
@@ -133,6 +134,15 @@ def capture_status(port: str, output: Path) -> None:
     output.write_bytes(data)
 
 
+def set_decoder_benchmark(port: str, enabled: bool) -> None:
+    command = b"ds5 decoder-bench on\r\n" if enabled else b"ds5 decoder-bench off\r\n"
+    with serial.Serial(port, 115200, timeout=0.2, rtscts=False, dsrdtr=False) as ser:
+        ser.reset_input_buffer()
+        ser.write(command)
+        ser.flush()
+        time.sleep(0.4)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration", type=float, default=90.0)
@@ -143,6 +153,11 @@ def main() -> int:
     parser.add_argument("--audio-device", default="DualSense Wireless Controller")
     parser.add_argument("--serial-port", default="COM5")
     parser.add_argument("--status-log", type=Path)
+    parser.add_argument(
+        "--decoder-bench",
+        action="store_true",
+        help="enable synthetic mic decode only for this run and always disable it on exit",
+    )
     parser.add_argument("--list-devices", action="store_true")
     args = parser.parse_args()
 
@@ -159,11 +174,17 @@ def main() -> int:
             parser.error(f"{name} must be between 0 and 32767")
 
     device_index, device_name = find_audio_device(args.audio_device)
+    decoder_cleanup_registered = False
+    if args.decoder_bench:
+        set_decoder_benchmark(args.serial_port, True)
+        atexit.register(set_decoder_benchmark, args.serial_port, False)
+        decoder_cleanup_registered = True
     print(f"audio device #{device_index}: {device_name}")
     print(
         f"load: duration={args.duration:.1f}s block={args.block_frames} "
         f"speaker_amp={args.speaker_amplitude} haptics_amp={args.haptics_amplitude} "
-        f"hid_interval={args.hid_interval_ms}ms"
+        f"hid_interval={args.hid_interval_ms}ms "
+        f"decoder_bench={'on' if args.decoder_bench else 'off'}"
     )
 
     before_status_log = None
@@ -216,6 +237,9 @@ def main() -> int:
     if args.status_log is not None:
         capture_status(args.serial_port, args.status_log)
         print(f"status after: {args.status_log}")
+    if decoder_cleanup_registered:
+        set_decoder_benchmark(args.serial_port, False)
+        atexit.unregister(set_decoder_benchmark)
     return 0
 
 

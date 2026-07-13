@@ -377,6 +377,27 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
   `encode -> decode -> 1 tick让步 -> BT bridge`调度是否越过10 ms，并为后续是否拆分
   encoder/decoder task、bridge是否事件驱动提供真机证据。
 
+### 2026-07-13：encode + synthetic decode真机并发基线
+
+- 相同60秒四声道负载下，speaker encode平均5597 us/1792676 cycles，synthetic
+  mic decode平均4111 us/1313852 cycles；两者纯codec平均已达9708 us。encode与decode
+  的P99分别为6750和5000 us，尚未计入bridge与调度即可能越过10 ms。
+- 60秒约6000个输入epoch只完成4905次encode，qdrop=1465、deadline=720，BT realtime
+  stale=26。decoder加入后encode相对单独基线也上升约11%，I-cache争用不可忽略。
+- 结论：调度重构能减少deadline和让BT及时发送，但无法单独提供双声道speaker+真实mic
+  冗余；必须同时继续优化encoder/decoder共用FFT/MDCT与cache布局。
+
+### 2026-07-13：mono deemphasis专用路径（否决）
+
+- 把48 kHz mono、无downsample、无accum路径从通用deemphasis中分离，算式逐样本不变；
+  24万帧和120万帧decoder checksum均完全一致，宿主耗时下降约1.1%。
+- E907真机decoder仅从4111降至4105 us、cycles从1313852降至1309876（约0.30%），
+  instret反从178329升至178946。收益低于噪声和硬门槛，且代码增加256 B，因此否决并
+  从默认patch列表移除。
+- synthetic decoder会让当前codec预算越过10 ms，只能作为显式压力测试。固定负载工具
+  使用`--decoder-bench`临时启用并在正常退出或异常退出时自动关闭；日常功能测试必须
+  保持`usb_decode_perf enabled=0`。
+
 ### 阶段 A：epoch 所有权
 
 - 消除逐 PCM 帧关中断。
