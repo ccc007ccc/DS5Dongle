@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "opus.h"
 
@@ -8,7 +9,7 @@ enum {
     SAMPLE_RATE = 48000,
     FRAME_SAMPLES = 480,
     PACKET_BYTES = 200,
-    FRAME_COUNT = 1200,
+    DEFAULT_FRAME_COUNT = 1200,
 };
 
 static uint32_t lcg_state = 0x61d55eedU;
@@ -34,13 +35,28 @@ static int16_t next_pcm_sample(unsigned frame, unsigned sample)
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     OpusEncoder *encoder;
     int error = OPUS_OK;
     int16_t pcm[FRAME_SAMPLES];
     unsigned char packet[PACKET_BYTES];
+    unsigned frame_count = DEFAULT_FRAME_COUNT;
+    int discard_output = 0;
     unsigned frame;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--discard") == 0) {
+            discard_output = 1;
+        } else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
+            unsigned long value = strtoul(argv[++i], NULL, 0);
+            if (value == 0 || value > 10000000UL)
+                return 5;
+            frame_count = (unsigned)value;
+        } else {
+            return 5;
+        }
+    }
 
     encoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_AUDIO, &error);
     if (encoder == NULL || error != OPUS_OK)
@@ -56,7 +72,7 @@ int main(void)
         return 2;
     }
 
-    for (frame = 0; frame < FRAME_COUNT; frame++) {
+    for (frame = 0; frame < frame_count; frame++) {
         unsigned sample;
         int encoded;
         uint16_t encoded_le;
@@ -70,8 +86,9 @@ int main(void)
             return 3;
         }
         encoded_le = (uint16_t)encoded;
-        if (fwrite(&encoded_le, sizeof(encoded_le), 1, stdout) != 1 ||
-            fwrite(packet, 1, (size_t)encoded, stdout) != (size_t)encoded) {
+        if (!discard_output &&
+            (fwrite(&encoded_le, sizeof(encoded_le), 1, stdout) != 1 ||
+             fwrite(packet, 1, (size_t)encoded, stdout) != (size_t)encoded)) {
             opus_encoder_destroy(encoder);
             return 4;
         }

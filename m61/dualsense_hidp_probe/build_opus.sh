@@ -42,10 +42,13 @@ fi
 ROOT="$PROJECT_DIR/.cache/third_party/opus-${VERSION}"
 ARCHIVE="$ROOT/opus-${VERSION}.tar.gz"
 SOURCE="$ROOT/opus-${VERSION}"
-PATCH_FILE="$PROJECT_DIR/patches/opus-${VERSION}-disabled-prefilter-fastpath.patch"
+PATCH_FILES=(
+    "$PROJECT_DIR/patches/opus-${VERSION}-disabled-prefilter-fastpath.patch"
+    "$PROJECT_DIR/patches/opus-${VERSION}-e907-clz32.patch"
+)
 BUILD="$ROOT/build-${VARIANT}"
 STAMP="$BUILD/.m61-config"
-PATCH_SHA256="$(sha256sum "$PATCH_FILE" | awk '{print $1}')"
+PATCH_SHA256="$(sha256sum "${PATCH_FILES[@]}" | sha256sum | awk '{print $1}')"
 SOURCE_STAMP="$SOURCE/.m61-source-patch"
 EXPECTED_SOURCE_STAMP="patch=${PATCH_SHA256}"
 EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
@@ -72,7 +75,9 @@ if [[ ! -f "$SOURCE_STAMP" || "$(cat "$SOURCE_STAMP" 2>/dev/null || true)" != "$
         rm -rf "$source_real"
     fi
     tar -xzf "$ARCHIVE" -C "$ROOT"
-    patch -d "$SOURCE" -p1 < "$PATCH_FILE" >&2
+    for patch_file in "${PATCH_FILES[@]}"; do
+        patch -d "$SOURCE" -p1 < "$patch_file" >&2
+    done
     printf '%s\n' "$EXPECTED_SOURCE_STAMP" > "$SOURCE_STAMP"
 fi
 
@@ -90,7 +95,7 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
     fi
     mkdir -p "$BUILD"
     cd "$BUILD"
-    CFLAGS="-${OPT} ${LTO_FLAGS} -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
+    CFLAGS="-${OPT} ${LTO_FLAGS} -DM61_OPUS_E907_CLZ32=1 -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
         "$SOURCE/configure" \
         --host=riscv64-unknown-elf \
         --disable-shared \
