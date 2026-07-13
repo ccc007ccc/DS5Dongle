@@ -13,6 +13,7 @@ BOARD="bl616dk"
 CPU_ID=""
 COMMAND="build"
 HPM_PROFILE="n"
+MEMORY_BENCH="n"
 OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
 OPUS_VARIANT="${M61_OPUS_VARIANT:-source-o2-lto}"
 
@@ -27,7 +28,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -41,6 +42,7 @@ Example:
   ./build.sh
   ./build.sh all
   ./build.sh all --hpm-profile
+  ./build.sh all --memory-bench
 EOF
 }
 
@@ -128,6 +130,7 @@ build_project() {
         "BOARD=$BOARD"
         "CROSS_COMPILE=$toolchain_bin/riscv64-unknown-elf-"
         "CONFIG_M61_HPM_PROFILE=$HPM_PROFILE"
+        "CONFIG_M61_MEMORY_BENCH=$MEMORY_BENCH"
     )
 
     if [[ -n "$CPU_ID" ]]; then
@@ -162,6 +165,11 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --hpm-profile)
+            HPM_PROFILE="y"
+            shift
+            ;;
+        --memory-bench)
+            MEMORY_BENCH="y"
             HPM_PROFILE="y"
             shift
             ;;

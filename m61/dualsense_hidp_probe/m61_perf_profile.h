@@ -64,6 +64,7 @@ typedef struct {
 } m61_perf_profile_snapshot_t;
 
 void m61_perf_profile_init(void);
+bool m61_perf_profile_is_enabled(void);
 void m61_perf_profile_counter_begin(m61_perf_counter_sample_t *sample);
 void m61_perf_profile_counter_end(const m61_perf_counter_sample_t *start,
                                   uint32_t elapsed_us);

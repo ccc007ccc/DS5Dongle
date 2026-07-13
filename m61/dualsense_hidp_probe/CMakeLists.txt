@@ -32,6 +32,14 @@ if(CONFIG_M61_HPM_PROFILE)
     # real BL616 hardware.
     target_compile_definitions(app PRIVATE CONFIG_M61_HPM_PROFILE=1)
 endif()
+if(CONFIG_M61_MEMORY_BENCH)
+    # Test-only: adds 44 KiB of executable test data in Flash and OCRAM.  Keep
+    # it out of production builds so it cannot change codec layout or RAM use.
+    target_sources(app PRIVATE m61_memory_bench.c m61_memory_bench.S)
+    target_compile_definitions(app PRIVATE
+        CONFIG_M61_MEMORY_BENCH=1
+        CONFIG_M61_HPM_PROFILE=1)
+endif()
 sdk_set_main_file(main.c)
 
 project(m61_dualsense_hidp_probe)

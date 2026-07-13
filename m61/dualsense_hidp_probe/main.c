@@ -12,6 +12,14 @@
 #include "m61_bt_tx_scheduler.h"
 #include "m61_usb_gamepad.h"
 
+#ifndef CONFIG_M61_MEMORY_BENCH
+#define CONFIG_M61_MEMORY_BENCH 0
+#endif
+
+#if CONFIG_M61_MEMORY_BENCH
+#include "m61_memory_bench.h"
+#endif
+
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -3381,6 +3389,9 @@ static void print_m61_help(void)
     printf("Usage:\r\n");
     printf("  m61 reboot-isp\r\n");
     printf("  m61 led [status|test|auto|off|red|green|blue|connecting|connected]\r\n");
+#if CONFIG_M61_MEMORY_BENCH
+    printf("  m61 membench [all|4k|40k]\r\n");
+#endif
 }
 
 int cmd_m61(int argc, char **argv)
@@ -3407,6 +3418,12 @@ int cmd_m61(int argc, char **argv)
         }
         return err;
     }
+
+#if CONFIG_M61_MEMORY_BENCH
+    if (argc >= 2 && strcmp(argv[1], "membench") == 0) {
+        return m61_memory_bench_run(argc >= 3 ? argv[2] : "all");
+    }
+#endif
 
     print_m61_help();
     return -EINVAL;

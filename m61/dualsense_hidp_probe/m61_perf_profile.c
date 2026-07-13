@@ -125,6 +125,11 @@ void m61_perf_profile_init(void)
 #endif
 }
 
+bool m61_perf_profile_is_enabled(void)
+{
+    return s_enabled;
+}
+
 void m61_perf_profile_counter_begin(m61_perf_counter_sample_t *sample)
 {
     if (!sample) {

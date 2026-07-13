@@ -120,15 +120,44 @@ queue drop、deadline、BT stale 和最大关中断周期。只有 cycles、P99 
 
 ### P1：严格的 Flash 与 OCRAM 取指微基准
 
-使用相同位精确小内核生成两个副本，一个留在 XIP，一个放入 `.tcm_code`。分别测试小于
-I-cache、接近 32 KB 和超过 32 KB 的工作集，固定函数对齐，记录 cycles、instret 和
-I-cache miss。该测试用于测量具体路径，不直接替代完整 Opus A/B。
+测试固件只在 `CONFIG_M61_MEMORY_BENCH` 启用时链接两个无重定位汇编内核。Flash 中只
+保留一份机器码，运行时把完全相同的 4096/40960 字节复制到 32 字节对齐的 cached
+OCRAM，clean D-cache 并 invalidate I-cache 后通过函数指针执行。每组校验源/副本字节和
+返回 checksum；计时窗口进入短临界区，防止较慢的 XIP 样本把蓝牙/USB 中断指令计入
+`minstret`。测试配置不进入正式固件。
+
+2026-07-14 两轮 best-of-7 真机结果高度一致：
+
+| 工作集 | 状态 | XIP cycles | OCRAM cycles | OCRAM/XIP | instret |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 4 KiB | cold | 48023–48026 | 10197–10200 | 21.2% | 两者均 1155 |
+| 4 KiB | prewarmed | 1198 | 1215–1217 | 101.4–101.6% | 两者均 1155 |
+| 40 KiB | cold | 474026 | 94688–94692 | 20.0% | 两者均 10371 |
+| 40 KiB | prewarmed | 292996–293002 | 62256 | 21.2% | 两者均 10371 |
+
+结论：
+
+- I-cache 全命中时，XIP 与 cached OCRAM 基本等价，OCRAM 本轮还慢约 1.4%；把已经能
+  驻留 cache 的小热点搬 RAM 没有收益。
+- 发生 line refill 时，cached OCRAM 明显快于 80 MHz QIO XIP；按 4 KiB cold 与 warm
+  差值估算，XIP 每个 miss 约增加 363 cycles，OCRAM 约增加 69 cycles。
+- 40 KiB 超过 32 KiB I-cache 后，两种位置的 miss 数几乎相同，但 OCRAM 总 cycles
+  只有 XIP 的约 20–21%。RAM 不会消除 I-cache miss，只会降低 refill 代价。
+- 这证明“选择性放 RAM”有真实硬件潜力，但不推翻此前整体搬约 39.6 KiB Opus 的负面
+  真机结果。整体搬迁同时改变函数布局、cache set 冲突和 SRAM 压力；下一步只能逐个
+  高频且 miss-heavy 的函数 A/B。
 
 ### P2：选择性函数放置
 
 仅对 HPM/反汇编确认的单个热点尝试 OCRAM 放置；每次只移动一个函数或一个紧密调用簇。
 若 I-cache miss、cycles 或 P99 任一稳定恶化，立即回退。代码大小或理论延迟不能作为
 通过依据。
+
+当前正式编码窗口平均约有 3146 次 I-cache miss/帧。微基准给出的 refill 差值意味着
+理论上存在明显上限，但不是每个 miss 都来自可安全迁移的 Opus 函数。候选顺序按“小步、
+每帧必经、RAM 成本可控”排列：先单测约 3.7 KiB 的 `quant_all_bands`，再视结果测试
+`compute_allocation` 或紧密的 band quantization 调用簇；不从约 14.8 KiB 的
+`celt_encode_with_ec` 或整个 CELT 编码器开始。
 
 ### P3：启用并测量 pSRAM
 
