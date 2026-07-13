@@ -16,6 +16,7 @@ HPM_PROFILE="n"
 MEMORY_BENCH="n"
 OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
 OPUS_VARIANT="${M61_OPUS_VARIANT:-source-o2-lto}"
+OPUS_TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-none}"
 
 log() {
     printf '[m61-hidp-build] %s\n' "$*"
@@ -28,7 +29,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-tcm-profile none|quant-all-bands] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -37,6 +38,7 @@ Environment:
   M61_TOOLCHAIN_BIN Optional T-HEAD toolchain bin directory.
   M61_OPUS_LIBRARY  Optional source-built libopus.a used instead of the SDK archive.
   M61_OPUS_VARIANT  source-o2-lto (default), source-o2, source-o3, sdk, or custom.
+  M61_OPUS_TCM_PROFILE  none (default) or quant-all-bands.
 
 Example:
   ./build.sh
@@ -95,13 +97,13 @@ build_project() {
 
     case "$OPUS_VARIANT" in
         source-o2)
-            OPUS_LIBRARY="$(bash "$PROJECT_DIR/build_opus.sh" O2 "$toolchain_bin")"
+            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" bash "$PROJECT_DIR/build_opus.sh" O2 "$toolchain_bin")"
             ;;
         source-o2-lto)
-            OPUS_LIBRARY="$(bash "$PROJECT_DIR/build_opus.sh" O2-LTO "$toolchain_bin")"
+            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" bash "$PROJECT_DIR/build_opus.sh" O2-LTO "$toolchain_bin")"
             ;;
         source-o3)
-            OPUS_LIBRARY="$(bash "$PROJECT_DIR/build_opus.sh" O3 "$toolchain_bin")"
+            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" bash "$PROJECT_DIR/build_opus.sh" O3 "$toolchain_bin")"
             ;;
         sdk)
             OPUS_LIBRARY=""
@@ -122,6 +124,7 @@ build_project() {
     log "Toolchain: $("$toolchain_bin/riscv64-unknown-elf-gcc" --version | head -1)"
     log "Target: CHIP=$CHIP BOARD=$BOARD CPU_ID=${CPU_ID:-<empty>}"
     log "Opus: ${OPUS_LIBRARY:-SDK prebuilt}"
+    log "Opus TCM profile: $OPUS_TCM_PROFILE"
 
     cd "$PROJECT_DIR"
 
@@ -172,6 +175,10 @@ while [[ $# -gt 0 ]]; do
             MEMORY_BENCH="y"
             HPM_PROFILE="y"
             shift
+            ;;
+        --opus-tcm-profile)
+            OPUS_TCM_PROFILE="${2:?missing value for --opus-tcm-profile}"
+            shift 2
             ;;
         --opus-library)
             OPUS_LIBRARY="${2:?missing value for --opus-library}"

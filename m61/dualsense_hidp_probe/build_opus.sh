@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="1.2.1"
 PATCH_PROFILE="${M61_OPUS_PATCH_PROFILE:-e907}"
+TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-none}"
 VARIANT="${1:-O2-LTO}"
 TOOLCHAIN_BIN="${2:-${M61_TOOLCHAIN_BIN:-}}"
 ARCHIVE_SHA256="cfafd339ccd9c5ef8d6ab15d7e1a412c054bf4cb4ecbbbcc78c12ef2def70732"
@@ -45,7 +46,9 @@ ARCHIVE="$ROOT/opus-${VERSION}.tar.gz"
 SOURCE="$ROOT/opus-${VERSION}"
 case "$PATCH_PROFILE" in
     upstream)
-        PATCH_FILES=()
+        PATCH_FILES=(
+            "$PROJECT_DIR/patches/opus-${VERSION}-m61-tcm-placement.patch"
+        )
         PATCH_DEFINES=""
         ;;
     e907)
@@ -55,6 +58,7 @@ case "$PATCH_PROFILE" in
             "$PROJECT_DIR/patches/opus-${VERSION}-e907-exact-rcp.patch"
             "$PROJECT_DIR/patches/opus-${VERSION}-e907-q16-smmwb.patch"
             "$PROJECT_DIR/patches/opus-${VERSION}-e907-q15-kmmwb2.patch"
+            "$PROJECT_DIR/patches/opus-${VERSION}-m61-tcm-placement.patch"
         )
         PATCH_DEFINES="-DM61_OPUS_E907_CLZ32=1 -DM61_OPUS_E907_EXACT_RCP=1 -DM61_OPUS_E907_Q16_SMMWB=1 -DM61_OPUS_E907_Q15_KMMWB2=1"
         ;;
@@ -64,7 +68,20 @@ case "$PATCH_PROFILE" in
         ;;
 esac
 
-BUILD="$ROOT/build-${VARIANT}-${PATCH_PROFILE}"
+case "$TCM_PROFILE" in
+    none)
+        TCM_DEFINES=""
+        ;;
+    quant-all-bands)
+        TCM_DEFINES="-DM61_OPUS_TCM_QUANT_ALL_BANDS=1"
+        ;;
+    *)
+        printf '[m61-opus-build] ERROR: TCM profile must be none or quant-all-bands\n' >&2
+        exit 1
+        ;;
+esac
+
+BUILD="$ROOT/build-${VARIANT}-${PATCH_PROFILE}-${TCM_PROFILE}"
 STAMP="$BUILD/.m61-config"
 if [[ ${#PATCH_FILES[@]} -gt 0 ]]; then
     PATCH_SHA256="$(sha256sum "${PATCH_FILES[@]}" | sha256sum | awk '{print $1}')"
@@ -73,7 +90,7 @@ else
 fi
 SOURCE_STAMP="$SOURCE/.m61-source-patch"
 EXPECTED_SOURCE_STAMP="profile=${PATCH_PROFILE};patch=${PATCH_SHA256}"
-EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};profile=${PATCH_PROFILE};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
+EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};profile=${PATCH_PROFILE};tcm=${TCM_PROFILE};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
 
 mkdir -p "$ROOT"
 if [[ ! -f "$ARCHIVE" ]]; then
@@ -117,7 +134,7 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
     fi
     mkdir -p "$BUILD"
     cd "$BUILD"
-    CFLAGS="-${OPT} ${LTO_FLAGS} ${PATCH_DEFINES} -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
+    CFLAGS="-${OPT} ${LTO_FLAGS} ${PATCH_DEFINES} ${TCM_DEFINES} -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
         "$SOURCE/configure" \
         --host=riscv64-unknown-elf \
         --disable-shared \
@@ -131,7 +148,8 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
     printf '%s\n' "$EXPECTED_STAMP" > "$STAMP"
 fi
 
-printf '[m61-opus-build] Building Opus %s %s profile=%s\n' "$VERSION" "$VARIANT" "$PATCH_PROFILE" >&2
+printf '[m61-opus-build] Building Opus %s %s profile=%s tcm=%s\n' \
+    "$VERSION" "$VARIANT" "$PATCH_PROFILE" "$TCM_PROFILE" >&2
 make -C "$BUILD" -j"${M61_BUILD_JOBS:-8}" >&2
 LIBRARY="$BUILD/.libs/libopus.a"
 [[ -f "$LIBRARY" ]] || {
