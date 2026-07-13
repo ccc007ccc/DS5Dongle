@@ -321,7 +321,39 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
   降至3137。第一轮出现一次7588 us中断离群点，但P99未恶化且第二轮累计最大值未再
   增长；speaker、haptics、BT、USB的drop/deadline/error均为0。该方向进入默认构建。
 
+### 2026-07-13：`celt_sqrt` Q15 Horner内核（否决）
+
+- `celt_sqrt`的归一化输入`n`严格位于[-16384,32767]，因此4处Q15 Horner乘法也可
+  位精确替换为`khmbb`。静态结果为函数168降至160 B、4条`khmbb`；并通过
+  `noinline`避免LTO把函数复制到多个调用点。
+- 真机第一轮为5079 us/1625452 cycles/247731 instret；第二轮为5257 us/
+  1684830 cycles/252327 instret。累计5168 us/1655141 cycles/250029 instret，
+  相对PVQ基线5025 us/1609246/249576，时间与cycles均恶化约2.85%，P99从6500恶化
+  至6750 us。Horner链存在连续数据依赖，`khmbb`延迟无法被并行隐藏，因此否决并回退。
+
 ## 10. 分阶段实施
+
+### 全功能冗余硬约束
+
+- 优化目标是未来扬声器双声道、麦克风、HD haptics和输入同时运行，不把“功能暂时
+  关闭”产生的空闲预算计为最终性能收益。
+- mic当前保持对外不可用，但必须单独测量并优化实际48 kHz、mono、10 ms、71字节
+  Opus decoder路径；禁止恢复speaker活跃后暂停mic decode 250 ms的旧退让逻辑。
+- 优先优化encoder和decoder共用的Opus/CELT底层，以及USB→codec→BT数据流、任务
+  抢占和cache；不采用“不操作就不发包”等无法覆盖全功能并发的小技巧作为上限方案。
+- 算术优化必须位精确；非位精确候选只有在严格证明客观质量不下降并通过真机听感、
+  P99、drop和deadline门槛后才能保留。
+
+### 2026-07-13：71字节mic decoder独立基准
+
+- `M61_DS5_MIC_OPUS_LEN`的实际协议值为71字节。新增固定流工具参数和纯decoder runner，
+  使用48 kHz、mono、10 ms、56800 bps CBR生成12,000帧；全部packet严格为71字节，
+  每帧稳定解码为480 samples。profile重复解码1,200,000帧，不混入编码时间。
+- 当前fixed-point、禁SIMD宿主decoder平均约10.83 us/frame。热点为`opus_fft_impl`
+  19.49%、`clt_mdct_backward_c`16.12%、`decode_pulses`9.67%、`deemphasis`8.83%、
+  `quant_partition`6.60%。FFT和inverse MDCT合计35.61%，是encoder/decoder共用优化首选。
+- decoder约为同环境encoder耗时的一半；这说明当前mono speaker约5 ms的真机预算叠加mic
+  后很可能接近10 ms，尚未包含speaker stereo增量，必须继续降低共用变换和数据流成本。
 
 ### 阶段 A：epoch 所有权
 

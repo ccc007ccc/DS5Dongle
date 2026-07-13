@@ -8,7 +8,9 @@
 enum {
     SAMPLE_RATE = 48000,
     FRAME_SAMPLES = 480,
-    PACKET_BYTES = 200,
+    DEFAULT_PACKET_BYTES = 200,
+    MAX_PACKET_BYTES = 1500,
+    DEFAULT_BITRATE = 160000,
     DEFAULT_FRAME_COUNT = 1200,
 };
 
@@ -40,8 +42,10 @@ int main(int argc, char **argv)
     OpusEncoder *encoder;
     int error = OPUS_OK;
     int16_t pcm[FRAME_SAMPLES];
-    unsigned char packet[PACKET_BYTES];
+    unsigned char packet[MAX_PACKET_BYTES];
     unsigned frame_count = DEFAULT_FRAME_COUNT;
+    unsigned packet_bytes = DEFAULT_PACKET_BYTES;
+    int bitrate = DEFAULT_BITRATE;
     int discard_output = 0;
     unsigned frame;
 
@@ -53,6 +57,16 @@ int main(int argc, char **argv)
             if (value == 0 || value > 10000000UL)
                 return 5;
             frame_count = (unsigned)value;
+        } else if (strcmp(argv[i], "--packet-bytes") == 0 && i + 1 < argc) {
+            unsigned long value = strtoul(argv[++i], NULL, 0);
+            if (value == 0 || value > MAX_PACKET_BYTES)
+                return 5;
+            packet_bytes = (unsigned)value;
+        } else if (strcmp(argv[i], "--bitrate") == 0 && i + 1 < argc) {
+            long value = strtol(argv[++i], NULL, 0);
+            if (value <= 0 || value > 512000)
+                return 5;
+            bitrate = (int)value;
         } else {
             return 5;
         }
@@ -63,7 +77,7 @@ int main(int argc, char **argv)
         return 1;
 
     if (opus_encoder_ctl(encoder, OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS)) != OPUS_OK ||
-        opus_encoder_ctl(encoder, OPUS_SET_BITRATE(160000)) != OPUS_OK ||
+        opus_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate)) != OPUS_OK ||
         opus_encoder_ctl(encoder, OPUS_SET_VBR(0)) != OPUS_OK ||
         opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(0)) != OPUS_OK ||
         opus_encoder_ctl(encoder, OPUS_SET_FORCE_CHANNELS(1)) != OPUS_OK ||
@@ -80,7 +94,7 @@ int main(int argc, char **argv)
         for (sample = 0; sample < FRAME_SAMPLES; sample++)
             pcm[sample] = next_pcm_sample(frame, sample);
 
-        encoded = opus_encode(encoder, pcm, FRAME_SAMPLES, packet, sizeof(packet));
+        encoded = opus_encode(encoder, pcm, FRAME_SAMPLES, packet, packet_bytes);
         if (encoded < 0) {
             opus_encoder_destroy(encoder);
             return 3;
