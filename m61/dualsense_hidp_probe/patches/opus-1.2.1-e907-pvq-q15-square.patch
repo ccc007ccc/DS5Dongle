@@ -1,0 +1,32 @@
+diff --git a/celt/vq.c b/celt/vq.c
+--- a/celt/vq.c
++++ b/celt/vq.c
+@@ -158,6 +158,22 @@ static unsigned extract_collapse_mask(int *iy, int N, int B)
+    return collapse_mask;
+ }
+ 
++#if defined(M61_OPUS_E907_PVQ_Q15_SQUARE)
++static OPUS_INLINE opus_val16 m61_opus_e907_pvq_q15_square(opus_val16 x)
++{
++# if defined(__riscv)
++   opus_int32 result;
++   __asm__ volatile("khmbb %0, %1, %1" : "=r"(result) : "r"((opus_int32)x));
++   return (opus_val16)result;
++# else
++   return MULT16_16_Q15(x, x);
++# endif
++}
++# define PVQ_Q15_SQUARE(x) m61_opus_e907_pvq_q15_square(x)
++#else
++# define PVQ_Q15_SQUARE(x) MULT16_16_Q15((x), (x))
++#endif
++
+ opus_val16 op_pvq_search_c(celt_norm *X, int *iy, int K, int N, int arch)
+ {
+    VARDECL(celt_norm, y);
+@@ -276 +292 @@ opus_val16 op_pvq_search_c(celt_norm *X, int *iy, int K, int N, int arch)
+-      Rxy = MULT16_16_Q15(Rxy,Rxy);
++      Rxy = PVQ_Q15_SQUARE(Rxy);
+@@ -288 +304 @@ opus_val16 op_pvq_search_c(celt_norm *X, int *iy, int K, int N, int arch)
+-         Rxy = MULT16_16_Q15(Rxy,Rxy);
++         Rxy = PVQ_Q15_SQUARE(Rxy);

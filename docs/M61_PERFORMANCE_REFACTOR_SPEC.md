@@ -307,6 +307,20 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
   speaker、haptics、BT、USB的drop/deadline/error均为0。宿主两版解码结果相对同一
   原始PCM的SNR差小于0.001 dB，未检测到质量下降。该方向通过门槛并进入默认构建。
 
+### 2026-07-13：PVQ非负Q15平方局部内核
+
+- 当前profile第一热点`op_pvq_search_c`占14.34%。其最内层打分循环两处计算非负
+  `Rxy`的Q15平方，通用代码生成`mul+srai+ext`；E907 `khmbb`可直接完成Q15乘法。
+- 该替换严格限制在PVQ平方两处，不全局覆盖`MULT16_16_Q15`。源码注释和数据流保证
+  `Rxy>=0`，因此不会遇到`khmbb`唯一不同的`-32768 * -32768`饱和特例；结果位精确。
+- 最终ELF只新增2条`khmbb`，`quant_partition`缩小4 B。固定全负载第一轮
+  encode/cycles/instret=5026 us/1609135/250115，第二轮为5024 us/1609357/249037；
+  两轮累计为5025 us/1609246 cycles/249576 instret。
+- 相对exact-rcp累计基线5407 us/1731257/256565改善约7.06%/7.05%/2.72%；
+  P50/P95/P99由5500/6500/6500改善到5250/6250/6500 us，I-cache miss均值由3418
+  降至3137。第一轮出现一次7588 us中断离群点，但P99未恶化且第二轮累计最大值未再
+  增长；speaker、haptics、BT、USB的drop/deadline/error均为0。该方向进入默认构建。
+
 ## 10. 分阶段实施
 
 ### 阶段 A：epoch 所有权
