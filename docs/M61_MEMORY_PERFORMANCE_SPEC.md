@@ -94,6 +94,19 @@ attributes，并分别启用两行 D-cache preload 和三行 Adaptive Miss Handl
 queue drop、deadline、BT stale 和最大关中断周期。只有 cycles、P99 和实时错误同时不
 恶化的组合可以保留。
 
+2026-07-13 首个 `preload=1, AMR=1` 候选已完成两轮 baseline-v1 真机负载：
+
+- 第一轮：5000 us / 1,602,328 cycles / 223,942 instret；
+- 第二轮：5048 us / 1,617,322 cycles / 225,344 instret；
+- 两轮共 16,874 帧，累计平均 5024 us / 1,609,825 cycles / 224,643 instret；
+- 相对已提交的 Opus 1.2.1 E907 基线 5287 us / 1,693,169 cycles / 226,993
+  instret，平均时间和 cycles 均降低约 5.0%；
+- P99 保持 6250 us，queue drop、deadline、BT stale 和编码错误均为 0；
+- 两轮累计 D-cache read miss 约 761/encode。
+
+组合配置已达到保留门槛，但仍需分别测试 preload-only 与 AMR-only，确认收益来源并避免
+保留无效或负收益配置位。
+
 ### P1：严格的 Flash 与 OCRAM 取指微基准
 
 使用相同位精确小内核生成两个副本，一个留在 XIP，一个放入 `.tcm_code`。分别测试小于

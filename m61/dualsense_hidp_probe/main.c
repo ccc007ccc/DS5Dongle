@@ -84,6 +84,14 @@ _Static_assert(CONFIG_BT_L2CAP_TX_MTU >= HIDP_TX_MAX_LEN,
 #define CONFIG_M61_DS5_AUTO_START 0
 #endif
 
+#ifndef CONFIG_M61_DCACHE_PRELOAD
+#define CONFIG_M61_DCACHE_PRELOAD 0
+#endif
+
+#ifndef CONFIG_M61_DCACHE_AMR
+#define CONFIG_M61_DCACHE_AMR 0
+#endif
+
 #ifndef CONFIG_M61_DS5_AUTO_START_DELAY_MS
 #define CONFIG_M61_DS5_AUTO_START_DELAY_MS 1500
 #endif
@@ -3409,6 +3417,20 @@ SHELL_CMD_EXPORT_ALIAS(cmd_m61, m61, M61 board commands);
 int main(void)
 {
     board_init();
+
+#if defined(BL616)
+    {
+        uint32_t mhint_before = __get_MHINT();
+
+        bl_cpu_sysmap_init(CONFIG_M61_DCACHE_PRELOAD != 0,
+                           CONFIG_M61_DCACHE_AMR != 0);
+        printf("M61 cache tuning preload=%u amr=%u mhint=%08lx->%08lx\r\n",
+               (unsigned)(CONFIG_M61_DCACHE_PRELOAD != 0),
+               (unsigned)(CONFIG_M61_DCACHE_AMR != 0),
+               (unsigned long)mhint_before,
+               (unsigned long)__get_MHINT());
+    }
+#endif
 
 #if defined(BOARD_USB_VIA_GPIO)
     board_usb_gpio_init();
