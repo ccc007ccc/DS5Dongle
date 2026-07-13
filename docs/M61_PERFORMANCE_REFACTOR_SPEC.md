@@ -307,19 +307,19 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
   speaker、haptics、BT、USB的drop/deadline/error均为0。宿主两版解码结果相对同一
   原始PCM的SNR差小于0.001 dB，未检测到质量下降。该方向通过门槛并进入默认构建。
 
-### 2026-07-13：PVQ非负Q15平方局部内核
+### 2026-07-13：PVQ非负Q15平方局部内核（复现审计后否决）
 
-- 当前profile第一热点`op_pvq_search_c`占14.34%。其最内层打分循环两处计算非负
-  `Rxy`的Q15平方，通用代码生成`mul+srai+ext`；E907 `khmbb`可直接完成Q15乘法。
-- 该替换严格限制在PVQ平方两处，不全局覆盖`MULT16_16_Q15`。源码注释和数据流保证
-  `Rxy>=0`，因此不会遇到`khmbb`唯一不同的`-32768 * -32768`饱和特例；结果位精确。
-- 最终ELF只新增2条`khmbb`，`quant_partition`缩小4 B。固定全负载第一轮
-  encode/cycles/instret=5026 us/1609135/250115，第二轮为5024 us/1609357/249037；
-  两轮累计为5025 us/1609246 cycles/249576 instret。
-- 相对exact-rcp累计基线5407 us/1731257/256565改善约7.06%/7.05%/2.72%；
-  P50/P95/P99由5500/6500/6500改善到5250/6250/6500 us，I-cache miss均值由3418
-  降至3137。第一轮出现一次7588 us中断离群点，但P99未恶化且第二轮累计最大值未再
-  增长；speaker、haptics、BT、USB的drop/deadline/error均为0。该方向进入默认构建。
+- 原实验把`op_pvq_search_c`两处非负Q15平方替换为位精确`khmbb`，当时记录为
+  5025 us/1609246 cycles/249576 instret，并误判为约7%收益。
+- 从干净Git worktree重建后，最终ELF确实只有2条`khmbb`，`quant_partition`仅缩小
+  4 B。严格baseline-v1 A/B中，PVQ版为5394 us/1727302 cycles/256616 instret，
+  no-PVQ版为5370 us/1720199 cycles/255034 instret；PVQ反而慢0.45%，cycles高0.41%，
+  instret高0.62%，双方drop/deadline/stale均为0。
+- 旧5025 us结果无法由已提交源码重现，说明当时构建缓存中混入了未记录状态。该数字和
+  “累计19.5%”结论作废；补丁、宏和默认构建入口全部删除。当前可复现满载基线采用
+  no-PVQ的约5.37 ms，相对源码O2+LTO的6.240 ms改善约13.9%。
+- 后续`sqrt khmbb`和精确`mul+mulh`实验在各自同一构建状态内仍相对其配对基线恶化，
+  否决结论保留，但不得再把5025 us作为跨版本绝对基线。
 
 ### 2026-07-13：`celt_sqrt` Q15 Horner内核（否决）
 

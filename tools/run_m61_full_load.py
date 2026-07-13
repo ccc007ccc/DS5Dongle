@@ -28,6 +28,12 @@ from ds5_windows_test_app import (
 
 SAMPLE_RATE = 48_000
 CHANNELS = 4
+BASELINE_PROFILE = "baseline-v1"
+BASELINE_DURATION = 90.0
+BASELINE_BLOCK_FRAMES = 480
+BASELINE_SPEAKER_AMPLITUDE = 600
+BASELINE_HAPTICS_AMPLITUDE = 4000
+BASELINE_HID_INTERVAL_MS = 20
 
 
 def find_audio_device(name_fragment: str) -> tuple[int, str]:
@@ -145,11 +151,17 @@ def set_decoder_benchmark(port: str, enabled: bool) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--duration", type=float, default=90.0)
-    parser.add_argument("--block-frames", type=int, default=480)
-    parser.add_argument("--speaker-amplitude", type=int, default=600)
-    parser.add_argument("--haptics-amplitude", type=int, default=4000)
-    parser.add_argument("--hid-interval-ms", type=int, default=20)
+    parser.add_argument("--duration", type=float, default=BASELINE_DURATION)
+    parser.add_argument("--block-frames", type=int, default=BASELINE_BLOCK_FRAMES)
+    parser.add_argument(
+        "--speaker-amplitude", type=int, default=BASELINE_SPEAKER_AMPLITUDE
+    )
+    parser.add_argument(
+        "--haptics-amplitude", type=int, default=BASELINE_HAPTICS_AMPLITUDE
+    )
+    parser.add_argument(
+        "--hid-interval-ms", type=int, default=BASELINE_HID_INTERVAL_MS
+    )
     parser.add_argument("--audio-device", default="DualSense Wireless Controller")
     parser.add_argument("--serial-port", default="COM5")
     parser.add_argument("--status-log", type=Path)
@@ -174,6 +186,15 @@ def main() -> int:
             parser.error(f"{name} must be between 0 and 32767")
 
     device_index, device_name = find_audio_device(args.audio_device)
+    baseline_profile = (
+        args.duration == BASELINE_DURATION
+        and args.block_frames == BASELINE_BLOCK_FRAMES
+        and args.speaker_amplitude == BASELINE_SPEAKER_AMPLITUDE
+        and args.haptics_amplitude == BASELINE_HAPTICS_AMPLITUDE
+        and args.hid_interval_ms == BASELINE_HID_INTERVAL_MS
+        and not args.decoder_bench
+    )
+    profile_name = BASELINE_PROFILE if baseline_profile else "custom"
     decoder_cleanup_registered = False
     if args.decoder_bench:
         set_decoder_benchmark(args.serial_port, True)
@@ -181,7 +202,8 @@ def main() -> int:
         decoder_cleanup_registered = True
     print(f"audio device #{device_index}: {device_name}")
     print(
-        f"load: duration={args.duration:.1f}s block={args.block_frames} "
+        f"load: profile={profile_name} duration={args.duration:.1f}s "
+        f"block={args.block_frames} "
         f"speaker_amp={args.speaker_amplitude} haptics_amp={args.haptics_amplitude} "
         f"hid_interval={args.hid_interval_ms}ms "
         f"decoder_bench={'on' if args.decoder_bench else 'off'}"

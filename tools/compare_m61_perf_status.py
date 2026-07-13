@@ -24,6 +24,13 @@ def line_fields(data: bytes, prefix: str) -> dict[str, str]:
     raise ValueError(f"missing status line: {prefix}")
 
 
+def optional_line_fields(data: bytes, prefix: str) -> dict[str, str] | None:
+    try:
+        return line_fields(data, prefix)
+    except ValueError:
+        return None
+
+
 def integer(fields: dict[str, str], key: str) -> int:
     return int(fields[key], 0)
 
@@ -53,10 +60,10 @@ def main() -> int:
     perf1 = line_fields(after_data, "usb_perf ")
     cache0 = line_fields(before_data, "usb_cache ")
     cache1 = line_fields(after_data, "usb_cache ")
-    decode0 = line_fields(before_data, "usb_decode_perf ")
-    decode1 = line_fields(after_data, "usb_decode_perf ")
-    decode_cache0 = line_fields(before_data, "usb_decode_cache ")
-    decode_cache1 = line_fields(after_data, "usb_decode_cache ")
+    decode0 = optional_line_fields(before_data, "usb_decode_perf ")
+    decode1 = optional_line_fields(after_data, "usb_decode_perf ")
+    decode_cache0 = optional_line_fields(before_data, "usb_decode_cache ")
+    decode_cache1 = optional_line_fields(after_data, "usb_decode_cache ")
     haptics0 = line_fields(before_data, "usb_haptics ")
     haptics1 = line_fields(after_data, "usb_haptics ")
     audio0 = line_fields(before_data, "hidp_audio ")
@@ -79,9 +86,13 @@ def main() -> int:
         f"{interval_average(samples0, integer(perf0, 'instret_avg'), samples1, integer(perf1, 'instret_avg')):.3f}"
     )
 
-    decode_samples0 = integer(decode0, "samples")
-    decode_samples1 = integer(decode1, "samples")
-    if decode_samples1 > decode_samples0:
+    decode_available = all(
+        fields is not None
+        for fields in (decode0, decode1, decode_cache0, decode_cache1)
+    )
+    decode_samples0 = integer(decode0, "samples") if decode_available else 0
+    decode_samples1 = integer(decode1, "samples") if decode_available else 0
+    if decode_available and decode_samples1 > decode_samples0:
         decode_cycles0 = split_integers(decode0, "cycles")
         decode_cycles1 = split_integers(decode1, "cycles")
         decode_us0 = split_integers(decode0, "dec_us")
@@ -115,7 +126,7 @@ def main() -> int:
         ppm = misses * 1_000_000.0 / access if access else 0.0
         print(f"{label}_access_avg={access:.3f} {label}_miss_avg={misses:.3f} {label}_miss_ppm={ppm:.1f}")
 
-    if decode_samples1 > decode_samples0:
+    if decode_available and decode_samples1 > decode_samples0:
         for key, label in (
             ("ic_access/miss/ppm", "decode_icache"),
             ("dc_read/miss/ppm", "decode_dcache"),
