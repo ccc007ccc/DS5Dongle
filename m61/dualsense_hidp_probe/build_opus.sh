@@ -3,10 +3,11 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="1.2.1"
-ARCHIVE_SHA256="cfafd339ccd9c5ef8d6ab15d7e1a412c054bf4cb4ecbbbcc78c12ef2def70732"
-ARCHIVE_URL="https://archive.mozilla.org/pub/opus/opus-${VERSION}.tar.gz"
+PATCH_PROFILE="${M61_OPUS_PATCH_PROFILE:-e907}"
 VARIANT="${1:-O2-LTO}"
 TOOLCHAIN_BIN="${2:-${M61_TOOLCHAIN_BIN:-}}"
+ARCHIVE_SHA256="cfafd339ccd9c5ef8d6ab15d7e1a412c054bf4cb4ecbbbcc78c12ef2def70732"
+ARCHIVE_URL="https://archive.mozilla.org/pub/opus/opus-${VERSION}.tar.gz"
 
 case "$VARIANT" in
     O2)
@@ -42,19 +43,37 @@ fi
 ROOT="$PROJECT_DIR/.cache/third_party/opus-${VERSION}"
 ARCHIVE="$ROOT/opus-${VERSION}.tar.gz"
 SOURCE="$ROOT/opus-${VERSION}"
-PATCH_FILES=(
-    "$PROJECT_DIR/patches/opus-${VERSION}-disabled-prefilter-fastpath.patch"
-    "$PROJECT_DIR/patches/opus-${VERSION}-e907-clz32.patch"
-    "$PROJECT_DIR/patches/opus-${VERSION}-e907-exact-rcp.patch"
-    "$PROJECT_DIR/patches/opus-${VERSION}-e907-q16-smmwb.patch"
-    "$PROJECT_DIR/patches/opus-${VERSION}-e907-q15-kmmwb2.patch"
-)
-BUILD="$ROOT/build-${VARIANT}"
+case "$PATCH_PROFILE" in
+    upstream)
+        PATCH_FILES=()
+        PATCH_DEFINES=""
+        ;;
+    e907)
+        PATCH_FILES=(
+            "$PROJECT_DIR/patches/opus-${VERSION}-disabled-prefilter-fastpath.patch"
+            "$PROJECT_DIR/patches/opus-${VERSION}-e907-clz32.patch"
+            "$PROJECT_DIR/patches/opus-${VERSION}-e907-exact-rcp.patch"
+            "$PROJECT_DIR/patches/opus-${VERSION}-e907-q16-smmwb.patch"
+            "$PROJECT_DIR/patches/opus-${VERSION}-e907-q15-kmmwb2.patch"
+        )
+        PATCH_DEFINES="-DM61_OPUS_E907_CLZ32=1 -DM61_OPUS_E907_EXACT_RCP=1 -DM61_OPUS_E907_Q16_SMMWB=1 -DM61_OPUS_E907_Q15_KMMWB2=1"
+        ;;
+    *)
+        printf '[m61-opus-build] ERROR: patch profile must be upstream or e907\n' >&2
+        exit 1
+        ;;
+esac
+
+BUILD="$ROOT/build-${VARIANT}-${PATCH_PROFILE}"
 STAMP="$BUILD/.m61-config"
-PATCH_SHA256="$(sha256sum "${PATCH_FILES[@]}" | sha256sum | awk '{print $1}')"
+if [[ ${#PATCH_FILES[@]} -gt 0 ]]; then
+    PATCH_SHA256="$(sha256sum "${PATCH_FILES[@]}" | sha256sum | awk '{print $1}')"
+else
+    PATCH_SHA256="none"
+fi
 SOURCE_STAMP="$SOURCE/.m61-source-patch"
-EXPECTED_SOURCE_STAMP="patch=${PATCH_SHA256}"
-EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
+EXPECTED_SOURCE_STAMP="profile=${PATCH_PROFILE};patch=${PATCH_SHA256}"
+EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};profile=${PATCH_PROFILE};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
 
 mkdir -p "$ROOT"
 if [[ ! -f "$ARCHIVE" ]]; then
@@ -89,7 +108,7 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
         build_real="$(realpath "$BUILD")"
         root_real="$(realpath "$ROOT")"
         case "$build_real" in
-            "$root_real"/build-O2|"$root_real"/build-O2-LTO|"$root_real"/build-O3) rm -rf "$build_real" ;;
+            "$root_real"/build-O2-*|"$root_real"/build-O2-LTO-*|"$root_real"/build-O3-*) rm -rf "$build_real" ;;
             *)
                 printf '[m61-opus-build] ERROR: refusing to remove %s\n' "$build_real" >&2
                 exit 1
@@ -98,7 +117,7 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
     fi
     mkdir -p "$BUILD"
     cd "$BUILD"
-    CFLAGS="-${OPT} ${LTO_FLAGS} -DM61_OPUS_E907_CLZ32=1 -DM61_OPUS_E907_EXACT_RCP=1 -DM61_OPUS_E907_Q16_SMMWB=1 -DM61_OPUS_E907_Q15_KMMWB2=1 -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
+    CFLAGS="-${OPT} ${LTO_FLAGS} ${PATCH_DEFINES} -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
         "$SOURCE/configure" \
         --host=riscv64-unknown-elf \
         --disable-shared \
@@ -112,7 +131,7 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
     printf '%s\n' "$EXPECTED_STAMP" > "$STAMP"
 fi
 
-printf '[m61-opus-build] Building Opus %s %s\n' "$VERSION" "$VARIANT" >&2
+printf '[m61-opus-build] Building Opus %s %s profile=%s\n' "$VERSION" "$VARIANT" "$PATCH_PROFILE" >&2
 make -C "$BUILD" -j"${M61_BUILD_JOBS:-8}" >&2
 LIBRARY="$BUILD/.libs/libopus.a"
 [[ -f "$LIBRARY" ]] || {
