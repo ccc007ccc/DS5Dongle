@@ -423,6 +423,25 @@ selection已是主要栈峰值。后续停止继续优化小型复制，转向Op
 - 该候选位精确且两轮时间、cycles和instret方向一致，因此进入默认O2+LTO构建。当前
   可复现累计平均约5.34 ms，相对源码O2+LTO的6.240 ms改善约14.4%。
 
+### 2026-07-13：E907位精确Q15 `kmmwb2`（通过）
+
+- E907 `kmmwb2`直接返回signed word与signed low16乘积的bits 46:15，等价于
+  `MULT16_32_Q15`的算术右移15位。它只在`INT32_MIN * INT16_MIN`时饱和为
+  `INT32_MAX`；该数学结果是`+2^31`，超出此Opus宏明确要求的32位结果有效域，因此
+  对全部合法输入位精确。此前`smmwb+slli`候选会丢失product bit 15，不能替代本实现。
+- 边界组合和100万组随机输入验证全部通过，唯一排除项正是上述越域组合。1200帧
+  encoder流逐字节相同，SHA256均为`681a4b66369f631056a54bf8612f058922e0e713b78a566f5034c43c77e62060`；
+  71 B mic流重复解码24万帧，两版checksum均为`08cbb480`。
+- 最终LTO ELF包含161条`kmmwb2`；`opus_fft_impl`普通`mul`从117降至1，text从
+  0xBAC降至0x73C。全固件text从859154降至855826 B，减少3328 B；静态RAM不变，
+  ITCM布局不变。
+- 三轮独立baseline-v1共25,315帧，分别为5229/5389/5243 us，累计平均5287 us/
+  1693169 cycles/226993 instret。相对已提交Q16基线5340 us/1708397/251818，累计
+  改善约1.00%/0.89%/9.86%；P99从6500改善至6250 us。三轮speaker、haptics、BT、
+  USB的drop/deadline/stale/error均为0。
+- 该候选进入默认O2+LTO构建。当前可复现平均约5.287 ms，相对no-PVQ的5.370 ms改善
+  约1.55%，相对源码O2+LTO的6.240 ms累计改善约15.3%。
+
 ### 阶段 A：epoch 所有权
 
 - 消除逐 PCM 帧关中断。

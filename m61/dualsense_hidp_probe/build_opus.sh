@@ -47,6 +47,7 @@ PATCH_FILES=(
     "$PROJECT_DIR/patches/opus-${VERSION}-e907-clz32.patch"
     "$PROJECT_DIR/patches/opus-${VERSION}-e907-exact-rcp.patch"
     "$PROJECT_DIR/patches/opus-${VERSION}-e907-q16-smmwb.patch"
+    "$PROJECT_DIR/patches/opus-${VERSION}-e907-q15-kmmwb2.patch"
 )
 BUILD="$ROOT/build-${VARIANT}"
 STAMP="$BUILD/.m61-config"
@@ -97,7 +98,7 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
     fi
     mkdir -p "$BUILD"
     cd "$BUILD"
-    CFLAGS="-${OPT} ${LTO_FLAGS} -DM61_OPUS_E907_CLZ32=1 -DM61_OPUS_E907_EXACT_RCP=1 -DM61_OPUS_E907_Q16_SMMWB=1 -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
+    CFLAGS="-${OPT} ${LTO_FLAGS} -DM61_OPUS_E907_CLZ32=1 -DM61_OPUS_E907_EXACT_RCP=1 -DM61_OPUS_E907_Q16_SMMWB=1 -DM61_OPUS_E907_Q15_KMMWB2=1 -g0 -ffunction-sections -fdata-sections -fno-common -fstrict-volatile-bitfields -march=rv32imafcp_zpn_zpsfoperand_xtheade -mabi=ilp32f -mtune=e907" \
         "$SOURCE/configure" \
         --host=riscv64-unknown-elf \
         --disable-shared \
