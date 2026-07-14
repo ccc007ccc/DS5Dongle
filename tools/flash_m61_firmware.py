@@ -106,6 +106,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-b", "--baud", type=int, default=460800, help="download baudrate")
     parser.add_argument("--chip", default="bl616", help="Bouffalo chip name")
     parser.add_argument(
+        "--windows-build",
+        action="store_true",
+        help="flash the native Windows build-win artifacts instead of the WSL build artifacts",
+    )
+    parser.add_argument(
         "--reboot-isp",
         action="store_true",
         help="ask a running M61 helper/default shell to reboot into UART download mode before flashing",
@@ -134,7 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     app = FIRMWARE_APPS[args.app]
-    flash_config = app.directory / "flash_prog_cfg.ini"
+    build_dir = "build-win" if args.windows_build else "build"
+    config_name = "flash_prog_cfg_windows.ini" if args.windows_build else "flash_prog_cfg.ini"
+    flash_config = app.directory / config_name
 
     if not FLASH_TOOL.is_file():
         print(f"missing BLFlashCommand.exe: {FLASH_TOOL}", file=sys.stderr)
@@ -144,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.chip == "bl616":
-        firmware = app.directory / "build" / "build_out" / app.bl616_bin
+        firmware = app.directory / build_dir / "build_out" / app.bl616_bin
         if not firmware.is_file():
             print(f"missing firmware: {firmware}", file=sys.stderr)
             print(f"run: {app.build_command}", file=sys.stderr)
@@ -167,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         f"--baudrate={args.baud}",
         f"--port={args.port}",
         f"--chipname={args.chip}",
-        "--config=flash_prog_cfg.ini",
+        f"--config={config_name}",
     ]
     if not args.no_reset:
         cmd.append("--reset")
