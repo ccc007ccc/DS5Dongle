@@ -61,10 +61,12 @@ case "$PATCH_PROFILE" in
             "$PROJECT_DIR/patches/opus-${VERSION}-e907-pow2-div.patch"
             "$PROJECT_DIR/patches/opus-${VERSION}-e907-q16-smmwb.patch"
             "$PROJECT_DIR/patches/opus-${VERSION}-e907-q15-kmmwb2.patch"
+            "$PROJECT_DIR/patches/opus-${VERSION}-e907-fft-complex-mac.patch"
+            "$PROJECT_DIR/patches/opus-${VERSION}-e907-fft-forward-only.patch"
             "$PROJECT_DIR/patches/opus-${VERSION}-m61-tcm-placement.patch"
             "$PROJECT_DIR/patches/opus-${VERSION}-m61-stage-profile.patch"
         )
-        PATCH_DEFINES="-DM61_OPUS_E907_CLZ32=1 -DM61_OPUS_E907_EXACT_RCP=1 -DM61_OPUS_E907_POW2_DIV=1 -DM61_OPUS_E907_Q16_SMMWB=1 -DM61_OPUS_E907_Q15_KMMWB2=1"
+        PATCH_DEFINES="-DM61_OPUS_E907_CLZ32=1 -DM61_OPUS_E907_EXACT_RCP=1 -DM61_OPUS_E907_POW2_DIV=1 -DM61_OPUS_E907_Q16_SMMWB=1 -DM61_OPUS_E907_Q15_KMMWB2=1 -DM61_OPUS_E907_FFT_COMPLEX_MAC=1"
         ;;
     *)
         printf '[m61-opus-build] ERROR: patch profile must be upstream or e907\n' >&2
