@@ -87,6 +87,9 @@ case "$TCM_PROFILE" in
     pvq-mdct-energy-clusters)
         TCM_DEFINES="-DM61_OPUS_TCM_PVQ_CLUSTER=1 -DM61_OPUS_TCM_MDCT_CLUSTER=1 -DM61_OPUS_TCM_ENERGY_CLUSTER=1"
         ;;
+    pvq-mdct-tf-clusters)
+        TCM_DEFINES="-DM61_OPUS_TCM_PVQ_CLUSTER=1 -DM61_OPUS_TCM_MDCT_CLUSTER=1 -DM61_OPUS_TCM_TF_CLUSTER=1"
+        ;;
     *)
         printf '[m61-opus-build] ERROR: unsupported TCM profile: %s\n' "$TCM_PROFILE" >&2
         exit 1

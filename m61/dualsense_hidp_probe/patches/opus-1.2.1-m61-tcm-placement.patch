@@ -44,6 +44,11 @@ diff --git a/celt/celt_encoder.c b/celt/celt_encoder.c
 +__attribute__((section(".tcm_code.opus.mdct_cluster")))
 +#endif
  static void compute_mdcts(const CELTMode *mode, int shortBlocks, celt_sig * OPUS_RESTRICT in,
+@@ -578,1 +581,4 @@
++#if defined(M61_OPUS_TCM_TF_CLUSTER)
++__attribute__((section(".tcm_code.opus.tf_cluster")))
++#endif
+ static int tf_analysis(const CELTMode *m, int len, int isTransient,
 diff --git a/celt/kiss_fft.c b/celt/kiss_fft.c
 --- a/celt/kiss_fft.c
 +++ b/celt/kiss_fft.c

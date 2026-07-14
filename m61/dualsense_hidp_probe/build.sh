@@ -30,7 +30,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands|pvq-cluster|pvq-mdct-clusters|pvq-mdct-energy-clusters] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands|pvq-cluster|pvq-mdct-clusters|pvq-mdct-energy-clusters|pvq-mdct-tf-clusters] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -39,7 +39,7 @@ Environment:
   M61_TOOLCHAIN_BIN Optional T-HEAD toolchain bin directory.
   M61_OPUS_LIBRARY  Optional source-built libopus.a used instead of the SDK archive.
   M61_OPUS_VARIANT  source-o2-lto (default), source-o2, source-o3, sdk, or custom.
-  M61_OPUS_TCM_PROFILE  pvq-mdct-clusters (default); pvq-mdct-energy-clusters is experimental.
+  M61_OPUS_TCM_PROFILE  pvq-mdct-clusters (default); energy/tf cluster profiles are experimental.
   M61_OPUS_STAGE_PROFILE  y enables test-only CELT stage markers.
 
 Example:
