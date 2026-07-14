@@ -214,6 +214,27 @@ baseline-v1 各 8438 帧：
 保持递归调用簇连续后改善的整体链接布局和 cache set 行为。后续仍禁止按单函数大小猜测，
 应优先从 spectral/MDCT 阶段寻找经阶段计数证明的紧密调用簇，并逐个真机 A/B。
 
+2026-07-14 spectral/MDCT 的第一组紧密调用簇 A/B 已完成。候选在已保留的 PVQ 簇后追加
+`opus_fft_impl` 与 `compute_mdcts`，新增 3082 B cached OCRAM 代码；`.itcm` 总量为
+27176 B，链接器报告 RAM 使用 195952 B（46.11%）。测试固件 SHA256 为
+`6781749C3A88E80CCF85DC5C2B6C3EB8ED91ECCC3E518B2A7BC5A7AC5274EAA9`。
+
+刷写后的首轮测试因手柄电量耗尽而断连，`hidp_audio sent=0 / stale=2684`，按规则排除。
+手柄插电重连后，两轮 baseline-v1 有效结果为：
+
+- 第一轮：3914 us / 1,254,645 cycles / 209,860 instret / 2566 I-cache miss；
+- 第二轮：4027 us / 1,291,829 cycles / 212,422 instret / 2647 I-cache miss；
+- 16875 帧加权平均：3971 us / 1,273,238 cycles / 211,141 instret /
+  2607 I-cache miss；
+- 相对 PVQ-only 正式基线，时间下降约 13.65%，cycles 下降约 13.56%，instret 下降约
+  3.62%，I-cache miss 下降约 14.60%；
+- 两轮 queue drop、deadline、BT stale 增量、编码错误均为 0；整个启动周期记录到的编码
+  最大值为 5723 us，累计 P99 为 5000 us，均不高于 PVQ-only 的 5750 us P99。
+
+因此保留 MDCT/FFT 紧密调用簇，并把 `pvq-mdct-clusters` 设为源码 Opus 的默认正式配置。
+这两个函数在 LTO 后仍形成独立、相邻的 3082 B 调用单元，显著减少 spectral 阶段引起的
+XIP refill 和全编码路径 cache 冲突；没有改动任何算术、码率、声道或位流逻辑。
+
 ### P3：启用并测量 pSRAM
 
 先只初始化 pSRAM并做带宽、随机延迟和 cache miss 测试，不移动实时对象。确认启动、
@@ -223,10 +244,11 @@ baseline-v1 各 8438 帧：
 ## 8. 当前决策
 
 - 保留 Opus 1.2.1 fixed 和已验证的位精确 E907 Q15/Q16 等优化。
-- 正式默认启用五函数 `pvq-cluster` cached OCRAM 放置；当前两轮累计编码基线更新为
-  4598 us / 1,472,957 cycles / 219,064 instret / 3052 I-cache miss，P99 5750 us。
+- 正式默认启用 `pvq-mdct-clusters` cached OCRAM 放置；当前两轮加权编码基线更新为
+  3971 us / 1,273,238 cycles / 211,141 instret / 2607 I-cache miss，累计 P99 5000 us。
 - 不再测试 Opus 1.6.1，也不再整体搬迁 Opus 到 SDK 所谓 `.itcm`。
-- 保留 D-cache preload=1、AMR=1；继续只对阶段计数证明的紧密调用簇做 RAM A/B。
+- 保留 D-cache preload=1、AMR=1；继续只对阶段计数证明的紧密调用簇做 RAM A/B，下一组
+  候选从 spectral 阶段剩余的 band energy/normalisation 路径中选择。
 - pSRAM 是容量工具，不是未经测量的性能工具。
 - CPU 已在原厂 320 MHz 上限，Flash 已在 80 MHz QIO 优化模式；不以超频作为方案。
 
