@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Production', 'Core', 'Pipeline', 'Stage', 'Any')]
+    [ValidateSet('Production', 'Core', 'Pipeline', 'Stage', 'Mic', 'Any')]
     [string]$ExpectedProfile = 'Core',
 
     [string]$Distro = 'Ubuntu',
@@ -52,26 +52,33 @@ $HasPipeline =
     $Flags -match '(^|\s)-DCONFIG_M61_PIPELINE_PROFILE=1(\s|$)'
 $HasStage =
     $Flags -match '(^|\s)-DCONFIG_M61_OPUS_STAGE_PROFILE=1(\s|$)'
+$HasMic =
+    $Flags -match '(^|\s)-DCONFIG_M61_DS5_MIC_DEFAULT_ENABLED=1(\s|$)'
 
 switch ($ExpectedProfile) {
     'Production' {
-        if ($HasCore -or $HasPipeline -or $HasStage) {
-            throw 'Expected a production build, but profiling is enabled.'
+        if ($HasCore -or $HasPipeline -or $HasStage -or $HasMic) {
+            throw 'Expected a production build, but profiling or mic diagnostics are enabled.'
         }
     }
     'Core' {
-        if (-not $HasCore -or $HasPipeline -or $HasStage) {
+        if (-not $HasCore -or $HasPipeline -or $HasStage -or $HasMic) {
             throw 'Expected core HPM only: pipeline and Opus stage profiling must be off.'
         }
     }
     'Pipeline' {
-        if (-not $HasCore -or -not $HasPipeline -or $HasStage) {
+        if (-not $HasCore -or -not $HasPipeline -or $HasStage -or $HasMic) {
             throw 'Expected pipeline profiling without Opus stage profiling.'
         }
     }
     'Stage' {
-        if (-not $HasCore -or $HasPipeline -or -not $HasStage) {
+        if (-not $HasCore -or $HasPipeline -or -not $HasStage -or $HasMic) {
             throw 'Expected Opus stage profiling with core HPM and pipeline profiling off.'
+        }
+    }
+    'Mic' {
+        if (-not $HasCore -or $HasPipeline -or $HasStage -or -not $HasMic) {
+            throw 'Expected mic diagnostics with core HPM only.'
         }
     }
 }

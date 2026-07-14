@@ -123,6 +123,38 @@ class HidLoadThread(threading.Thread):
                 hid.close_handle(handle)
 
 
+class MicInputMonitor:
+    def __init__(self) -> None:
+        self.frames = 0
+        self.nonzero_samples = 0
+        self.status_events = 0
+
+    def callback(self, indata: object, frames: int, _time: object, status: object) -> None:
+        samples = np.frombuffer(indata, dtype=np.int16)
+        self.frames += frames
+        self.nonzero_samples += int(np.count_nonzero(samples))
+        if status:
+            self.status_events += 1
+
+
+def find_audio_input_device(name_fragment: str) -> tuple[int, str, int]:
+    candidates: list[tuple[int, str, str, int]] = []
+    fragment = name_fragment.casefold()
+    for index, device in enumerate(sd.query_devices()):
+        channels = int(device.get("max_input_channels", 0) or 0)
+        name = str(device.get("name", ""))
+        if channels <= 0 or fragment not in name.casefold():
+            continue
+        hostapi = str(sd.query_hostapis(int(device["hostapi"]))["name"])
+        candidates.append((index, name, hostapi, channels))
+
+    if not candidates:
+        raise RuntimeError(f"no input device matching {name_fragment!r}")
+    candidates.sort(key=lambda item: ("wasapi" not in item[2].casefold(), item[0]))
+    index, name, hostapi, channels = candidates[0]
+    return index, f"{name} [{hostapi}]", channels
+
+
 def capture_status(port: str, output: Path) -> None:
     with serial.Serial(port, 115200, timeout=0.2, rtscts=False, dsrdtr=False) as ser:
         ser.reset_input_buffer()
@@ -170,6 +202,11 @@ def main() -> int:
         action="store_true",
         help="enable synthetic mic decode only for this run and always disable it on exit",
     )
+    parser.add_argument(
+        "--mic-input",
+        action="store_true",
+        help="open and continuously drain the DualSense USB microphone endpoint",
+    )
     parser.add_argument("--list-devices", action="store_true")
     args = parser.parse_args()
 
@@ -186,6 +223,7 @@ def main() -> int:
             parser.error(f"{name} must be between 0 and 32767")
 
     device_index, device_name = find_audio_device(args.audio_device)
+    mic_device = find_audio_input_device(args.audio_device) if args.mic_input else None
     baseline_profile = (
         args.duration == BASELINE_DURATION
         and args.block_frames == BASELINE_BLOCK_FRAMES
@@ -193,6 +231,7 @@ def main() -> int:
         and args.haptics_amplitude == BASELINE_HAPTICS_AMPLITUDE
         and args.hid_interval_ms == BASELINE_HID_INTERVAL_MS
         and not args.decoder_bench
+        and not args.mic_input
     )
     profile_name = BASELINE_PROFILE if baseline_profile else "custom"
     decoder_cleanup_registered = False
@@ -206,8 +245,11 @@ def main() -> int:
         f"block={args.block_frames} "
         f"speaker_amp={args.speaker_amplitude} haptics_amp={args.haptics_amplitude} "
         f"hid_interval={args.hid_interval_ms}ms "
-        f"decoder_bench={'on' if args.decoder_bench else 'off'}"
+        f"decoder_bench={'on' if args.decoder_bench else 'off'} "
+        f"mic_input={'on' if args.mic_input else 'off'}"
     )
+    if mic_device is not None:
+        print(f"mic device #{mic_device[0]}: {mic_device[1]} channels={mic_device[2]}")
 
     before_status_log = None
     if args.status_log is not None:
@@ -222,7 +264,19 @@ def main() -> int:
     first_frame = 0
     total_frames = int(round(args.duration * SAMPLE_RATE))
     started = time.perf_counter()
+    mic_monitor = MicInputMonitor()
+    mic_stream = None
     try:
+        if mic_device is not None:
+            mic_stream = sd.RawInputStream(
+                samplerate=SAMPLE_RATE,
+                channels=mic_device[2],
+                dtype="int16",
+                device=mic_device[0],
+                blocksize=args.block_frames,
+                callback=mic_monitor.callback,
+            )
+            mic_stream.start()
         with sd.RawOutputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -243,6 +297,9 @@ def main() -> int:
                 first_frame += frames
             stream.write(bytes(args.block_frames * CHANNELS * 2))
     finally:
+        if mic_stream is not None:
+            mic_stream.stop()
+            mic_stream.close()
         hid_thread.stop_event.set()
         hid_thread.join(timeout=2.0)
 
@@ -256,6 +313,12 @@ def main() -> int:
         f"completed: frames={first_frame} elapsed={elapsed:.3f}s "
         f"hid_reports={hid_thread.sent}"
     )
+    if mic_device is not None:
+        print(
+            f"mic captured_frames={mic_monitor.frames} "
+            f"nonzero_samples={mic_monitor.nonzero_samples} "
+            f"status_events={mic_monitor.status_events}"
+        )
     if args.status_log is not None:
         capture_status(args.serial_port, args.status_log)
         print(f"status after: {args.status_log}")

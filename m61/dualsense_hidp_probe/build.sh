@@ -16,6 +16,7 @@ HPM_PROFILE="n"
 PIPELINE_PROFILE="n"
 MEMORY_BENCH="n"
 OPUS_STAGE_PROFILE="n"
+MIC_PROFILE="n"
 OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
 OPUS_VARIANT="${M61_OPUS_VARIANT:-source-o2-lto}"
 OPUS_TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-mdct-clusters}"
@@ -31,7 +32,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--pipeline-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands|pvq-cluster|pvq-mdct-clusters|pvq-mdct-decode-mdct|pvq-mdct-decode-clusters|pvq-mdct-energy-clusters|pvq-mdct-tf-clusters] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -133,6 +134,7 @@ build_project() {
     log "Opus: ${OPUS_LIBRARY:-SDK prebuilt}"
     log "Opus TCM profile: $OPUS_TCM_PROFILE"
     log "Opus stage profile: $OPUS_STAGE_PROFILE"
+    log "Mic diagnostic profile: $MIC_PROFILE"
 
     cd "$PROJECT_DIR"
 
@@ -144,6 +146,7 @@ build_project() {
         "CONFIG_M61_PIPELINE_PROFILE=$PIPELINE_PROFILE"
         "CONFIG_M61_MEMORY_BENCH=$MEMORY_BENCH"
         "CONFIG_M61_OPUS_STAGE_PROFILE=$OPUS_STAGE_PROFILE"
+        "CONFIG_M61_DS5_MIC_DEFAULT_ENABLED=$MIC_PROFILE"
     )
 
     if [[ -n "$CPU_ID" ]]; then
@@ -184,6 +187,11 @@ while [[ $# -gt 0 ]]; do
         --pipeline-profile)
             HPM_PROFILE="y"
             PIPELINE_PROFILE="y"
+            shift
+            ;;
+        --mic-profile)
+            HPM_PROFILE="y"
+            MIC_PROFILE="y"
             shift
             ;;
         --memory-bench)

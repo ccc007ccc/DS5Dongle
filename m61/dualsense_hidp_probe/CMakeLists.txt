@@ -36,6 +36,11 @@ if(CONFIG_M61_HPM_PROFILE)
     # of every realtime task.
     target_compile_definitions(libshell PRIVATE SHELL_THREAD_STACK_SIZE=2048)
 endif()
+if(CONFIG_M61_DS5_MIC_DEFAULT_ENABLED)
+    # Diagnostic-only until full-duplex pressure tests prove enough headroom.
+    target_compile_definitions(app PRIVATE
+        CONFIG_M61_DS5_MIC_DEFAULT_ENABLED=1)
+endif()
 if(CONFIG_M61_PIPELINE_PROFILE)
     target_compile_definitions(app PRIVATE
         CONFIG_M61_HPM_PROFILE=1
