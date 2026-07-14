@@ -471,6 +471,32 @@ collapse-mask block size 和 `N_B/B` 的除数均严格为二次幂。E907 profi
 后续候选的约束，不能用 decoder 收益隐藏。该结果也再次表明 16 B 级代码布局变化即可显著
 改变 E907 I-cache 行为，后续 PVQ 补丁必须记录关键函数地址和全链路 HPM。
 
+### 7.10 PVQ 只读表 `.tcm_data` 实验否决
+
+真实 71 B mic fixture 的 host profile 显示每帧约调用 `decode_pulses()` 21.65 次。其
+`CELT_PVQ_U_DATA`（5,088 B）和 `CELT_PVQ_U_ROW`（60 B）原本位于 Flash `.rodata`，因此
+测试了把二者完整放入启动复制的 `.tcm_data`。候选中表地址从 `0xA00B...` 变为
+`0x62FC...`，静态物理 RAM 从 197,156 B 增至 202,388 B，RAM gate 仍有 108,140 B 余量。
+
+90 秒同负载并发结果相对 7.9 的保留版为：
+
+| 指标 | 7.9 保留版 | PVQ 表 `.tcm_data` | 变化 |
+| --- | ---: | ---: | ---: |
+| encode cycles | 1,357,295 | 1,373,948 | +1.23% |
+| decode cycles | 845,589 | 960,818 | +13.63% |
+| 合计 cycles | 2,202,884 | 2,334,766 | +5.99% |
+| encode I-miss | 2,815 | 2,862 | +1.67% |
+| decode I-miss | 1,693 | 1,998 | +18.02% |
+| encode D-read miss | 708 | 695 | -1.84% |
+| decode D-read miss | 507 | 552 | +8.88% |
+
+候选 encode P50/P95/P99/max 为 4750/5750/6000/6146 us，decode 为
+3000/4000/4000/4633 us，均未显示尾延迟收益；所有 drop/deadline/cancel/stale/error 为 0。
+链接脚本把 `.itcm`、`.dtcm` 都放入同一 `ram` MEMORY region；section 名称本身不能证明是
+更快的数据层。移走 5 KiB Flash rodata 还使后续 Flash 代码地址整体改变，最终 I-cache 和
+指令数回归压过任何潜在查表收益。该布局保留为实验 profile 便于复现，但正式默认不采用；
+后续不继续把大型 Opus 只读表整体搬入 `.tcm_data`。
+
 ## 8. 代码级性能问题清单
 
 ### P0：必须先修的正确性与测量问题
