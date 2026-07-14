@@ -35,14 +35,17 @@ Ai-M61-32S 模组本身有原生 USB2.0 引脚：
 在 Windows PowerShell 中：
 
 ```powershell
-wsl bash /mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh
+cd C:\code\MCU\DS5Dongle_ref\m61\dualsense_hidp_probe
+.\build_windows.ps1 -Command All
 ```
 
 产物：
 
 ```text
-m61/dualsense_hidp_probe/build/build_out/m61_dualsense_hidp_probe_bl616.bin
+m61/dualsense_hidp_probe/build-win/build_out/m61_dualsense_hidp_probe_bl616.bin
 ```
+
+WSL 回退构建仍可使用 `./build.sh`，但不要跨宿主复用 Opus LTO archive。
 
 ## M61 刷写
 

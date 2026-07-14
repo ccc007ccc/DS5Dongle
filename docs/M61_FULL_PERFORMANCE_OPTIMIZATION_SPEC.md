@@ -88,7 +88,9 @@ VDMA、FreeRTOS、Bluetooth net_buf/L2CAP、CRC 工具、pSRAM 和 GLB 总线寄
 - 不把“不操作就不发包”“静音不编码”等空闲省算力计入最终容量收益。
 - 算术优化优先位精确。非位精确候选必须证明相对参考质量没有客观下降，并同时通过真机
   P99、drop、deadline 和主观听感门槛。
-- 所有 M61 固件必须在 WSL 中构建；刷写后开发板需要人工 reset 或 USB 重新上电。
+- M61 固件允许使用已验证的 Windows 原生或 WSL Xuantie GCC 构建；跨宿主不得混用 GCC
+  LTO archive。新宿主生成的固件必须先通过静态 gate 和真机 HPM 对照，才能替换性能基线。
+  刷写后开发板仍需要人工 reset 或 USB 重新上电。
 - 每个有效优化独立提交 Git；被否决实验可以提交测试结论，但不得留在正式默认配置。
 
 ## 3. BL616/BL618 硬件性能模型
@@ -628,9 +630,25 @@ profile 宏只加到应用目标，禁止再次传播到 RF/PHY/BT 驱动。
 
 ## 12. 构建、刷写和 Git 规范
 
-### 12.1 WSL 构建
+### 12.1 Windows 原生与 WSL 构建
 
-所有正式和 profile 固件从 Windows 工程目录进入 WSL 执行。正式推荐入口：
+Windows 原生构建使用 SDK 自带 CMake、Ninja、`mingw32-make` 和 Xuantie GCC 10.2.0。
+Opus 1.2.1 必须由 Windows 工具链重新生成 O2/LTO archive；Linux 生成的 GCC LTO IR 不能
+交给 Windows `lto1.exe` 链接。推荐入口：
+
+```powershell
+cd C:\code\MCU\DS5Dongle_ref\m61\dualsense_hidp_probe
+.\build_windows.ps1 -Command All
+.\build_windows.ps1 -Command All -HpmProfile
+```
+
+`-RebuildOpus` 仅用于需要从头验证 Opus archive 的场景。Windows 构建使用独立
+`build-win/`，不得与 WSL 的 `build/` 互相复用。2026-07-14 静态验证结果：clean Opus +
+clean SDK profile build 为 58.12 s，`.itcm=27176 B`，realtime RAM gate 通过；该宿主生成
+固件在替换正式性能基线前仍必须完成真机 HPM 对照。
+
+WSL 继续作为回退和交叉核验路径。避免在 `/mnt/c` 做频繁 clean build；SDK 的大量小文件
+和元数据扫描会受到挂载层显著影响。WSL 推荐入口：
 
 ```bash
 cd /mnt/c/code/MCU/DS5Dongle_ref/m61/dualsense_hidp_probe
@@ -638,7 +656,8 @@ cd /mnt/c/code/MCU/DS5Dongle_ref/m61/dualsense_hidp_probe
 ./build.sh build --opus-source-o2-lto --opus-tcm-profile pvq-mdct-clusters
 ```
 
-profile 必须使用独立构建状态或完整 clean，显式加入需要的 profile flag。构建后运行：
+无论使用哪个宿主，profile 都必须使用独立构建状态或完整 clean，显式加入需要的 profile
+flag。构建后运行：
 
 - ELF/section/关键符号检查；
 - `check_m61_realtime_memory.py`；

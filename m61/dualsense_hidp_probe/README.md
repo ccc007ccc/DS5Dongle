@@ -28,8 +28,14 @@ will not show up as a controller or audio device.
 Build:
 
 ```powershell
-wsl bash /mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh
+cd C:\code\MCU\DS5Dongle_ref\m61\dualsense_hidp_probe
+.\build_windows.ps1 -Command All
 ```
+
+Use `-HpmProfile` for performance instrumentation and `-RebuildOpus` only when
+the Windows-native Opus 1.2.1 O2/LTO archive must be rebuilt from scratch.
+The WSL `build.sh` path remains available for cross-checking; GCC LTO archives
+must not be shared between Linux and Windows toolchain hosts.
 
 Flash after putting M61 into UART download mode:
 

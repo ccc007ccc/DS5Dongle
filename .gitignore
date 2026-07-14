@@ -1,4 +1,5 @@
 build/
+build-win/
 build_raw_hidp/
 managed_components/
 dependencies.lock
