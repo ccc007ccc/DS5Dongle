@@ -1,13 +1,28 @@
 diff --git a/celt/bands.c b/celt/bands.c
 --- a/celt/bands.c
 +++ b/celt/bands.c
-@@ -1394,6 +1394,9 @@ static void special_hybrid_folding(const CELTMode *m, celt_norm *norm, celt_no
-       OPUS_COPY(&norm2[n1], &norm2[2*n1 - n2], n2-n1);
- }
- 
-+#if defined(M61_OPUS_TCM_QUANT_ALL_BANDS)
+@@ -700,1 +700,4 @@
++#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
++__attribute__((section(".tcm_code.opus.pvq_cluster")))
++#endif
+ static void compute_theta(struct band_ctx *ctx, struct split_ctx *sctx,
+@@ -944,1 +947,4 @@
++#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
++__attribute__((section(".tcm_code.opus.pvq_cluster")))
++#endif
+ static unsigned quant_partition(struct band_ctx *ctx, celt_norm *X,
+@@ -1109,1 +1115,4 @@
++#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
++__attribute__((section(".tcm_code.opus.pvq_cluster")))
++#endif
+ static unsigned quant_band(struct band_ctx *ctx, celt_norm *X,
+@@ -1235,1 +1244,4 @@
++#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
++__attribute__((section(".tcm_code.opus.pvq_cluster")))
++#endif
+ static unsigned quant_band_stereo(struct band_ctx *ctx, celt_norm *X, celt_norm *Y,
+@@ -1397,1 +1409,4 @@
++#if defined(M61_OPUS_TCM_QUANT_ALL_BANDS) || defined(M61_OPUS_TCM_PVQ_CLUSTER)
 +__attribute__((section(".tcm_code.opus.quant_all_bands")))
 +#endif
  void quant_all_bands(int encode, const CELTMode *m, int start, int end,
-       celt_norm *X_, celt_norm *Y_, unsigned char *collapse_masks,
-       const celt_ener *bandE, int *pulses, int shortBlocks, int spread,

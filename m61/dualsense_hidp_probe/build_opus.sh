@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="1.2.1"
 PATCH_PROFILE="${M61_OPUS_PATCH_PROFILE:-e907}"
-TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-none}"
+TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-cluster}"
 STAGE_PROFILE="${M61_OPUS_STAGE_PROFILE:-0}"
 VARIANT="${1:-O2-LTO}"
 TOOLCHAIN_BIN="${2:-${M61_TOOLCHAIN_BIN:-}}"
@@ -78,8 +78,11 @@ case "$TCM_PROFILE" in
     quant-all-bands)
         TCM_DEFINES="-DM61_OPUS_TCM_QUANT_ALL_BANDS=1"
         ;;
+    pvq-cluster)
+        TCM_DEFINES="-DM61_OPUS_TCM_PVQ_CLUSTER=1"
+        ;;
     *)
-        printf '[m61-opus-build] ERROR: TCM profile must be none or quant-all-bands\n' >&2
+        printf '[m61-opus-build] ERROR: TCM profile must be none, quant-all-bands, or pvq-cluster\n' >&2
         exit 1
         ;;
 esac
