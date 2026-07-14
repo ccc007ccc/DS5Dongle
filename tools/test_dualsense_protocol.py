@@ -586,6 +586,8 @@ def test_c_source_contract() -> None:
     ]
     for snippet in m61_audio_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
+    assert "m61_audio_epoch_fallback_due_pair" not in m61_audio_epoch_source
+    assert "m61_audio_epoch_fallback_due_pair" not in m61_usb_source
     m61_bridge_snippets = [
         "m61_bt_tx_scheduler_ingest_epoch_pair(&hidp_tx_scheduler)",
         "bt_mic_active",

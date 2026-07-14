@@ -80,8 +80,6 @@
 #endif
 #define AUDIO_CODEC_TASK_STACK_WORDS 8192
 #define AUDIO_CODEC_TASK_PRIORITY (configMAX_PRIORITIES - 4)
-#define AUDIO_HAPTICS_DEADLINE_US 32000ULL
-#define AUDIO_SPEAKER_ENCODE_BUDGET_US 9000ULL
 #define AUDIO_INGRESS_TASK_STACK_WORDS 1024
 #define AUDIO_INGRESS_TASK_PRIORITY (configMAX_PRIORITIES - 3)
 #define AUDIO_OPUS_ENCODER_STATE_MAX 49152U
@@ -474,6 +472,16 @@ static volatile uint8_t audio_ingress_high_water;
 static volatile uint32_t audio_ingress_dropped;
 static volatile uint32_t audio_ingress_sequence;
 static volatile uint32_t audio_ingress_gaps;
+static uint64_t audio_out_last_captured_us;
+static uint64_t audio_out_interval_us_total;
+static uint32_t audio_out_interval_samples;
+static uint32_t audio_out_interval_us_last;
+static uint32_t audio_out_interval_us_min;
+static uint32_t audio_out_interval_us_max;
+static uint32_t audio_out_frames_48_packets;
+static uint32_t audio_out_frames_49_packets;
+static uint32_t audio_out_frames_other_packets;
+static bool audio_out_last_capture_valid;
 static volatile uint8_t audio_mic_packet_state[AUDIO_MIC_PACKET_DEPTH];
 static volatile uint8_t audio_mic_packet_producer_cursor;
 static volatile uint8_t audio_mic_packet_consumer_cursor;
@@ -590,6 +598,7 @@ static void reset_audio_pipeline(bool cancel_active_dma)
         audio_ingress_active_slot = AUDIO_INGRESS_INVALID_SLOT;
         audio_out_armed = false;
     }
+    audio_out_last_capture_valid = false;
     m61_audio_epoch_reset(audio_generation);
     usb_unlock(flags);
 }
@@ -1236,12 +1245,24 @@ static void audio_ingress_task(void *pvParameters)
                 break;
             }
             expected_sequence = packet.sequence + 1U;
+#if CONFIG_M61_HPM_PROFILE
+            uint64_t ingress_work_start_us = bflb_mtimer_get_time_us();
+#endif
             m61_audio_epoch_ingest_usb(packet.data,
                                        packet.len,
                                        packet.generation,
                                        packet.captured_us,
                                        packet.speaker_enabled != 0U,
                                        HAPTICS_GAIN_Q8);
+#if CONFIG_M61_HPM_PROFILE
+            uint64_t ingress_work_elapsed_us =
+                bflb_mtimer_get_time_us() - ingress_work_start_us;
+            m61_perf_profile_record_timing(
+                M61_PERF_TIMING_INGRESS_WORK,
+                ingress_work_elapsed_us > UINT32_MAX
+                    ? UINT32_MAX
+                    : (uint32_t)ingress_work_elapsed_us);
+#endif
             release_audio_ingress(&packet);
         }
     }
@@ -1340,14 +1361,6 @@ static void audio_codec_task(void *pvParameters)
         }
 #endif
 
-        if (m61_audio_epoch_fallback_due_pair(
-                bflb_mtimer_get_time_us(),
-                AUDIO_HAPTICS_DEADLINE_US,
-                AUDIO_SPEAKER_ENCODE_BUDGET_US)) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-            continue;
-        }
-
         while (speaker_budget > 0 && encoder &&
                m61_audio_epoch_take_encode_job(&speaker_job)) {
             uint64_t encode_start_us;
@@ -1356,8 +1369,20 @@ static void audio_codec_task(void *pvParameters)
             m61_perf_counter_sample_t perf_start;
 #endif
             usb_diag.audio_codec_stage = 3;
+#if CONFIG_M61_HPM_PROFILE
+            uint64_t resample_start_us = bflb_mtimer_get_time_us();
+#endif
             resample_epoch_speaker_mono(speaker_frame,
                                         speaker_job.speaker_pcm);
+#if CONFIG_M61_HPM_PROFILE
+            uint64_t resample_elapsed_us =
+                bflb_mtimer_get_time_us() - resample_start_us;
+            m61_perf_profile_record_timing(
+                M61_PERF_TIMING_RESAMPLE,
+                resample_elapsed_us > UINT32_MAX
+                    ? UINT32_MAX
+                    : (uint32_t)resample_elapsed_us);
+#endif
             encode_start_us = bflb_mtimer_get_time_us();
 #if CONFIG_M61_HPM_PROFILE
             m61_perf_profile_counter_begin(&perf_start);
@@ -1888,6 +1913,36 @@ static void usbd_audio_out_ep_callback(uint8_t busid, uint8_t ep, uint32_t nbyte
             nbytes = AUDIO_OUT_PACKET_SIZE;
         }
         if (nbytes > 0U) {
+            uint32_t frames = nbytes / AUDIO_FRAME_BYTES;
+
+            if (frames == 48U) {
+                audio_out_frames_48_packets++;
+            } else if (frames == 49U) {
+                audio_out_frames_49_packets++;
+            } else {
+                audio_out_frames_other_packets++;
+            }
+            if (audio_out_last_capture_valid &&
+                captured_us >= audio_out_last_captured_us) {
+                uint64_t interval_us =
+                    captured_us - audio_out_last_captured_us;
+                uint32_t interval_u32 = interval_us > UINT32_MAX
+                                            ? UINT32_MAX
+                                            : (uint32_t)interval_us;
+
+                audio_out_interval_samples++;
+                audio_out_interval_us_last = interval_u32;
+                audio_out_interval_us_total += interval_u32;
+                if (audio_out_interval_us_min == 0U ||
+                    interval_u32 < audio_out_interval_us_min) {
+                    audio_out_interval_us_min = interval_u32;
+                }
+                if (interval_u32 > audio_out_interval_us_max) {
+                    audio_out_interval_us_max = interval_u32;
+                }
+            }
+            audio_out_last_captured_us = captured_us;
+            audio_out_last_capture_valid = true;
             slot->captured_us = captured_us;
             slot->sequence = audio_ingress_sequence++;
             slot->len = (uint16_t)nbytes;
@@ -2397,6 +2452,30 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_close = usb_diag.audio_close;
     diag->audio_out_packets = usb_diag.audio_out_packets;
     diag->audio_out_bytes = usb_diag.audio_out_bytes;
+    {
+        uintptr_t flags = usb_lock();
+
+        diag->audio_out_frames_48_packets = audio_out_frames_48_packets;
+        diag->audio_out_frames_49_packets = audio_out_frames_49_packets;
+        diag->audio_out_frames_other_packets =
+            audio_out_frames_other_packets;
+        diag->audio_out_interval_samples = audio_out_interval_samples;
+        diag->audio_out_interval_us_last = audio_out_interval_us_last;
+        diag->audio_out_interval_us_average =
+            audio_out_interval_samples != 0U
+                ? (uint32_t)(audio_out_interval_us_total /
+                             audio_out_interval_samples)
+                : 0U;
+        diag->audio_out_interval_us_min = audio_out_interval_us_min;
+        diag->audio_out_interval_us_max = audio_out_interval_us_max;
+        usb_unlock(flags);
+    }
+    diag->audio_epoch_interval_samples = epoch_stats.epoch_interval_samples;
+    diag->audio_epoch_interval_us_last = epoch_stats.epoch_interval_us_last;
+    diag->audio_epoch_interval_us_average =
+        epoch_stats.epoch_interval_us_average;
+    diag->audio_epoch_interval_us_min = epoch_stats.epoch_interval_us_min;
+    diag->audio_epoch_interval_us_max = epoch_stats.epoch_interval_us_max;
     diag->audio_ingress_dropped = audio_ingress_dropped;
     diag->audio_ingress_gaps = audio_ingress_gaps;
     diag->audio_in_packets = usb_diag.audio_in_packets;

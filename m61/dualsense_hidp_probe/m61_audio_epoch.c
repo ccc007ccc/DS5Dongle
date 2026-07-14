@@ -21,7 +21,10 @@ _Static_assert(sizeof(m61_audio_epoch_t) % M61_CACHE_LINE_BYTES == 0U,
 typedef struct {
     m61_audio_epoch_t slots[M61_AUDIO_EPOCH_SLOT_COUNT];
     m61_audio_epoch_stats_t stats;
+    uint64_t epoch_interval_us_total;
+    uint64_t last_epoch_captured_us;
     uint8_t filling_slot;
+    bool last_epoch_capture_valid;
 } audio_epoch_store_t;
 
 static audio_epoch_store_t s_store __attribute__((aligned(M61_CACHE_LINE_BYTES)));
@@ -107,6 +110,27 @@ static int allocate_slot_locked(uint64_t captured_us, bool speaker_enabled)
         s_store.stats.epochs_dropped++;
     }
 
+    if (s_store.last_epoch_capture_valid &&
+        captured_us >= s_store.last_epoch_captured_us) {
+        uint64_t interval_us = captured_us - s_store.last_epoch_captured_us;
+        uint32_t interval_u32 = interval_us > UINT32_MAX
+                                    ? UINT32_MAX
+                                    : (uint32_t)interval_us;
+
+        s_store.stats.epoch_interval_samples++;
+        s_store.stats.epoch_interval_us_last = interval_u32;
+        s_store.epoch_interval_us_total += interval_u32;
+        if (s_store.stats.epoch_interval_us_min == 0U ||
+            interval_u32 < s_store.stats.epoch_interval_us_min) {
+            s_store.stats.epoch_interval_us_min = interval_u32;
+        }
+        if (interval_u32 > s_store.stats.epoch_interval_us_max) {
+            s_store.stats.epoch_interval_us_max = interval_u32;
+        }
+    }
+    s_store.last_epoch_captured_us = captured_us;
+    s_store.last_epoch_capture_valid = true;
+
     m61_audio_epoch_t *slot = &s_store.slots[selected];
     slot->generation = s_store.stats.generation;
     slot->epoch = s_store.stats.next_epoch++;
@@ -134,6 +158,7 @@ void m61_audio_epoch_reset(uint32_t generation)
     s_store.stats.next_epoch = 0;
     s_store.stats.generation_resets++;
     s_store.filling_slot = INVALID_SLOT;
+    s_store.last_epoch_capture_valid = false;
     for (uint8_t i = 0; i < M61_AUDIO_EPOCH_SLOT_COUNT; i++) {
         m61_audio_epoch_t *slot = &s_store.slots[i];
         if (slot->state == M61_AUDIO_EPOCH_ENCODING ||
@@ -355,78 +380,6 @@ bool m61_audio_epoch_complete_encode(uint32_t generation, uint32_t epoch,
     return true;
 }
 
-bool m61_audio_epoch_fallback_due_pair(uint64_t now_us,
-                                       uint64_t deadline_us,
-                                       uint64_t encode_budget_us)
-{
-    int first = -1;
-    int second = -1;
-    uint32_t oldest = UINT32_MAX;
-    uintptr_t flags = epoch_lock();
-
-    for (uint8_t i = 0; i < M61_AUDIO_EPOCH_SLOT_COUNT; i++) {
-        m61_audio_epoch_t *slot = &s_store.slots[i];
-        if ((slot->state == M61_AUDIO_EPOCH_READY_ENCODE ||
-             slot->state == M61_AUDIO_EPOCH_COMPLETE) &&
-            slot->generation == s_store.stats.generation &&
-            slot->epoch < oldest) {
-            oldest = slot->epoch;
-            first = i;
-        }
-    }
-    if (first < 0) {
-        epoch_unlock(flags);
-        return false;
-    }
-    for (uint8_t i = 0; i < M61_AUDIO_EPOCH_SLOT_COUNT; i++) {
-        m61_audio_epoch_t *slot = &s_store.slots[i];
-        if ((slot->state == M61_AUDIO_EPOCH_READY_ENCODE ||
-             slot->state == M61_AUDIO_EPOCH_COMPLETE) &&
-            slot->generation == s_store.stats.generation &&
-            slot->epoch == oldest + 1U) {
-            second = i;
-            break;
-        }
-    }
-    if (second < 0) {
-        epoch_unlock(flags);
-        return false;
-    }
-
-    m61_audio_epoch_t *first_slot = &s_store.slots[first];
-    m61_audio_epoch_t *second_slot = &s_store.slots[second];
-    uint64_t age_us = now_us >= first_slot->captured_us
-                          ? now_us - first_slot->captured_us
-                          : 0U;
-    bool enough_slack = age_us < deadline_us &&
-                        deadline_us - age_us > encode_budget_us;
-
-    if (first_slot->state == M61_AUDIO_EPOCH_COMPLETE &&
-        second_slot->state == M61_AUDIO_EPOCH_COMPLETE) {
-        epoch_unlock(flags);
-        return false;
-    }
-    if (!first_slot->speaker_enabled || !second_slot->speaker_enabled ||
-        first_slot->speaker_enabled != second_slot->speaker_enabled ||
-        enough_slack) {
-        epoch_unlock(flags);
-        return false;
-    }
-
-    m61_audio_epoch_t *slots[2] = {first_slot, second_slot};
-    for (uint8_t i = 0; i < 2U; i++) {
-        if (slots[i]->state == M61_AUDIO_EPOCH_READY_ENCODE) {
-            slots[i]->state = M61_AUDIO_EPOCH_COMPLETE;
-            s_store.stats.epochs_completed++;
-            s_store.stats.encode_jobs_cancelled++;
-        }
-        slots[i]->speaker_enabled = 0U;
-    }
-    s_store.stats.deadline_fallback_pairs++;
-    epoch_unlock(flags);
-    return true;
-}
-
 bool m61_audio_epoch_take_adjacent_pair(m61_audio_epoch_pair_t *pair)
 {
     int first = -1;
@@ -548,6 +501,11 @@ void m61_audio_epoch_get_stats(m61_audio_epoch_stats_t *stats)
     if (stats == NULL) return;
     flags = epoch_lock();
     *stats = s_store.stats;
+    if (stats->epoch_interval_samples != 0U) {
+        stats->epoch_interval_us_average =
+            (uint32_t)(s_store.epoch_interval_us_total /
+                       stats->epoch_interval_samples);
+    }
     stats->filling_slots = 0;
     stats->encode_ready_slots = 0;
     stats->encoding_slots = 0;

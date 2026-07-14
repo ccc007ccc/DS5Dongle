@@ -71,6 +71,13 @@ typedef struct {
     uint32_t epoch_gaps;
     uint32_t epoch_discontinuities;
     uint32_t speaker_state_discontinuities;
+    uint32_t epoch_interval_samples;
+    uint32_t epoch_interval_us_last;
+    uint32_t epoch_interval_us_average;
+    uint32_t epoch_interval_us_min;
+    uint32_t epoch_interval_us_max;
+    /* Legacy compatibility counters. The deadline fallback was removed and
+     * these must remain zero in production. */
     uint32_t deadline_fallback_pairs;
     uint32_t encode_jobs_cancelled;
     uint32_t haptics_nonzero_epochs;
@@ -95,9 +102,6 @@ bool m61_audio_epoch_complete_encode(uint32_t generation,
                                      uint32_t epoch,
                                      const uint8_t *opus,
                                      size_t opus_len);
-bool m61_audio_epoch_fallback_due_pair(uint64_t now_us,
-                                       uint64_t deadline_us,
-                                       uint64_t encode_budget_us);
 bool m61_audio_epoch_take_adjacent_pair(m61_audio_epoch_pair_t *pair);
 void m61_audio_epoch_get_stats(m61_audio_epoch_stats_t *stats);
 

@@ -26,6 +26,10 @@ int main(void)
                                        1800U,
                                        54U);
         m61_perf_profile_record_ingress_age(i < 99U ? 1000U : 5000U);
+        m61_perf_profile_record_timing(M61_PERF_TIMING_INGRESS_WORK,
+                                       100U + i);
+        m61_perf_profile_record_timing(M61_PERF_TIMING_RESAMPLE,
+                                       200U + i * 2U);
     }
     m61_perf_profile_record_irq_mask_cycles(3200U);
     m61_perf_profile_record_irq_mask_cycles(1600U);
@@ -52,6 +56,12 @@ int main(void)
     assert(snapshot.ingress_age_us_p95 == 1250U);
     assert(snapshot.ingress_age_us_p99 == 1250U);
     assert(snapshot.ingress_age_us_max == 5000U);
+    assert(snapshot.timing[M61_PERF_TIMING_INGRESS_AGE].average_us == 1040U);
+    assert(snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].samples == 100U);
+    assert(snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].average_us == 149U);
+    assert(snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].p99_us == 250U);
+    assert(snapshot.timing[M61_PERF_TIMING_RESAMPLE].average_us == 299U);
+    assert(snapshot.timing[M61_PERF_TIMING_RESAMPLE].p95_us == 500U);
     assert(snapshot.irq_mask_cycles_max == 3200U);
     puts("M61 performance profile tests passed.");
     return 0;

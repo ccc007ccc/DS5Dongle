@@ -10,6 +10,7 @@
 #include "dualsense_parser.h"
 #include "m61_audio_epoch.h"
 #include "m61_bt_tx_scheduler.h"
+#include "m61_perf_profile.h"
 #include "m61_usb_gamepad.h"
 
 #ifndef CONFIG_M61_MEMORY_BENCH
@@ -337,6 +338,10 @@ static bool hid_interrupt_prepare_pending;
 static bool disconnect_cleanup_scheduled;
 static TickType_t disconnect_cleanup_tick;
 static m61_bt_tx_scheduler_t hidp_tx_scheduler;
+#if CONFIG_M61_HPM_PROFILE
+static uint64_t hidp_audio_last_report_us;
+static bool hidp_audio_last_report_valid;
+#endif
 
 #if CONFIG_M61_DS5_AUTO_START
 static bool auto_start_enabled = true;
@@ -389,6 +394,22 @@ static bool tick_due(TickType_t now, TickType_t due)
     return (int32_t)(now - due) >= 0;
 }
 
+#if CONFIG_M61_HPM_PROFILE
+static uint32_t elapsed_us_u32(uint64_t start_us)
+{
+    uint64_t now_us = bflb_mtimer_get_time_us();
+    uint64_t elapsed_us = now_us >= start_us ? now_us - start_us : 0U;
+
+    return elapsed_us > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed_us;
+}
+
+static void record_elapsed_us(m61_perf_timing_stage_t stage,
+                              uint64_t start_us)
+{
+    m61_perf_profile_record_timing(stage, elapsed_us_u32(start_us));
+}
+#endif
+
 static uint32_t hidp_tx_realtime_stale_count(void)
 {
     uintptr_t flags = bflb_irq_save();
@@ -430,6 +451,9 @@ static void auto_reset_link_state(void)
     hidp_last_mic_active = false;
     hidp_next_mic_status_tick = 0;
     hidp_next_audio_report_tick = 0;
+#if CONFIG_M61_HPM_PROFILE
+    hidp_audio_last_report_valid = false;
+#endif
     dualsense_headphones_connected = false;
     auto_bringup_attempts = 0;
     auto_next_hidp_tick = 0;
@@ -1936,6 +1960,11 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
     struct net_buf *buf;
     uint8_t *packet;
     int err;
+#if CONFIG_M61_HPM_PROFILE
+    uint64_t total_start_us;
+    uint64_t stage_start_us;
+    uint64_t now_us;
+#endif
 
     if (!pair) {
         return -EINVAL;
@@ -1951,20 +1980,44 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
         return -EMSGSIZE;
     }
 
+#if CONFIG_M61_HPM_PROFILE
+    total_start_us = bflb_mtimer_get_time_us();
+    if (total_start_us >= pair->first_captured_us) {
+        uint64_t pair_age_us = total_start_us - pair->first_captured_us;
+
+        m61_perf_profile_record_timing(
+            M61_PERF_TIMING_PAIR_AGE,
+            pair_age_us > UINT32_MAX ? UINT32_MAX
+                                     : (uint32_t)pair_age_us);
+    }
+    stage_start_us = bflb_mtimer_get_time_us();
+#endif
     buf = bt_l2cap_create_pdu_timeout(NULL, 0, HIDP_BT_AUDIO_ALLOC_TIMEOUT);
+#if CONFIG_M61_HPM_PROFILE
+    record_elapsed_us(M61_PERF_TIMING_BT_ALLOC, stage_start_us);
+#endif
     if (!buf) {
+#if CONFIG_M61_HPM_PROFILE
+        record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
+#endif
         hidp_audio_send_errors++;
         hidp_audio_last_error = -ENOMEM;
         return -ENOMEM;
     }
     if (net_buf_tailroom(buf) < 1U + DS5_OUTPUT_AUDIO_RT_BT_LEN) {
         net_buf_unref(buf);
+#if CONFIG_M61_HPM_PROFILE
+        record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
+#endif
         hidp_audio_send_errors++;
         hidp_audio_last_error = -EMSGSIZE;
         return -EMSGSIZE;
     }
     packet = net_buf_add(buf, 1U + DS5_OUTPUT_AUDIO_RT_BT_LEN);
     packet[0] = HIDP_TRANSACTION_DATA_OUTPUT;
+#if CONFIG_M61_HPM_PROFILE
+    stage_start_us = bflb_mtimer_get_time_us();
+#endif
     if (!dualsense_output_make_audio_rt(
             &output_ctx,
             pair->haptics[0],
@@ -1978,13 +2031,25 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
             DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
             packet + 1U,
             DS5_OUTPUT_AUDIO_RT_BT_LEN)) {
+#if CONFIG_M61_HPM_PROFILE
+        record_elapsed_us(M61_PERF_TIMING_REPORT_BUILD, stage_start_us);
+        record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
+#endif
         net_buf_unref(buf);
         hidp_audio_send_errors++;
         hidp_audio_last_error = -EINVAL;
         return -EINVAL;
     }
 
+#if CONFIG_M61_HPM_PROFILE
+    record_elapsed_us(M61_PERF_TIMING_REPORT_BUILD, stage_start_us);
+    stage_start_us = bflb_mtimer_get_time_us();
+#endif
     err = bt_l2cap_chan_send(&hid_interrupt.br.chan, buf);
+#if CONFIG_M61_HPM_PROFILE
+    record_elapsed_us(M61_PERF_TIMING_BT_SEND_CALL, stage_start_us);
+    record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
+#endif
     if (err < 0) {
         net_buf_unref(buf);
         hidp_audio_send_errors++;
@@ -1995,6 +2060,20 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
     hidp_haptics_reports_sent++;
     hidp_audio_last_error = 0;
     hidp_haptics_last_error = 0;
+#if CONFIG_M61_HPM_PROFILE
+    now_us = bflb_mtimer_get_time_us();
+    if (hidp_audio_last_report_valid &&
+        now_us >= hidp_audio_last_report_us) {
+        uint64_t interval_us = now_us - hidp_audio_last_report_us;
+
+        m61_perf_profile_record_timing(
+            M61_PERF_TIMING_REPORT_INTERVAL,
+            interval_us > UINT32_MAX ? UINT32_MAX
+                                     : (uint32_t)interval_us);
+    }
+    hidp_audio_last_report_us = now_us;
+    hidp_audio_last_report_valid = true;
+#endif
     return 0;
 }
 
@@ -2840,7 +2919,9 @@ int cmd_ds5(int argc, char **argv)
 
     if (strcmp(argv[1], "status") == 0) {
         m61_usb_gamepad_diag_t usb_diag;
+        m61_perf_profile_snapshot_t perf_snapshot;
         m61_usb_gamepad_get_diag(&usb_diag);
+        m61_perf_profile_get_snapshot(&perf_snapshot);
 
         printf("bt_ready=%d discovery=%d pairing=%d pending=%d connected=%d hid_control=%d hid_interrupt=%d have_last=%d\r\n",
                bt_ready ? 1 : 0,
@@ -2964,6 +3045,20 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.audio_ingress_gaps,
                (unsigned long)usb_diag.audio_in_packets,
                (unsigned long)usb_diag.audio_in_bytes);
+        printf("usb_cadence pkt_frames48/49/other=%lu/%lu/%lu pkt_interval=%lu:%lu/%lu/%lu/%lu epoch_interval=%lu:%lu/%lu/%lu/%lu\r\n",
+               (unsigned long)usb_diag.audio_out_frames_48_packets,
+               (unsigned long)usb_diag.audio_out_frames_49_packets,
+               (unsigned long)usb_diag.audio_out_frames_other_packets,
+               (unsigned long)usb_diag.audio_out_interval_samples,
+               (unsigned long)usb_diag.audio_out_interval_us_last,
+               (unsigned long)usb_diag.audio_out_interval_us_average,
+               (unsigned long)usb_diag.audio_out_interval_us_min,
+               (unsigned long)usb_diag.audio_out_interval_us_max,
+               (unsigned long)usb_diag.audio_epoch_interval_samples,
+               (unsigned long)usb_diag.audio_epoch_interval_us_last,
+               (unsigned long)usb_diag.audio_epoch_interval_us_average,
+               (unsigned long)usb_diag.audio_epoch_interval_us_min,
+               (unsigned long)usb_diag.audio_epoch_interval_us_max);
         printf("usb_haptics queued=%lu sample_pairs=%lu nonzero=%lu qdrop=%lu deadline=%lu qdepth=%u peak=%u ds=%u mode=%u gain_q8=%u\r\n",
                (unsigned long)usb_diag.audio_haptic_blocks,
                (unsigned long)usb_diag.audio_haptic_sample_pairs,
@@ -3068,6 +3163,19 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.perf_ingress_age_us_p99,
                (unsigned long)usb_diag.perf_ingress_age_us_max,
                (unsigned long)usb_diag.perf_irq_mask_cycles_max);
+        printf("usb_stage_perf ingress_work=%lu:%lu/%lu/%lu/%lu/%lu resample=%lu:%lu/%lu/%lu/%lu/%lu\r\n",
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].p95_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].p99_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_INGRESS_WORK].max_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].p95_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].p99_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].max_us);
         printf("usb_mic opus=%lu opus_nz=%lu odrop=%lu decoded=%lu dec_err=%lu pcm_bytes=%lu pcm_nz=%lu usb_nz_pkts=%lu usb_nz_bytes=%lu underflow=%lu oqdepth=%u ring=%u\r\n",
                (unsigned long)usb_diag.audio_mic_opus_packets,
                (unsigned long)usb_diag.audio_mic_opus_nonzero,
@@ -3140,6 +3248,31 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS,
                (unsigned int)CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS,
                (unsigned int)CONFIG_M61_DS5_BT_AUDIO_ALLOC_TIMEOUT_MS);
+        printf("hidp_audio_perf alloc=%lu:%lu/%lu/%lu build=%lu:%lu/%lu/%lu send=%lu:%lu/%lu/%lu total=%lu:%lu/%lu/%lu pair_age=%lu:%lu/%lu/%lu report_interval=%lu:%lu/%lu/%lu\r\n",
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_ALLOC].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_ALLOC].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_ALLOC].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_ALLOC].max_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_BUILD].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_BUILD].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_BUILD].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_BUILD].max_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_SEND_CALL].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_SEND_CALL].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_SEND_CALL].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_SEND_CALL].max_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_TOTAL].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_TOTAL].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_TOTAL].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_BT_TOTAL].max_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_PAIR_AGE].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_PAIR_AGE].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_PAIR_AGE].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_PAIR_AGE].max_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_INTERVAL].samples,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_INTERVAL].last_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_INTERVAL].average_us,
+               (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_INTERVAL].max_us);
         {
             m61_bt_tx_metrics_t tx_metrics;
             uintptr_t flags = bflb_irq_save();

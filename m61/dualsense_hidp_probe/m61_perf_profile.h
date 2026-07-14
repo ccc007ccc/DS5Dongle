@@ -10,6 +10,29 @@
 #define M61_PERF_HISTOGRAM_BUCKET_US 250U
 #define M61_PERF_HISTOGRAM_BUCKETS 64U
 
+typedef enum {
+    M61_PERF_TIMING_INGRESS_AGE = 0,
+    M61_PERF_TIMING_INGRESS_WORK,
+    M61_PERF_TIMING_RESAMPLE,
+    M61_PERF_TIMING_BT_ALLOC,
+    M61_PERF_TIMING_REPORT_BUILD,
+    M61_PERF_TIMING_BT_SEND_CALL,
+    M61_PERF_TIMING_BT_TOTAL,
+    M61_PERF_TIMING_PAIR_AGE,
+    M61_PERF_TIMING_REPORT_INTERVAL,
+    M61_PERF_TIMING_COUNT,
+} m61_perf_timing_stage_t;
+
+typedef struct {
+    uint32_t samples;
+    uint32_t last_us;
+    uint32_t average_us;
+    uint32_t max_us;
+    uint32_t p50_us;
+    uint32_t p95_us;
+    uint32_t p99_us;
+} m61_perf_timing_snapshot_t;
+
 typedef struct {
     uint32_t cycle;
     uint32_t instret;
@@ -61,6 +84,7 @@ typedef struct {
     uint32_t ingress_age_us_p95;
     uint32_t ingress_age_us_p99;
     uint32_t irq_mask_cycles_max;
+    m61_perf_timing_snapshot_t timing[M61_PERF_TIMING_COUNT];
 } m61_perf_profile_snapshot_t;
 
 void m61_perf_profile_init(void);
@@ -85,5 +109,7 @@ void m61_perf_profile_record_decode(uint32_t elapsed_us,
                                     uint32_t dcache_read,
                                     uint32_t dcache_read_miss);
 void m61_perf_profile_record_ingress_age(uint32_t age_us);
+void m61_perf_profile_record_timing(m61_perf_timing_stage_t stage,
+                                    uint32_t elapsed_us);
 void m61_perf_profile_record_irq_mask_cycles(uint32_t cycles);
 void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot);

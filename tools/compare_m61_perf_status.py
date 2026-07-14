@@ -39,6 +39,11 @@ def split_integers(fields: dict[str, str], key: str) -> list[int]:
     return [int(value, 0) for value in fields[key].split("/")]
 
 
+def split_count_values(fields: dict[str, str], key: str) -> tuple[int, list[int]]:
+    count, values = fields[key].split(":", 1)
+    return int(count, 0), [int(value, 0) for value in values.split("/")]
+
+
 def interval_average(before_count: int, before_average: int, after_count: int, after_average: int) -> float:
     delta_count = after_count - before_count
     if delta_count <= 0:
@@ -68,6 +73,12 @@ def main() -> int:
     haptics1 = line_fields(after_data, "usb_haptics ")
     audio0 = line_fields(before_data, "hidp_audio ")
     audio1 = line_fields(after_data, "hidp_audio ")
+    cadence0 = optional_line_fields(before_data, "usb_cadence ")
+    cadence1 = optional_line_fields(after_data, "usb_cadence ")
+    stage0 = optional_line_fields(before_data, "usb_stage_perf ")
+    stage1 = optional_line_fields(after_data, "usb_stage_perf ")
+    audio_perf0 = optional_line_fields(before_data, "hidp_audio_perf ")
+    audio_perf1 = optional_line_fields(after_data, "hidp_audio_perf ")
 
     samples0 = integer(perf0, "samples")
     samples1 = integer(perf1, "samples")
@@ -147,6 +158,48 @@ def main() -> int:
         (audio0, audio1, ("sent", "errors", "stale", "noconn")),
     ):
         print(" ".join(f"{key}={integer(fields1, key) - integer(fields0, key)}" for key in keys))
+
+    if cadence0 is not None and cadence1 is not None:
+        frame_counts0 = split_integers(cadence0, "pkt_frames48/49/other")
+        frame_counts1 = split_integers(cadence1, "pkt_frames48/49/other")
+        print(
+            "usb_frames48/49/other="
+            + "/".join(str(after - before) for before, after in zip(frame_counts0, frame_counts1))
+        )
+        for key, label in (
+            ("pkt_interval", "usb_packet_interval_us_avg"),
+            ("epoch_interval", "usb_epoch_interval_us_avg"),
+        ):
+            count0, values0 = split_count_values(cadence0, key)
+            count1, values1 = split_count_values(cadence1, key)
+            if count1 > count0:
+                print(
+                    f"{label}="
+                    f"{interval_average(count0, values0[1], count1, values1[1]):.3f}"
+                )
+
+    if stage0 is not None and stage1 is not None:
+        for key, label in (
+            ("ingress_work", "ingress_work_us_avg"),
+            ("resample", "resample_us_avg"),
+        ):
+            count0, values0 = split_count_values(stage0, key)
+            count1, values1 = split_count_values(stage1, key)
+            if count1 > count0:
+                print(
+                    f"{label}="
+                    f"{interval_average(count0, values0[1], count1, values1[1]):.3f}"
+                )
+
+    if audio_perf0 is not None and audio_perf1 is not None:
+        for key in ("alloc", "build", "send", "total", "pair_age", "report_interval"):
+            count0, values0 = split_count_values(audio_perf0, key)
+            count1, values1 = split_count_values(audio_perf1, key)
+            if count1 > count0:
+                print(
+                    f"bt_{key}_us_avg="
+                    f"{interval_average(count0, values0[1], count1, values1[1]):.3f}"
+                )
 
     return 0
 
