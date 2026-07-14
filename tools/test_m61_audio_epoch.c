@@ -55,6 +55,55 @@ static void fill_constant(uint8_t *data, size_t frames, int16_t speaker,
     }
 }
 
+static int8_t reference_pcm16_to_i8(int16_t sample, uint16_t gain_q8)
+{
+    int32_t scaled = ((int32_t)sample * gain_q8) / 256;
+    int32_t value;
+
+    if (scaled > INT16_MAX) scaled = INT16_MAX;
+    if (scaled < INT16_MIN) scaled = INT16_MIN;
+    value = (scaled * 127) / 32768;
+    if (value > INT8_MAX) value = INT8_MAX;
+    if (value < INT8_MIN) value = INT8_MIN;
+    return (int8_t)value;
+}
+
+static void test_pcm_conversion_is_exhaustively_bit_exact(void)
+{
+    static const uint16_t gains[] = {
+        0U, 1U, 127U, 255U, 256U, 257U, 512U, UINT16_MAX
+    };
+
+    for (size_t gain = 0; gain < sizeof(gains) / sizeof(gains[0]); gain++) {
+        for (int32_t sample = INT16_MIN; sample <= INT16_MAX; sample++) {
+            assert(m61_audio_epoch_host_pcm16_to_i8(
+                       (int16_t)sample, gains[gain]) ==
+                   reference_pcm16_to_i8((int16_t)sample, gains[gain]));
+        }
+    }
+}
+
+static void test_unaligned_usb_input_matches_aligned_path(void)
+{
+    uint8_t aligned[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
+    uint8_t storage[sizeof(aligned) + 1U];
+    uint8_t *unaligned = storage + 1U;
+    m61_audio_epoch_pair_t aligned_pair;
+    m61_audio_epoch_pair_t unaligned_pair;
+
+    fill_constant(aligned, 2U * M61_AUDIO_EPOCH_USB_FRAMES, 2345, 16000);
+    memcpy(unaligned, aligned, sizeof(aligned));
+    m61_audio_epoch_init(20);
+    m61_audio_epoch_ingest_usb(aligned, sizeof(aligned), 20, 100, false, 256);
+    assert(m61_audio_epoch_take_adjacent_pair(&aligned_pair));
+    m61_audio_epoch_init(21);
+    m61_audio_epoch_ingest_usb(unaligned, sizeof(aligned), 21, 100,
+                               false, 256);
+    assert(m61_audio_epoch_take_adjacent_pair(&unaligned_pair));
+    assert(memcmp(aligned_pair.haptics, unaligned_pair.haptics,
+                  sizeof(aligned_pair.haptics)) == 0);
+}
+
 static void test_phase_decimation_and_pair(void)
 {
     uint8_t audio[2U * M61_AUDIO_EPOCH_USB_FRAMES * USB_FRAME_BYTES];
@@ -219,6 +268,8 @@ static void test_epoch_cadence_and_no_deadline_fallback(void)
 int main(void)
 {
     assert(sizeof(m61_audio_epoch_t) <= M61_AUDIO_EPOCH_RESERVED_SLOT_BYTES);
+    test_pcm_conversion_is_exhaustively_bit_exact();
+    test_unaligned_usb_input_matches_aligned_path();
     test_phase_decimation_and_pair();
     test_ingress_lock_count_is_per_chunk_not_per_frame();
     test_keyed_encode_pair();

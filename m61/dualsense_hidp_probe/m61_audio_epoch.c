@@ -1,6 +1,7 @@
 #include "m61_audio_epoch.h"
 
 #include <limits.h>
+#include <stddef.h>
 #include <string.h>
 
 #ifndef CONFIG_M61_PIPELINE_PROFILE
@@ -21,6 +22,10 @@ _Static_assert(sizeof(m61_audio_epoch_t) <= M61_AUDIO_EPOCH_RESERVED_SLOT_BYTES,
                "M61 audio epoch slot budget drift");
 _Static_assert(sizeof(m61_audio_epoch_t) % M61_CACHE_LINE_BYTES == 0U,
                "M61 audio epoch slot cache-line stride drift");
+_Static_assert(offsetof(m61_audio_epoch_t, speaker_pcm) % sizeof(uint32_t) == 0U,
+               "M61 speaker PCM must remain word aligned");
+
+typedef uint32_t m61_alias_u32_t __attribute__((__may_alias__));
 
 typedef struct {
     m61_audio_epoch_t slots[M61_AUDIO_EPOCH_SLOT_COUNT];
@@ -65,17 +70,46 @@ static int16_t read_i16_le(const uint8_t *data)
     return (int16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
 }
 
-static int8_t pcm16_to_i8(int32_t sample, uint16_t gain_q8)
+static int32_t div_pow2_toward_zero(int32_t value, uint8_t shift)
 {
-    int32_t scaled = (sample * gain_q8) / 256;
-    int32_t value;
+    uint32_t magnitude;
+    int32_t quotient;
+
+    if (value >= 0) {
+        return value >> shift;
+    }
+    magnitude = (uint32_t)(-(value + 1)) + 1U;
+    quotient = (int32_t)(magnitude >> shift);
+    return -quotient;
+}
+
+static int8_t pcm16_to_i8(int16_t sample, uint16_t gain_q8)
+{
+    int32_t scaled = div_pow2_toward_zero((int32_t)sample * gain_q8, 8U);
 
     if (scaled > INT16_MAX) scaled = INT16_MAX;
     if (scaled < INT16_MIN) scaled = INT16_MIN;
-    value = (scaled * 127) / 32768;
-    if (value > INT8_MAX) value = INT8_MAX;
-    if (value < INT8_MIN) value = INT8_MIN;
-    return (int8_t)value;
+    return (int8_t)div_pow2_toward_zero(scaled * 127, 15U);
+}
+
+static int8_t pcm16_to_i8_unity(int16_t sample)
+{
+    return (int8_t)div_pow2_toward_zero((int32_t)sample * 127, 15U);
+}
+
+static int8_t convert_haptics_sample(int16_t sample, uint16_t gain_q8)
+{
+    return gain_q8 == 256U ? pcm16_to_i8_unity(sample)
+                           : pcm16_to_i8(sample, gain_q8);
+}
+
+static void update_haptics_metrics(m61_audio_epoch_t *slot, int8_t sample)
+{
+    uint8_t magnitude = sample == INT8_MIN ? 128U :
+        (uint8_t)(sample < 0 ? -sample : sample);
+
+    if (magnitude != 0U) slot->haptics_nonzero = 1U;
+    if (magnitude > slot->haptics_peak) slot->haptics_peak = magnitude;
 }
 
 static int find_slot_locked(uint32_t generation, uint32_t epoch)
@@ -147,6 +181,8 @@ static int allocate_slot_locked(uint64_t captured_us, bool speaker_enabled)
     slot->captured_us = captured_us;
     slot->pcm_frames = 0U;
     slot->speaker_enabled = speaker_enabled ? 1U : 0U;
+    slot->haptics_peak = 0U;
+    slot->haptics_nonzero = 0U;
     slot->state = M61_AUDIO_EPOCH_FILLING;
     s_store.filling_slot = (uint8_t)selected;
     s_store.stats.epochs_started++;
@@ -198,6 +234,11 @@ uint32_t m61_audio_epoch_host_lock_count(void)
     return s_host_lock_count;
 }
 
+int8_t m61_audio_epoch_host_pcm16_to_i8(int16_t sample, uint16_t gain_q8)
+{
+    return convert_haptics_sample(sample, gain_q8);
+}
+
 __attribute__((weak)) void m61_audio_epoch_host_before_encode_copy(void)
 {
 }
@@ -221,9 +262,8 @@ void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
         int selected;
         uint16_t pcm_frame;
         size_t chunk_frames;
-        uint8_t peak = 0U;
-        bool nonzero = false;
         bool epoch_complete;
+        bool aligned_word_copy;
 
         if (generation != s_store.stats.generation) {
             epoch_unlock(flags);
@@ -251,37 +291,41 @@ void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
         }
         epoch_unlock(flags);
 
+        aligned_word_copy = ((uintptr_t)(data + frame * USB_FRAME_BYTES) &
+                             (sizeof(uint32_t) - 1U)) == 0U;
+
         for (size_t i = 0; i < chunk_frames; i++) {
             const uint8_t *usb = data + (frame + i) * USB_FRAME_BYTES;
             uint16_t dst_frame = (uint16_t)(pcm_frame + i);
 
-            slot->speaker_pcm[dst_frame * 2U] = read_i16_le(usb);
-            slot->speaker_pcm[dst_frame * 2U + 1U] = read_i16_le(usb + 2U);
+            if (aligned_word_copy) {
+                m61_alias_u32_t *dst = (m61_alias_u32_t *)(void *)(
+                    &slot->speaker_pcm[dst_frame * 2U]);
+                const m61_alias_u32_t *src =
+                    (const m61_alias_u32_t *)(const void *)usb;
+                *dst = *src;
+            } else {
+                slot->speaker_pcm[dst_frame * 2U] = read_i16_le(usb);
+                slot->speaker_pcm[dst_frame * 2U + 1U] =
+                    read_i16_le(usb + 2U);
+            }
             if ((dst_frame % HAPTICS_DECIMATION_FRAMES) == 0U) {
                 uint8_t out =
                     (uint8_t)((dst_frame / HAPTICS_DECIMATION_FRAMES) * 2U);
-                slot->haptics[out] = (uint8_t)pcm16_to_i8(
-                    read_i16_le(usb + 4U),
-                    haptics_gain_q8);
-                slot->haptics[out + 1U] = (uint8_t)pcm16_to_i8(
-                    read_i16_le(usb + 6U),
-                    haptics_gain_q8);
+                int8_t left = convert_haptics_sample(
+                    read_i16_le(usb + 4U), haptics_gain_q8);
+                int8_t right = convert_haptics_sample(
+                    read_i16_le(usb + 6U), haptics_gain_q8);
+
+                slot->haptics[out] = (uint8_t)left;
+                slot->haptics[out + 1U] = (uint8_t)right;
+                update_haptics_metrics(slot, left);
+                update_haptics_metrics(slot, right);
             }
         }
         slot->pcm_frames = (uint16_t)(pcm_frame + chunk_frames);
         frame += chunk_frames;
         epoch_complete = slot->pcm_frames == M61_AUDIO_EPOCH_USB_FRAMES;
-        if (epoch_complete) {
-            for (uint8_t i = 0; i < M61_AUDIO_EPOCH_HAPTICS_LEN; i++) {
-                int8_t sample = (int8_t)slot->haptics[i];
-                uint8_t magnitude = sample == INT8_MIN ? 128U :
-                    (uint8_t)(sample < 0 ? -sample : sample);
-
-                if (magnitude != 0U) nonzero = true;
-                if (magnitude > peak) peak = magnitude;
-            }
-        }
-
         flags = epoch_lock();
         if (generation != s_store.stats.generation ||
             s_store.filling_slot != (uint8_t)selected ||
@@ -292,8 +336,10 @@ void m61_audio_epoch_ingest_usb(const uint8_t *data, size_t len,
         }
         if (epoch_complete) {
             s_store.stats.haptics_sample_pairs += 32U;
-            if (nonzero) s_store.stats.haptics_nonzero_epochs++;
-            s_store.stats.haptics_last_peak = peak;
+            if (slot->haptics_nonzero) {
+                s_store.stats.haptics_nonzero_epochs++;
+            }
+            s_store.stats.haptics_last_peak = slot->haptics_peak;
             slot->state = slot->speaker_enabled ?
                 M61_AUDIO_EPOCH_READY_ENCODE : M61_AUDIO_EPOCH_COMPLETE;
             if (!slot->speaker_enabled) s_store.stats.epochs_completed++;

@@ -367,6 +367,24 @@ HPM 后，同一轮 90 秒结果恢复到：
 该轮 `qdrop/odrop/cancel/deadline/stale/encode error` 全为 0，确认统计代码是退化主体。相对
 `0eb2308` 单轮结果仍慢约 5.2%，剩余差异必须继续二分，不能全部归因于 profile。
 
+### 7.5 ingress 位精确除法消除
+
+反汇编确认 `-Os` 会在每个 haptics 抽样点保留 gain `/256` 和量化 `/32768` 的真实 `div`
+指令；默认 unity gain 下每个 epoch 约执行 128 次。改为保持 C 向零截断语义的有符号移位，
+为 unity gain 增加等价快路，并利用已确认 32 B 对齐的 USB VDMA ring 做两个 speaker int16 的
+单次 32-bit 搬运。haptics peak/nonzero 在转换时增量计算，字段复用 epoch slot 尾部 padding。
+
+验证结果：
+
+- 全部 65,536 个 int16 输入乘以 8 组 gain（含 256 和 65,535）与旧 C 实现逐值位精确；
+- 未对齐 host 输入回退路径与对齐路径输出一致；
+- 目标反汇编中 `m61_audio_epoch_ingest_usb()` 从 `0x36a` 缩到 `0x326`，热函数无 `div/divu`；
+- pipeline A/B ingress 平均从 `32 us/packet` 降到 `30 us/packet`，改善 6.25%；
+- core-HPM 90 秒 encode 从 `4047 us / 1,296,022 cycles` 降到
+  `3984 us / 1,275,350 cycles`，改善约 1.6%；P99 保持 5250 us，max 从 5919 us 降到
+  5795 us；
+- 静态 RAM 保持 197,124 B，所有 drop/deadline/cancel/stale/error 为 0。
+
 ## 8. 代码级性能问题清单
 
 ### P0：必须先修的正确性与测量问题

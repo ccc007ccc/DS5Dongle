@@ -37,6 +37,8 @@ typedef struct {
     int16_t speaker_pcm[M61_AUDIO_EPOCH_USB_FRAMES *
                         M61_AUDIO_EPOCH_SPEAKER_CHANNELS];
     uint8_t speaker_opus[M61_AUDIO_EPOCH_OPUS_LEN];
+    uint8_t haptics_peak;
+    uint8_t haptics_nonzero;
 } m61_audio_epoch_t;
 
 typedef struct {
@@ -108,6 +110,7 @@ void m61_audio_epoch_get_stats(m61_audio_epoch_stats_t *stats);
 #ifdef M61_AUDIO_EPOCH_HOST_TEST
 void m61_audio_epoch_host_reset_lock_count(void);
 uint32_t m61_audio_epoch_host_lock_count(void);
+int8_t m61_audio_epoch_host_pcm16_to_i8(int16_t sample, uint16_t gain_q8);
 #endif
 
 #ifdef __cplusplus
