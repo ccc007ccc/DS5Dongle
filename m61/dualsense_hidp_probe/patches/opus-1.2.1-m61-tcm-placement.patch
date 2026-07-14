@@ -1,27 +1,37 @@
 diff --git a/celt/bands.c b/celt/bands.c
 --- a/celt/bands.c
 +++ b/celt/bands.c
-@@ -700,1 +700,4 @@
+@@ -95,1 +95,4 @@
++#if defined(M61_OPUS_TCM_ENERGY_CLUSTER)
++__attribute__((section(".tcm_code.opus.energy_cluster")))
++#endif
+ void compute_band_energies(const CELTMode *m, const celt_sig *X, celt_ener *bandE, int end, int C, int LM, int arch)
+@@ -159,1 +162,4 @@
++#if defined(M61_OPUS_TCM_ENERGY_CLUSTER)
++__attribute__((section(".tcm_code.opus.energy_cluster")))
++#endif
+ void compute_band_energies(const CELTMode *m, const celt_sig *X, celt_ener *bandE, int end, int C, int LM, int arch)
+@@ -700,1 +706,4 @@
 +#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
 +__attribute__((section(".tcm_code.opus.pvq_cluster")))
 +#endif
  static void compute_theta(struct band_ctx *ctx, struct split_ctx *sctx,
-@@ -944,1 +947,4 @@
+@@ -944,1 +953,4 @@
 +#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
 +__attribute__((section(".tcm_code.opus.pvq_cluster")))
 +#endif
  static unsigned quant_partition(struct band_ctx *ctx, celt_norm *X,
-@@ -1109,1 +1115,4 @@
+@@ -1109,1 +1121,4 @@
 +#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
 +__attribute__((section(".tcm_code.opus.pvq_cluster")))
 +#endif
  static unsigned quant_band(struct band_ctx *ctx, celt_norm *X,
-@@ -1235,1 +1244,4 @@
+@@ -1235,1 +1250,4 @@
 +#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
 +__attribute__((section(".tcm_code.opus.pvq_cluster")))
 +#endif
  static unsigned quant_band_stereo(struct band_ctx *ctx, celt_norm *X, celt_norm *Y,
-@@ -1397,1 +1409,4 @@
+@@ -1397,1 +1415,4 @@
 +#if defined(M61_OPUS_TCM_QUANT_ALL_BANDS) || defined(M61_OPUS_TCM_PVQ_CLUSTER)
 +__attribute__((section(".tcm_code.opus.quant_all_bands")))
 +#endif
@@ -42,3 +52,11 @@ diff --git a/celt/kiss_fft.c b/celt/kiss_fft.c
 +__attribute__((section(".tcm_code.opus.mdct_cluster")))
 +#endif
  void opus_fft_impl(const kiss_fft_state *st,kiss_fft_cpx *fout)
+diff --git a/celt/quant_bands.c b/celt/quant_bands.c
+--- a/celt/quant_bands.c
++++ b/celt/quant_bands.c
+@@ -544,1 +544,4 @@
++#if defined(M61_OPUS_TCM_ENERGY_CLUSTER)
++__attribute__((section(".tcm_code.opus.energy_cluster")))
++#endif
+ void amp2Log2(const CELTMode *m, int effEnd, int end,
