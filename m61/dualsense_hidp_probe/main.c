@@ -3111,26 +3111,41 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.perf_dcache_read_miss_ppm);
 #if CONFIG_M61_OPUS_STAGE_PROFILE
         {
-            static const char *const stage_names[M61_OPUS_STAGE_COUNT] = {
+            static const char *const encode_stage_names[M61_OPUS_STAGE_COUNT] = {
                 "setup", "time", "spectral", "energy",
                 "allocation", "pvq", "finalize",
+            };
+            static const char *const decode_stage_names[M61_OPUS_STAGE_COUNT] = {
+                "setup_entropy_coarse", "tf_allocation_energy",
+                "pvq", "finalize_synthesis", "postfilter",
+                "state_deemphasis", "final_checks",
+            };
+            static const char *const kind_names[M61_OPUS_STAGE_KIND_COUNT] = {
+                "encode", "decode",
             };
             static m61_opus_stage_snapshot_t stage_snapshot;
 
             m61_opus_stage_profile_get_snapshot(&stage_snapshot);
-            for (uint32_t i = 0; i < M61_OPUS_STAGE_COUNT; i++) {
-                const m61_opus_stage_result_t *stage =
-                    &stage_snapshot.stages[i];
-                printf("opus_stage name=%s samples=%lu cycles=%lu instret=%lu "
-                       "ic_access=%lu ic_miss=%lu dc_read=%lu dc_miss=%lu\r\n",
-                       stage_names[i],
-                       (unsigned long)stage->samples,
-                       (unsigned long)stage->cycles_average,
-                       (unsigned long)stage->instret_average,
-                       (unsigned long)stage->icache_access_average,
-                       (unsigned long)stage->icache_miss_average,
-                       (unsigned long)stage->dcache_read_average,
-                       (unsigned long)stage->dcache_read_miss_average);
+            for (uint32_t kind = 0;
+                 kind < M61_OPUS_STAGE_KIND_COUNT; kind++) {
+                const char *const *stage_names =
+                    kind == M61_OPUS_STAGE_KIND_ENCODE
+                        ? encode_stage_names : decode_stage_names;
+
+                for (uint32_t i = 0; i < M61_OPUS_STAGE_COUNT; i++) {
+                    const m61_opus_stage_result_t *stage =
+                        &stage_snapshot.stages[kind][i];
+                    printf("opus_stage kind=%s name=%s samples=%lu cycles=%lu instret=%lu "
+                           "ic_access=%lu ic_miss=%lu dc_read=%lu dc_miss=%lu\r\n",
+                           kind_names[kind], stage_names[i],
+                           (unsigned long)stage->samples,
+                           (unsigned long)stage->cycles_average,
+                           (unsigned long)stage->instret_average,
+                           (unsigned long)stage->icache_access_average,
+                           (unsigned long)stage->icache_miss_average,
+                           (unsigned long)stage->dcache_read_average,
+                           (unsigned long)stage->dcache_read_miss_average);
+                }
             }
         }
 #endif
@@ -3332,7 +3347,8 @@ int cmd_ds5(int argc, char **argv)
             m61_opus_stage_profile_get_snapshot(&snapshot);
             printf("opus stage profile enabled=%u samples=%lu\r\n",
                    snapshot.enabled ? 1U : 0U,
-                   (unsigned long)snapshot.stages[0].samples);
+                   (unsigned long)snapshot
+                       .stages[M61_OPUS_STAGE_KIND_ENCODE][0].samples);
             return 0;
         }
         if (strcmp(argv[2], "reset") == 0) {

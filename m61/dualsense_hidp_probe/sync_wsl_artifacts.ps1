@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Production', 'Core', 'Pipeline', 'Any')]
+    [ValidateSet('Production', 'Core', 'Pipeline', 'Stage', 'Any')]
     [string]$ExpectedProfile = 'Core',
 
     [string]$Distro = 'Ubuntu',
@@ -50,21 +50,28 @@ $Flags = Get-Content -Raw -LiteralPath $FlagsFile
 $HasCore = $Flags -match '(^|\s)-DCONFIG_M61_HPM_PROFILE=1(\s|$)'
 $HasPipeline =
     $Flags -match '(^|\s)-DCONFIG_M61_PIPELINE_PROFILE=1(\s|$)'
+$HasStage =
+    $Flags -match '(^|\s)-DCONFIG_M61_OPUS_STAGE_PROFILE=1(\s|$)'
 
 switch ($ExpectedProfile) {
     'Production' {
-        if ($HasCore -or $HasPipeline) {
+        if ($HasCore -or $HasPipeline -or $HasStage) {
             throw 'Expected a production build, but profiling is enabled.'
         }
     }
     'Core' {
-        if (-not $HasCore -or $HasPipeline) {
-            throw 'Expected core HPM only: HPM must be on and pipeline profiling off.'
+        if (-not $HasCore -or $HasPipeline -or $HasStage) {
+            throw 'Expected core HPM only: pipeline and Opus stage profiling must be off.'
         }
     }
     'Pipeline' {
-        if (-not $HasCore -or -not $HasPipeline) {
-            throw 'Expected pipeline profiling: both HPM and pipeline profiling must be on.'
+        if (-not $HasCore -or -not $HasPipeline -or $HasStage) {
+            throw 'Expected pipeline profiling without Opus stage profiling.'
+        }
+    }
+    'Stage' {
+        if (-not $HasCore -or $HasPipeline -or -not $HasStage) {
+            throw 'Expected Opus stage profiling with core HPM and pipeline profiling off.'
         }
     }
 }

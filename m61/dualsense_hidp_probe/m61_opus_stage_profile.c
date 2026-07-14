@@ -25,10 +25,11 @@ typedef struct {
 } stage_total_t;
 
 static volatile uint32_t s_sequence;
-static stage_total_t s_totals[M61_OPUS_STAGE_COUNT];
-static stage_counter_t s_previous;
-static uint32_t s_next_boundary;
-static bool s_active;
+static stage_total_t
+    s_totals[M61_OPUS_STAGE_KIND_COUNT][M61_OPUS_STAGE_COUNT];
+static stage_counter_t s_previous[M61_OPUS_STAGE_KIND_COUNT];
+static uint32_t s_next_boundary[M61_OPUS_STAGE_KIND_COUNT];
+static bool s_active[M61_OPUS_STAGE_KIND_COUNT];
 
 #define READ_COUNTER_LOW(name, value) \
     __asm volatile("csrr %0, " #name : "=r"(value) : : "memory")
@@ -62,43 +63,59 @@ static uint32_t average_u64(uint64_t total, uint32_t samples)
     return average > UINT32_MAX ? UINT32_MAX : (uint32_t)average;
 }
 
-void __attribute__((section(".tcm_code.m61_opus_stage_mark")))
-m61_opus_stage_mark(uint32_t boundary)
+static void __attribute__((section(".tcm_code.m61_opus_stage_mark")))
+stage_mark(m61_opus_stage_kind_t kind, uint32_t boundary)
 {
     stage_counter_t current = read_counters();
     stage_total_t *total;
 
-    if (boundary == 0U) {
-        s_previous = current;
-        s_next_boundary = 1U;
-        s_active = true;
+    if ((uint32_t)kind >= M61_OPUS_STAGE_KIND_COUNT) {
         return;
     }
-    if (!s_active || boundary != s_next_boundary ||
+    if (boundary == 0U) {
+        s_previous[kind] = current;
+        s_next_boundary[kind] = 1U;
+        s_active[kind] = true;
+        return;
+    }
+    if (!s_active[kind] || boundary != s_next_boundary[kind] ||
         boundary > M61_OPUS_STAGE_COUNT) {
-        s_active = false;
+        s_active[kind] = false;
         return;
     }
 
-    total = &s_totals[boundary - 1U];
+    total = &s_totals[kind][boundary - 1U];
     s_sequence++;
     profile_barrier();
     total->samples++;
-    total->cycles += current.cycle - s_previous.cycle;
-    total->instret += current.instret - s_previous.instret;
-    total->icache_access += current.icache_access - s_previous.icache_access;
-    total->icache_miss += current.icache_miss - s_previous.icache_miss;
-    total->dcache_read += current.dcache_read - s_previous.dcache_read;
+    total->cycles += current.cycle - s_previous[kind].cycle;
+    total->instret += current.instret - s_previous[kind].instret;
+    total->icache_access +=
+        current.icache_access - s_previous[kind].icache_access;
+    total->icache_miss += current.icache_miss - s_previous[kind].icache_miss;
+    total->dcache_read += current.dcache_read - s_previous[kind].dcache_read;
     total->dcache_read_miss +=
-        current.dcache_read_miss - s_previous.dcache_read_miss;
+        current.dcache_read_miss - s_previous[kind].dcache_read_miss;
     profile_barrier();
     s_sequence++;
 
-    s_previous = current;
-    s_next_boundary++;
+    s_previous[kind] = current;
+    s_next_boundary[kind]++;
     if (boundary == M61_OPUS_STAGE_COUNT) {
-        s_active = false;
+        s_active[kind] = false;
     }
+}
+
+void __attribute__((section(".tcm_code.m61_opus_stage_mark")))
+m61_opus_stage_mark(uint32_t boundary)
+{
+    stage_mark(M61_OPUS_STAGE_KIND_ENCODE, boundary);
+}
+
+void __attribute__((section(".tcm_code.m61_opus_stage_mark")))
+m61_opus_decode_stage_mark(uint32_t boundary)
+{
+    stage_mark(M61_OPUS_STAGE_KIND_DECODE, boundary);
 }
 
 void m61_opus_stage_profile_reset(void)
@@ -108,8 +125,8 @@ void m61_opus_stage_profile_reset(void)
     s_sequence++;
     profile_barrier();
     memset(s_totals, 0, sizeof(s_totals));
-    s_active = false;
-    s_next_boundary = 0U;
+    memset(s_active, 0, sizeof(s_active));
+    memset(s_next_boundary, 0, sizeof(s_next_boundary));
     profile_barrier();
     s_sequence++;
     bflb_irq_restore(flags);
@@ -117,7 +134,8 @@ void m61_opus_stage_profile_reset(void)
 
 void m61_opus_stage_profile_get_snapshot(m61_opus_stage_snapshot_t *snapshot)
 {
-    stage_total_t totals[M61_OPUS_STAGE_COUNT];
+    stage_total_t
+        totals[M61_OPUS_STAGE_KIND_COUNT][M61_OPUS_STAGE_COUNT];
     uint32_t sequence_before;
     uint32_t sequence_after;
 
@@ -134,22 +152,24 @@ void m61_opus_stage_profile_get_snapshot(m61_opus_stage_snapshot_t *snapshot)
 
     memset(snapshot, 0, sizeof(*snapshot));
     snapshot->enabled = true;
-    for (uint32_t i = 0; i < M61_OPUS_STAGE_COUNT; i++) {
-        m61_opus_stage_result_t *result = &snapshot->stages[i];
+    for (uint32_t kind = 0; kind < M61_OPUS_STAGE_KIND_COUNT; kind++) {
+        for (uint32_t i = 0; i < M61_OPUS_STAGE_COUNT; i++) {
+            m61_opus_stage_result_t *result = &snapshot->stages[kind][i];
+            const stage_total_t *total = &totals[kind][i];
 
-        result->samples = totals[i].samples;
-        result->cycles_average = average_u64(totals[i].cycles,
-                                             totals[i].samples);
-        result->instret_average = average_u64(totals[i].instret,
-                                              totals[i].samples);
-        result->icache_access_average = average_u64(totals[i].icache_access,
-                                                    totals[i].samples);
-        result->icache_miss_average = average_u64(totals[i].icache_miss,
-                                                  totals[i].samples);
-        result->dcache_read_average = average_u64(totals[i].dcache_read,
-                                                  totals[i].samples);
-        result->dcache_read_miss_average = average_u64(
-            totals[i].dcache_read_miss,
-            totals[i].samples);
+            result->samples = total->samples;
+            result->cycles_average = average_u64(total->cycles,
+                                                 total->samples);
+            result->instret_average = average_u64(total->instret,
+                                                  total->samples);
+            result->icache_access_average = average_u64(
+                total->icache_access, total->samples);
+            result->icache_miss_average = average_u64(
+                total->icache_miss, total->samples);
+            result->dcache_read_average = average_u64(
+                total->dcache_read, total->samples);
+            result->dcache_read_miss_average = average_u64(
+                total->dcache_read_miss, total->samples);
+        }
     }
 }

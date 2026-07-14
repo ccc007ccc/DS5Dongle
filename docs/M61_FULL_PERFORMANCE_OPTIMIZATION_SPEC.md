@@ -409,6 +409,26 @@ PVQ+MDCT/FFT cached OCRAM 布局同时帮助 decode。并发 encode 相对 encod
 mono encode+decode 尚有约 28.8% 原始周期空间，但该数字未包含真实 stereo encoder 增量、
 真实 BT mic ingress/USB IN 和最坏协议突发，不能视为已满足最终 20% 冗余。
 
+### 7.7 decoder CELT 阶段热点
+
+`CONFIG_M61_OPUS_STAGE_PROFILE` 已扩展为 encode/decode 两组独立 HPM totals；诊断构建由
+`sync_wsl_artifacts.ps1 -ExpectedProfile Stage` 强制识别，生产/core/pipeline 构建不会混用。
+在 90 秒 encode+decode 固定负载中，decoder 阶段结果为：
+
+| decoder 阶段 | cycles | instret | I-miss | D-read miss |
+| --- | ---: | ---: | ---: | ---: |
+| setup/entropy/coarse energy | 66,440 | 4,261 | 154 | 24 |
+| TF/dynalloc/allocation/fine energy | 129,705 | 13,524 | 283 | 46 |
+| buffer move + PVQ decode | 249,611 | 55,853 | 542 | 137 |
+| energy finalize/anti-collapse/synthesis | 282,202 | 46,940 | 506 | 203 |
+| postfilter | 9,744 | 493 | 27 | 10 |
+| state update + deemphasis | 49,322 | 8,774 | 95 | 29 |
+| final checks | 1,833 | 183 | 5 | 2 |
+
+stage markers自身有固定 HPM 读取和累计开销，因此这些数值用于热点比例与后续同构建 A/B，
+不能替代无 stage marker 的正式 decoder `935,870 cycles`。下一步优先下钻 PVQ decode 和
+synthesis/IMDCT；二者也是 stereo speaker 与 mic decoder 能共享收益的底层路径。
+
 ## 8. 代码级性能问题清单
 
 ### P0：必须先修的正确性与测量问题
