@@ -20,6 +20,14 @@
 #include "m61_memory_bench.h"
 #endif
 
+#ifndef CONFIG_M61_OPUS_STAGE_PROFILE
+#define CONFIG_M61_OPUS_STAGE_PROFILE 0
+#endif
+
+#if CONFIG_M61_OPUS_STAGE_PROFILE
+#include "m61_opus_stage_profile.h"
+#endif
+
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -2812,6 +2820,9 @@ static void print_help(void)
     printf("  ds5 usb-reinit\r\n");
     printf("  ds5 usb-cycle\r\n");
     printf("  ds5 decoder-bench [on|off]\r\n");
+#if CONFIG_M61_OPUS_STAGE_PROFILE
+    printf("  ds5 opus-stages [status|reset]\r\n");
+#endif
     printf("  ds5 usb-pins [status|dp-high|dm-high|both-low|both-high|restore]\r\n");
     printf("  ds5 reboot-isp\r\n");
 }
@@ -3003,6 +3014,31 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.perf_dcache_read_average,
                (unsigned long)usb_diag.perf_dcache_read_miss_average,
                (unsigned long)usb_diag.perf_dcache_read_miss_ppm);
+#if CONFIG_M61_OPUS_STAGE_PROFILE
+        {
+            static const char *const stage_names[M61_OPUS_STAGE_COUNT] = {
+                "setup", "time", "spectral", "energy",
+                "allocation", "pvq", "finalize",
+            };
+            m61_opus_stage_snapshot_t stage_snapshot;
+
+            m61_opus_stage_profile_get_snapshot(&stage_snapshot);
+            for (uint32_t i = 0; i < M61_OPUS_STAGE_COUNT; i++) {
+                const m61_opus_stage_result_t *stage =
+                    &stage_snapshot.stages[i];
+                printf("opus_stage name=%s samples=%lu cycles=%lu instret=%lu "
+                       "ic_access=%lu ic_miss=%lu dc_read=%lu dc_miss=%lu\r\n",
+                       stage_names[i],
+                       (unsigned long)stage->samples,
+                       (unsigned long)stage->cycles_average,
+                       (unsigned long)stage->instret_average,
+                       (unsigned long)stage->icache_access_average,
+                       (unsigned long)stage->icache_miss_average,
+                       (unsigned long)stage->dcache_read_average,
+                       (unsigned long)stage->dcache_read_miss_average);
+            }
+        }
+#endif
         printf("usb_decode_perf enabled=%u samples=%lu dec_us=%lu/%lu/%lu dec_p50/p95/p99=%lu/%lu/%lu cycles=%lu/%lu/%lu instret_avg=%lu bench_frames=%lu bench_errors=%lu\r\n",
                (unsigned int)usb_diag.audio_decoder_benchmark_enabled,
                (unsigned long)usb_diag.perf_decode_samples,
@@ -3154,6 +3190,27 @@ int cmd_ds5(int argc, char **argv)
         status_led_print();
         return 0;
     }
+
+#if CONFIG_M61_OPUS_STAGE_PROFILE
+    if (strcmp(argv[1], "opus-stages") == 0) {
+        if (argc < 3 || strcmp(argv[2], "status") == 0) {
+            m61_opus_stage_snapshot_t snapshot;
+
+            m61_opus_stage_profile_get_snapshot(&snapshot);
+            printf("opus stage profile enabled=%u samples=%lu\r\n",
+                   snapshot.enabled ? 1U : 0U,
+                   (unsigned long)snapshot.stages[0].samples);
+            return 0;
+        }
+        if (strcmp(argv[2], "reset") == 0) {
+            m61_opus_stage_profile_reset();
+            printf("opus stage profile reset\r\n");
+            return 0;
+        }
+        printf("usage: ds5 opus-stages [status|reset]\r\n");
+        return -EINVAL;
+    }
+#endif
 
     if (strcmp(argv[1], "reboot-isp") == 0 || strcmp(argv[1], "isp") == 0) {
         m61_reboot_to_uart_download();

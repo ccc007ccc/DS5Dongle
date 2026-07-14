@@ -40,6 +40,13 @@ if(CONFIG_M61_MEMORY_BENCH)
         CONFIG_M61_MEMORY_BENCH=1
         CONFIG_M61_HPM_PROFILE=1)
 endif()
+if(CONFIG_M61_OPUS_STAGE_PROFILE)
+    # Test-only hooks called from a source-built Opus archive.
+    target_sources(app PRIVATE m61_opus_stage_profile.c)
+    target_compile_definitions(app PRIVATE
+        CONFIG_M61_OPUS_STAGE_PROFILE=1
+        CONFIG_M61_HPM_PROFILE=1)
+endif()
 sdk_set_main_file(main.c)
 
 project(m61_dualsense_hidp_probe)

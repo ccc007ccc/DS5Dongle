@@ -14,6 +14,7 @@ CPU_ID=""
 COMMAND="build"
 HPM_PROFILE="n"
 MEMORY_BENCH="n"
+OPUS_STAGE_PROFILE="n"
 OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
 OPUS_VARIANT="${M61_OPUS_VARIANT:-source-o2-lto}"
 OPUS_TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-none}"
@@ -29,7 +30,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-tcm-profile none|quant-all-bands] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -39,6 +40,7 @@ Environment:
   M61_OPUS_LIBRARY  Optional source-built libopus.a used instead of the SDK archive.
   M61_OPUS_VARIANT  source-o2-lto (default), source-o2, source-o3, sdk, or custom.
   M61_OPUS_TCM_PROFILE  none (default) or quant-all-bands.
+  M61_OPUS_STAGE_PROFILE  y enables test-only CELT stage markers.
 
 Example:
   ./build.sh
@@ -93,17 +95,21 @@ build_project() {
     [[ -d "$SDK_PATH" ]] || fail "BL_SDK_BASE not found: $SDK_PATH"
 
     local toolchain_bin
+    local opus_stage_value=0
     toolchain_bin="$(find_toolchain_bin)" || fail "T-HEAD riscv64-unknown-elf-gcc not found"
+    if [[ "$OPUS_STAGE_PROFILE" == "y" ]]; then
+        opus_stage_value=1
+    fi
 
     case "$OPUS_VARIANT" in
         source-o2)
-            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" bash "$PROJECT_DIR/build_opus.sh" O2 "$toolchain_bin")"
+            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" M61_OPUS_STAGE_PROFILE="$opus_stage_value" bash "$PROJECT_DIR/build_opus.sh" O2 "$toolchain_bin")"
             ;;
         source-o2-lto)
-            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" bash "$PROJECT_DIR/build_opus.sh" O2-LTO "$toolchain_bin")"
+            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" M61_OPUS_STAGE_PROFILE="$opus_stage_value" bash "$PROJECT_DIR/build_opus.sh" O2-LTO "$toolchain_bin")"
             ;;
         source-o3)
-            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" bash "$PROJECT_DIR/build_opus.sh" O3 "$toolchain_bin")"
+            OPUS_LIBRARY="$(M61_OPUS_TCM_PROFILE="$OPUS_TCM_PROFILE" M61_OPUS_STAGE_PROFILE="$opus_stage_value" bash "$PROJECT_DIR/build_opus.sh" O3 "$toolchain_bin")"
             ;;
         sdk)
             OPUS_LIBRARY=""
@@ -125,6 +131,7 @@ build_project() {
     log "Target: CHIP=$CHIP BOARD=$BOARD CPU_ID=${CPU_ID:-<empty>}"
     log "Opus: ${OPUS_LIBRARY:-SDK prebuilt}"
     log "Opus TCM profile: $OPUS_TCM_PROFILE"
+    log "Opus stage profile: $OPUS_STAGE_PROFILE"
 
     cd "$PROJECT_DIR"
 
@@ -134,6 +141,7 @@ build_project() {
         "CROSS_COMPILE=$toolchain_bin/riscv64-unknown-elf-"
         "CONFIG_M61_HPM_PROFILE=$HPM_PROFILE"
         "CONFIG_M61_MEMORY_BENCH=$MEMORY_BENCH"
+        "CONFIG_M61_OPUS_STAGE_PROFILE=$OPUS_STAGE_PROFILE"
     )
 
     if [[ -n "$CPU_ID" ]]; then
@@ -173,6 +181,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --memory-bench)
             MEMORY_BENCH="y"
+            HPM_PROFILE="y"
+            shift
+            ;;
+        --opus-stage-profile)
+            OPUS_STAGE_PROFILE="y"
             HPM_PROFILE="y"
             shift
             ;;
