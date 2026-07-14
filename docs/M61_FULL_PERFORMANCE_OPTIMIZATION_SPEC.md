@@ -347,6 +347,26 @@ decode 为 `4111 us / 1,313,852 cycles`，约 41.1%。两者简单相加已达 8
 Opus 1.6.1 和 float 变体不作为当前主线。项目冻结在已验证更适合 E907 的 Opus 1.2.1 fixed，
 后续优先优化共享 CELT 底层；只有出现明确的上游修复或可量化热点收益时才重新建立新版 A/B。
 
+### 7.4 全链路 profile 开销 A/B
+
+`50f5325` 把 ingress work、resample、BT alloc/build/send、pair age、report interval、USB packet
+cadence 和 epoch interval 全部绑入 core HPM 构建。相同 `baseline-v1` 90 秒负载下，encode 从
+`3846 us / 1,233,540 cycles` 退化到 WSL 的 `4786 us / 1,530,782 cycles`；Windows 同源码
+结果为 `4729 us / 1,512,719 cycles`，因此退化不是构建宿主导致。
+
+将新增全链路统计拆到独立 `CONFIG_M61_PIPELINE_PROFILE`，仅保留原 core encode/decode/ingress
+HPM 后，同一轮 90 秒结果恢复到：
+
+| 指标 | 拆分前 | pipeline 关闭 | 改善 |
+| --- | ---: | ---: | ---: |
+| encode 平均 | 4786 us | 4047 us | 15.4% |
+| cycles/encode | 1,530,782 | 1,296,022 | 15.3% |
+| instret/encode | 223,726 | 212,061 | 5.2% |
+| I-cache miss/encode | 3,326 | 2,631 | 20.9% |
+
+该轮 `qdrop/odrop/cancel/deadline/stale/encode error` 全为 0，确认统计代码是退化主体。相对
+`0eb2308` 单轮结果仍慢约 5.2%，剩余差异必须继续二分，不能全部归因于 profile。
+
 ## 8. 代码级性能问题清单
 
 ### P0：必须先修的正确性与测量问题
@@ -563,7 +583,8 @@ profile 宏只加到应用目标，禁止再次传播到 RF/PHY/BT 驱动。
 - 删除 `m61_audio_epoch_fallback_due_pair()` 的 speaker 取消行为及对应成功伪装。
 - 保留 fault counter；若过载，应明确暴露 deadline miss，而不是静默停 speaker。
 
-完成门槛：固定满载 0 drop/0 deadline/0 stale；profile 开销相对 release 平均低于 2%。
+完成门槛：固定满载 0 drop/0 deadline/0 stale。全链路 profile 允许作为重型诊断构建存在，
+但 core HPM 与生产构建必须完全编译掉其热路径代码；不得再要求重型 profile 自身低于 2%。
 
 ### 阶段 2：ingress 位精确优化与局部 O2
 
@@ -655,6 +676,16 @@ cd /mnt/c/code/MCU/DS5Dongle_ref/m61/dualsense_hidp_probe
 ./build.sh clean
 ./build.sh build --opus-source-o2-lto --opus-tcm-profile pvq-mdct-clusters
 ```
+
+WSL ext4 构建完成后，禁止临时拼接包含 `$src/$dst` 的 PowerShell→`bash -lc` 命令，也禁止
+复制整个含 SDK 中间文件的 `build_out`。统一从 Windows 主工作区运行：
+
+```powershell
+.\sync_wsl_artifacts.ps1 -ExpectedProfile Core
+```
+
+脚本只复制刷写所需的 9 个固件/ELF/map 产物，检查 core/pipeline 编译开关，并逐文件核对
+SHA256。pipeline 诊断构建使用 `-ExpectedProfile Pipeline`，生产构建使用 `Production`。
 
 无论使用哪个宿主，profile 都必须使用独立构建状态或完整 clean，显式加入需要的 profile
 flag。构建后运行：

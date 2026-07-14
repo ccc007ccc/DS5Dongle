@@ -26,6 +26,8 @@ int main(void)
                                        1800U,
                                        54U);
         m61_perf_profile_record_ingress_age(i < 99U ? 1000U : 5000U);
+        m61_perf_profile_record_timing(M61_PERF_TIMING_INGRESS_AGE,
+                                       i < 99U ? 1000U : 5000U);
         m61_perf_profile_record_timing(M61_PERF_TIMING_INGRESS_WORK,
                                        100U + i);
         m61_perf_profile_record_timing(M61_PERF_TIMING_RESAMPLE,

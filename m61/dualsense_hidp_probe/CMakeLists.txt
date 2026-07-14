@@ -36,6 +36,11 @@ if(CONFIG_M61_HPM_PROFILE)
     # of every realtime task.
     target_compile_definitions(libshell PRIVATE SHELL_THREAD_STACK_SIZE=2048)
 endif()
+if(CONFIG_M61_PIPELINE_PROFILE)
+    target_compile_definitions(app PRIVATE
+        CONFIG_M61_HPM_PROFILE=1
+        CONFIG_M61_PIPELINE_PROFILE=1)
+endif()
 if(CONFIG_M61_MEMORY_BENCH)
     # Test-only: adds 44 KiB of executable test data in Flash and OCRAM.  Keep
     # it out of production builds so it cannot change codec layout or RAM use.

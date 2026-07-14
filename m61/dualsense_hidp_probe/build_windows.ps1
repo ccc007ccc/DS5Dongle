@@ -5,6 +5,8 @@ param(
 
     [switch]$HpmProfile,
 
+    [switch]$PipelineProfile,
+
     [string]$ToolchainBin = 'C:\code\MCU\tools\toolchain_gcc_t-head_windows\bin',
 
     [string]$SdkPath = 'C:\code\MCU\bl_mcu_sdk',
@@ -97,13 +99,15 @@ $env:M61_OPUS_LIBRARY = $OpusLibrary
 $env:PATH = "$ToolchainBin;$CMakeBin;$(Join-Path $SdkPath 'tools\make');$env:PATH"
 
 $CrossCompile = Convert-ToCMakePath (Join-Path $ToolchainBin 'riscv64-unknown-elf-')
-$HpmValue = if ($HpmProfile) { 'y' } else { 'n' }
+$HpmValue = if ($HpmProfile -or $PipelineProfile) { 'y' } else { 'n' }
+$PipelineValue = if ($PipelineProfile) { 'y' } else { 'n' }
 $MakeArgs = @(
     "CHIP=bl616",
     "BOARD=bl616dk",
     "BUILD_DIR=$BuildDirName",
     "CROSS_COMPILE=$CrossCompile",
     "CONFIG_M61_HPM_PROFILE=$HpmValue",
+    "CONFIG_M61_PIPELINE_PROFILE=$PipelineValue",
     "CONFIG_M61_MEMORY_BENCH=n",
     "CONFIG_M61_OPUS_STAGE_PROFILE=n"
 )
@@ -113,6 +117,7 @@ Write-Host "[m61-hidp-win] GCC: $(& $Gcc --version | Select-Object -First 1)"
 Write-Host "[m61-hidp-win] Opus: $OpusLibrary"
 Write-Host "[m61-hidp-win] Build: $BuildFull"
 Write-Host "[m61-hidp-win] HPM profile: $HpmValue"
+Write-Host "[m61-hidp-win] Pipeline profile: $PipelineValue"
 
 Push-Location $ProjectDir
 try {

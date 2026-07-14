@@ -13,6 +13,7 @@ BOARD="bl616dk"
 CPU_ID=""
 COMMAND="build"
 HPM_PROFILE="n"
+PIPELINE_PROFILE="n"
 MEMORY_BENCH="n"
 OPUS_STAGE_PROFILE="n"
 OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
@@ -30,7 +31,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands|pvq-cluster|pvq-mdct-clusters|pvq-mdct-energy-clusters|pvq-mdct-tf-clusters] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--pipeline-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands|pvq-cluster|pvq-mdct-clusters|pvq-mdct-energy-clusters|pvq-mdct-tf-clusters] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -140,6 +141,7 @@ build_project() {
         "BOARD=$BOARD"
         "CROSS_COMPILE=$toolchain_bin/riscv64-unknown-elf-"
         "CONFIG_M61_HPM_PROFILE=$HPM_PROFILE"
+        "CONFIG_M61_PIPELINE_PROFILE=$PIPELINE_PROFILE"
         "CONFIG_M61_MEMORY_BENCH=$MEMORY_BENCH"
         "CONFIG_M61_OPUS_STAGE_PROFILE=$OPUS_STAGE_PROFILE"
     )
@@ -177,6 +179,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --hpm-profile)
             HPM_PROFILE="y"
+            shift
+            ;;
+        --pipeline-profile)
+            HPM_PROFILE="y"
+            PIPELINE_PROFILE="y"
             shift
             ;;
         --memory-bench)

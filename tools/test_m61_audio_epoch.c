@@ -5,6 +5,10 @@
 
 #include "m61_audio_epoch.h"
 
+#ifndef CONFIG_M61_PIPELINE_PROFILE
+#define CONFIG_M61_PIPELINE_PROFILE 0
+#endif
+
 #define USB_FRAME_BYTES 8U
 
 static bool reset_before_encode_copy;
@@ -199,11 +203,15 @@ static void test_epoch_cadence_and_no_deadline_fallback(void)
     m61_audio_epoch_ingest_usb(audio, sizeof(audio), 6, 11667, true, 256);
     assert(m61_audio_epoch_take_encode_job(&job));
     m61_audio_epoch_get_stats(&stats);
+#if CONFIG_M61_PIPELINE_PROFILE
     assert(stats.epoch_interval_samples == 1);
     assert(stats.epoch_interval_us_last == 10667);
     assert(stats.epoch_interval_us_average == 10667);
     assert(stats.epoch_interval_us_min == 10667);
     assert(stats.epoch_interval_us_max == 10667);
+#else
+    assert(stats.epoch_interval_samples == 0);
+#endif
     assert(stats.deadline_fallback_pairs == 0);
     assert(stats.encode_jobs_cancelled == 0);
 }

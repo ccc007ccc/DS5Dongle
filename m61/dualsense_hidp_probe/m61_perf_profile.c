@@ -29,13 +29,26 @@ typedef struct {
     uint32_t samples;
     uint32_t last_us;
     uint32_t max_us;
+    uint32_t histogram[M61_PERF_HISTOGRAM_BUCKETS + 1U];
+} ingress_profile_t;
+
+#if CONFIG_M61_PIPELINE_PROFILE
+typedef struct {
+    volatile uint32_t sequence;
+    uint32_t samples;
+    uint32_t last_us;
+    uint32_t max_us;
     uint64_t total_us;
     uint32_t histogram[M61_PERF_HISTOGRAM_BUCKETS + 1U];
 } timing_profile_t;
+#endif
 
 static encode_profile_t s_encode;
 static encode_profile_t s_decode;
+static ingress_profile_t s_ingress;
+#if CONFIG_M61_PIPELINE_PROFILE
 static timing_profile_t s_timing[M61_PERF_TIMING_COUNT];
+#endif
 static volatile uint32_t s_irq_mask_cycles_max;
 static bool s_enabled;
 
@@ -108,7 +121,10 @@ void m61_perf_profile_init(void)
 {
     memset(&s_encode, 0, sizeof(s_encode));
     memset(&s_decode, 0, sizeof(s_decode));
+    memset(&s_ingress, 0, sizeof(s_ingress));
+#if CONFIG_M61_PIPELINE_PROFILE
     memset(&s_timing, 0, sizeof(s_timing));
+#endif
     s_irq_mask_cycles_max = 0U;
     s_enabled = false;
 
@@ -269,12 +285,22 @@ void m61_perf_profile_record_decode(uint32_t elapsed_us,
 
 void m61_perf_profile_record_ingress_age(uint32_t age_us)
 {
-    m61_perf_profile_record_timing(M61_PERF_TIMING_INGRESS_AGE, age_us);
+    s_ingress.sequence++;
+    profile_barrier();
+    s_ingress.samples++;
+    s_ingress.last_us = age_us;
+    if (age_us > s_ingress.max_us) {
+        s_ingress.max_us = age_us;
+    }
+    s_ingress.histogram[histogram_bucket(age_us)]++;
+    profile_barrier();
+    s_ingress.sequence++;
 }
 
 void m61_perf_profile_record_timing(m61_perf_timing_stage_t stage,
                                     uint32_t elapsed_us)
 {
+#if CONFIG_M61_PIPELINE_PROFILE
     timing_profile_t *profile;
 
     if ((uint32_t)stage >= M61_PERF_TIMING_COUNT) {
@@ -292,6 +318,10 @@ void m61_perf_profile_record_timing(m61_perf_timing_stage_t stage,
     profile->histogram[histogram_bucket(elapsed_us)]++;
     profile_barrier();
     profile->sequence++;
+#else
+    (void)stage;
+    (void)elapsed_us;
+#endif
 }
 
 void m61_perf_profile_record_irq_mask_cycles(uint32_t cycles)
@@ -305,7 +335,10 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
 {
     encode_profile_t encode;
     encode_profile_t decode;
+    ingress_profile_t ingress;
+#if CONFIG_M61_PIPELINE_PROFILE
     timing_profile_t timing[M61_PERF_TIMING_COUNT];
+#endif
     uint32_t sequence;
 
     if (!snapshot) {
@@ -329,6 +362,7 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
         decode = s_decode;
         profile_barrier();
     } while (sequence != s_decode.sequence || (sequence & 1U));
+#if CONFIG_M61_PIPELINE_PROFILE
     for (uint32_t i = 0; i < M61_PERF_TIMING_COUNT; i++) {
         do {
             sequence = s_timing[i].sequence;
@@ -340,6 +374,16 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
             profile_barrier();
         } while (sequence != s_timing[i].sequence || (sequence & 1U));
     }
+#endif
+    do {
+        sequence = s_ingress.sequence;
+        if (sequence & 1U) {
+            continue;
+        }
+        profile_barrier();
+        ingress = s_ingress;
+        profile_barrier();
+    } while (sequence != s_ingress.sequence || (sequence & 1U));
 
     memset(snapshot, 0, sizeof(*snapshot));
     snapshot->enabled = s_enabled;
@@ -405,6 +449,7 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
         decode.histogram, decode.samples, 95U);
     snapshot->decode_us_p99 = histogram_percentile(
         decode.histogram, decode.samples, 99U);
+#if CONFIG_M61_PIPELINE_PROFILE
     for (uint32_t i = 0; i < M61_PERF_TIMING_COUNT; i++) {
         m61_perf_timing_snapshot_t *dst = &snapshot->timing[i];
 
@@ -422,17 +467,13 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
         dst->p99_us = histogram_percentile(
             timing[i].histogram, timing[i].samples, 99U);
     }
-    snapshot->ingress_samples =
-        timing[M61_PERF_TIMING_INGRESS_AGE].samples;
-    snapshot->ingress_age_us_last =
-        timing[M61_PERF_TIMING_INGRESS_AGE].last_us;
-    snapshot->ingress_age_us_max =
-        timing[M61_PERF_TIMING_INGRESS_AGE].max_us;
+#endif
+    snapshot->ingress_samples = ingress.samples;
+    snapshot->ingress_age_us_last = ingress.last_us;
+    snapshot->ingress_age_us_max = ingress.max_us;
     snapshot->ingress_age_us_p95 = histogram_percentile(
-        timing[M61_PERF_TIMING_INGRESS_AGE].histogram,
-        timing[M61_PERF_TIMING_INGRESS_AGE].samples, 95U);
+        ingress.histogram, ingress.samples, 95U);
     snapshot->ingress_age_us_p99 = histogram_percentile(
-        timing[M61_PERF_TIMING_INGRESS_AGE].histogram,
-        timing[M61_PERF_TIMING_INGRESS_AGE].samples, 99U);
+        ingress.histogram, ingress.samples, 99U);
     snapshot->irq_mask_cycles_max = s_irq_mask_cycles_max;
 }

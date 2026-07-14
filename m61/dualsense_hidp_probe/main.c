@@ -338,7 +338,7 @@ static bool hid_interrupt_prepare_pending;
 static bool disconnect_cleanup_scheduled;
 static TickType_t disconnect_cleanup_tick;
 static m61_bt_tx_scheduler_t hidp_tx_scheduler;
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
 static uint64_t hidp_audio_last_report_us;
 static bool hidp_audio_last_report_valid;
 #endif
@@ -394,7 +394,7 @@ static bool tick_due(TickType_t now, TickType_t due)
     return (int32_t)(now - due) >= 0;
 }
 
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
 static uint32_t elapsed_us_u32(uint64_t start_us)
 {
     uint64_t now_us = bflb_mtimer_get_time_us();
@@ -451,7 +451,7 @@ static void auto_reset_link_state(void)
     hidp_last_mic_active = false;
     hidp_next_mic_status_tick = 0;
     hidp_next_audio_report_tick = 0;
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     hidp_audio_last_report_valid = false;
 #endif
     dualsense_headphones_connected = false;
@@ -1960,7 +1960,7 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
     struct net_buf *buf;
     uint8_t *packet;
     int err;
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     uint64_t total_start_us;
     uint64_t stage_start_us;
     uint64_t now_us;
@@ -1980,7 +1980,7 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
         return -EMSGSIZE;
     }
 
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     total_start_us = bflb_mtimer_get_time_us();
     if (total_start_us >= pair->first_captured_us) {
         uint64_t pair_age_us = total_start_us - pair->first_captured_us;
@@ -1993,11 +1993,11 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
     stage_start_us = bflb_mtimer_get_time_us();
 #endif
     buf = bt_l2cap_create_pdu_timeout(NULL, 0, HIDP_BT_AUDIO_ALLOC_TIMEOUT);
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     record_elapsed_us(M61_PERF_TIMING_BT_ALLOC, stage_start_us);
 #endif
     if (!buf) {
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
         record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
 #endif
         hidp_audio_send_errors++;
@@ -2006,7 +2006,7 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
     }
     if (net_buf_tailroom(buf) < 1U + DS5_OUTPUT_AUDIO_RT_BT_LEN) {
         net_buf_unref(buf);
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
         record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
 #endif
         hidp_audio_send_errors++;
@@ -2015,7 +2015,7 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
     }
     packet = net_buf_add(buf, 1U + DS5_OUTPUT_AUDIO_RT_BT_LEN);
     packet[0] = HIDP_TRANSACTION_DATA_OUTPUT;
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     stage_start_us = bflb_mtimer_get_time_us();
 #endif
     if (!dualsense_output_make_audio_rt(
@@ -2031,7 +2031,7 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
             DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
             packet + 1U,
             DS5_OUTPUT_AUDIO_RT_BT_LEN)) {
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
         record_elapsed_us(M61_PERF_TIMING_REPORT_BUILD, stage_start_us);
         record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
 #endif
@@ -2041,12 +2041,12 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
         return -EINVAL;
     }
 
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     record_elapsed_us(M61_PERF_TIMING_REPORT_BUILD, stage_start_us);
     stage_start_us = bflb_mtimer_get_time_us();
 #endif
     err = bt_l2cap_chan_send(&hid_interrupt.br.chan, buf);
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     record_elapsed_us(M61_PERF_TIMING_BT_SEND_CALL, stage_start_us);
     record_elapsed_us(M61_PERF_TIMING_BT_TOTAL, total_start_us);
 #endif
@@ -2060,7 +2060,7 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
     hidp_haptics_reports_sent++;
     hidp_audio_last_error = 0;
     hidp_haptics_last_error = 0;
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     now_us = bflb_mtimer_get_time_us();
     if (hidp_audio_last_report_valid &&
         now_us >= hidp_audio_last_report_us) {

@@ -3,6 +3,10 @@
 #include <limits.h>
 #include <string.h>
 
+#ifndef CONFIG_M61_PIPELINE_PROFILE
+#define CONFIG_M61_PIPELINE_PROFILE 0
+#endif
+
 #ifndef M61_AUDIO_EPOCH_HOST_TEST
 #include "bflb_irq.h"
 #endif
@@ -21,10 +25,14 @@ _Static_assert(sizeof(m61_audio_epoch_t) % M61_CACHE_LINE_BYTES == 0U,
 typedef struct {
     m61_audio_epoch_t slots[M61_AUDIO_EPOCH_SLOT_COUNT];
     m61_audio_epoch_stats_t stats;
+#if CONFIG_M61_PIPELINE_PROFILE
     uint64_t epoch_interval_us_total;
     uint64_t last_epoch_captured_us;
+#endif
     uint8_t filling_slot;
+#if CONFIG_M61_PIPELINE_PROFILE
     bool last_epoch_capture_valid;
+#endif
 } audio_epoch_store_t;
 
 static audio_epoch_store_t s_store __attribute__((aligned(M61_CACHE_LINE_BYTES)));
@@ -110,6 +118,7 @@ static int allocate_slot_locked(uint64_t captured_us, bool speaker_enabled)
         s_store.stats.epochs_dropped++;
     }
 
+#if CONFIG_M61_PIPELINE_PROFILE
     if (s_store.last_epoch_capture_valid &&
         captured_us >= s_store.last_epoch_captured_us) {
         uint64_t interval_us = captured_us - s_store.last_epoch_captured_us;
@@ -130,6 +139,7 @@ static int allocate_slot_locked(uint64_t captured_us, bool speaker_enabled)
     }
     s_store.last_epoch_captured_us = captured_us;
     s_store.last_epoch_capture_valid = true;
+#endif
 
     m61_audio_epoch_t *slot = &s_store.slots[selected];
     slot->generation = s_store.stats.generation;
@@ -158,7 +168,9 @@ void m61_audio_epoch_reset(uint32_t generation)
     s_store.stats.next_epoch = 0;
     s_store.stats.generation_resets++;
     s_store.filling_slot = INVALID_SLOT;
+#if CONFIG_M61_PIPELINE_PROFILE
     s_store.last_epoch_capture_valid = false;
+#endif
     for (uint8_t i = 0; i < M61_AUDIO_EPOCH_SLOT_COUNT; i++) {
         m61_audio_epoch_t *slot = &s_store.slots[i];
         if (slot->state == M61_AUDIO_EPOCH_ENCODING ||
@@ -501,11 +513,13 @@ void m61_audio_epoch_get_stats(m61_audio_epoch_stats_t *stats)
     if (stats == NULL) return;
     flags = epoch_lock();
     *stats = s_store.stats;
+#if CONFIG_M61_PIPELINE_PROFILE
     if (stats->epoch_interval_samples != 0U) {
         stats->epoch_interval_us_average =
             (uint32_t)(s_store.epoch_interval_us_total /
                        stats->epoch_interval_samples);
     }
+#endif
     stats->filling_slots = 0;
     stats->encode_ready_slots = 0;
     stats->encoding_slots = 0;
