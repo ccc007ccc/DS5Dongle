@@ -1,6 +1,6 @@
 # M61 性能基准与最优固件账本
 
-更新日期：2026-07-14
+更新日期：2026-07-15
 
 本文件只记录真机可复现结果和晋升规则。优化路线、芯片事实和风险分析仍以
 `M61_FULL_PERFORMANCE_OPTIMIZATION_SPEC.md` 为准。
@@ -137,3 +137,32 @@ USB ring 时的溢出，随后又产生对应 underflow。Opus decoder 返回错
 因此属于有效的 mic 流水线优化，不替换 `full-duplex-v1/current`。剩余 7 个 underflow 很可能
 来自 USB IN 打开后、首个 10 ms Opus 帧完成解码前的启动窗口，后续需用区分 startup/runtime
 的计数器核实，不能直接记为运行期零欠载。
+
+## 6. Speaker epoch 8 槽抖动余量（有效，不晋升主最优）
+
+优化提交：`perf(m61): add speaker epoch jitter headroom`。测试固件 SHA256：
+`28240EE88FDC721F615051ACDE1C5470901CA6F4E618631FB09DDAE06F8EB881`。
+
+证据与本次实际测试二进制：
+
+- `artifacts/m61-history/full-duplex-speaker-epoch8-20260715/`
+
+speaker epoch ring 从 4 槽扩展到 8 槽。4 槽在正常流水线中会同时被 USB 填充、Opus
+编码以及等待相邻配对发送的两个 epoch 占满，没有余量吸收一次 codec 或 BT 调度抖动；
+8 槽增加约 9.4 KiB OCRAM，但不改变正常发送节奏、Opus 配置、音质或端到端路径。
+
+| 指标 | 4 槽 FIFO32 基线 | 8 槽候选 |
+| --- | ---: | ---: |
+| speaker/haptics epoch drop | 242 | 0 |
+| deadline / cancel / encode error | 0 / 0 / 0 | 0 / 0 / 0 |
+| BT send error / stale / no-connection | 0 / 0 / 0 | 0 / 0 / 0 |
+| codec cycles / 10 ms | 2,365,319（73.916%） | 2,366,861（73.964%） |
+| mic Opus / PCM drop | 0 / 0 | 0 / 0 |
+| mic PCM shortfall | 0 | 0 |
+| USB IN underflow | 7 / 93,367（0.007%） | 9 / 93,370（0.010%） |
+| Windows capture status event | 0 | 0 |
+
+本候选消除了剩余 speaker/haptics epoch drop，且 codec 成本基本持平（+0.066%）。但 USB
+IN 仍在启动窗口出现 9 个 underflow，因此尚未满足 `full-duplex-v1` 的全零硬门槛，不替换
+`current`。下一步应把 USB Audio IN 启动期与稳定运行期 underflow 分开计数，并在首个真实
+mic PCM frame 到达后再启动连续 VDMA 供给，不能用静音或停包掩盖运行期欠载。
