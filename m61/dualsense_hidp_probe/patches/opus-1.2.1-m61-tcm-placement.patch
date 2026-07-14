@@ -11,6 +11,11 @@ diff --git a/celt/bands.c b/celt/bands.c
 +__attribute__((section(".tcm_code.opus.energy_cluster")))
 +#endif
  void compute_band_energies(const CELTMode *m, const celt_sig *X, celt_ener *bandE, int end, int C, int LM, int arch)
+@@ -202,1 +208,4 @@
++#if defined(M61_OPUS_TCM_DECODE_DENORM)
++__attribute__((section(".tcm_code.opus.decode_synth_cluster")))
++#endif
+ void denormalise_bands(const CELTMode *m, const celt_norm * OPUS_RESTRICT X,
 @@ -700,1 +706,4 @@
 +#if defined(M61_OPUS_TCM_PVQ_CLUSTER)
 +__attribute__((section(".tcm_code.opus.pvq_cluster")))
@@ -49,6 +54,14 @@ diff --git a/celt/celt_encoder.c b/celt/celt_encoder.c
 +__attribute__((section(".tcm_code.opus.tf_cluster")))
 +#endif
  static int tf_analysis(const CELTMode *m, int len, int isTransient,
+diff --git a/celt/celt_decoder.c b/celt/celt_decoder.c
+--- a/celt/celt_decoder.c
++++ b/celt/celt_decoder.c
+@@ -330,1 +330,4 @@
++#if defined(M61_OPUS_TCM_DECODE_SYNTH)
++__attribute__((section(".tcm_code.opus.decode_synth_cluster")))
++#endif
+ void celt_synthesis(const CELTMode *mode, celt_norm *X, celt_sig * out_syn[],
 diff --git a/celt/kiss_fft.c b/celt/kiss_fft.c
 --- a/celt/kiss_fft.c
 +++ b/celt/kiss_fft.c
@@ -57,6 +70,14 @@ diff --git a/celt/kiss_fft.c b/celt/kiss_fft.c
 +__attribute__((section(".tcm_code.opus.mdct_cluster")))
 +#endif
  void opus_fft_impl(const kiss_fft_state *st,kiss_fft_cpx *fout)
+diff --git a/celt/mdct.c b/celt/mdct.c
+--- a/celt/mdct.c
++++ b/celt/mdct.c
+@@ -242,1 +242,4 @@
++#if defined(M61_OPUS_TCM_DECODE_MDCT)
++__attribute__((section(".tcm_code.opus.decode_synth_cluster")))
++#endif
+ void clt_mdct_backward_c(const mdct_lookup *l, kiss_fft_scalar *in, kiss_fft_scalar * OPUS_RESTRICT out,
 diff --git a/celt/quant_bands.c b/celt/quant_bands.c
 --- a/celt/quant_bands.c
 +++ b/celt/quant_bands.c

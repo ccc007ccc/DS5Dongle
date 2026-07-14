@@ -83,7 +83,7 @@ diff --git a/celt/celt_encoder.c b/celt/celt_encoder.c
 diff --git a/celt/celt_decoder.c b/celt/celt_decoder.c
 --- a/celt/celt_decoder.c
 +++ b/celt/celt_decoder.c
-@@ -52,0 +53,7 @@
+@@ -53,0 +54,7 @@
 +#if defined(M61_OPUS_STAGE_PROFILE)
 +extern void m61_opus_decode_stage_mark(unsigned boundary);
 +# define M61_OPUS_DECODE_STAGE_MARK(boundary) m61_opus_decode_stage_mark(boundary)
@@ -91,19 +91,19 @@ diff --git a/celt/celt_decoder.c b/celt/celt_decoder.c
 +# define M61_OPUS_DECODE_STAGE_MARK(boundary) do { (void)(boundary); } while (0)
 +#endif
 +
-@@ -834,0 +842 @@
+@@ -837,0 +845 @@
 +   M61_OPUS_DECODE_STAGE_MARK(0);
-@@ -972,0 +981 @@
+@@ -975,0 +984 @@
 +   M61_OPUS_DECODE_STAGE_MARK(1);
-@@ -1034,0 +1044 @@
+@@ -1035,0 +1045 @@
 +   M61_OPUS_DECODE_STAGE_MARK(2);
-@@ -1054,0 +1065 @@
+@@ -1057,0 +1068 @@
 +   M61_OPUS_DECODE_STAGE_MARK(3);
-@@ -1075,0 +1087 @@
+@@ -1078,0 +1090 @@
 +   M61_OPUS_DECODE_STAGE_MARK(4);
-@@ -1100,0 +1113 @@
+@@ -1103,0 +1116 @@
 +   M61_OPUS_DECODE_STAGE_MARK(5);
-@@ -1139,0 +1153 @@
+@@ -1142,0 +1156 @@
 +   M61_OPUS_DECODE_STAGE_MARK(6);
-@@ -1145,0 +1160 @@
+@@ -1148,0 +1163 @@
 +   M61_OPUS_DECODE_STAGE_MARK(7);

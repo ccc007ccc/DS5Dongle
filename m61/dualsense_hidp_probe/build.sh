@@ -31,7 +31,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--pipeline-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands|pvq-cluster|pvq-mdct-clusters|pvq-mdct-energy-clusters|pvq-mdct-tf-clusters] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--pipeline-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile none|quant-all-bands|pvq-cluster|pvq-mdct-clusters|pvq-mdct-decode-mdct|pvq-mdct-decode-clusters|pvq-mdct-energy-clusters|pvq-mdct-tf-clusters] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
