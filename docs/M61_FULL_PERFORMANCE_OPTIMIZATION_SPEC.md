@@ -385,6 +385,30 @@ HPM 后，同一轮 90 秒结果恢复到：
   5795 us；
 - 静态 RAM 保持 197,124 B，所有 drop/deadline/cancel/stale/error 为 0。
 
+### 7.6 正式 RAM 布局下的 decoder 并发基线
+
+在 `pvq-mdct-clusters`、Opus 1.2.1 fixed、O2+LTO 和 ingress 除法消除均启用的 core-HPM
+固件上，运行 90 秒 `baseline-v1` 并开启固定 71 B synthetic mic decoder：
+
+| 指标 | 当前并发结果 |
+| --- | ---: |
+| encode 平均 | 4190 us / 1,341,702 cycles |
+| decode 平均 | 2927 us / 935,870 cycles |
+| encode instret | 212,577 |
+| decode instret | 136,018 |
+| encode I-cache miss | 2,809 |
+| decode I-cache miss | 1,935 |
+| codec cycles 合计 | 2,277,572 / 10 ms |
+| 单核周期占比 | 71.2% |
+
+相对旧 decode `4111 us / 1,313,852 cycles`，当前 decoder cycles 改善约 28.8%，证明正式
+PVQ+MDCT/FFT cached OCRAM 布局同时帮助 decode。并发 encode 相对 encode-only 的
+`1,275,350 cycles` 增加约 5.2%，量化了共享 I-cache/任务竞争成本。该轮 8,438 次 decode
+错误为 0，所有 audio/BT drop、deadline、cancel 和 stale 均为 0。
+
+mono encode+decode 尚有约 28.8% 原始周期空间，但该数字未包含真实 stereo encoder 增量、
+真实 BT mic ingress/USB IN 和最坏协议突发，不能视为已满足最终 20% 冗余。
+
 ## 8. 代码级性能问题清单
 
 ### P0：必须先修的正确性与测量问题
