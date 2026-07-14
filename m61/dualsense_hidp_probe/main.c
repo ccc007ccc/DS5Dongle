@@ -2918,8 +2918,8 @@ int cmd_ds5(int argc, char **argv)
     }
 
     if (strcmp(argv[1], "status") == 0) {
-        m61_usb_gamepad_diag_t usb_diag;
-        m61_perf_profile_snapshot_t perf_snapshot;
+        static m61_usb_gamepad_diag_t usb_diag;
+        static m61_perf_profile_snapshot_t perf_snapshot;
         m61_usb_gamepad_get_diag(&usb_diag);
         m61_perf_profile_get_snapshot(&perf_snapshot);
 
@@ -3115,7 +3115,7 @@ int cmd_ds5(int argc, char **argv)
                 "setup", "time", "spectral", "energy",
                 "allocation", "pvq", "finalize",
             };
-            m61_opus_stage_snapshot_t stage_snapshot;
+            static m61_opus_stage_snapshot_t stage_snapshot;
 
             m61_opus_stage_profile_get_snapshot(&stage_snapshot);
             for (uint32_t i = 0; i < M61_OPUS_STAGE_COUNT; i++) {
@@ -3274,7 +3274,7 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_INTERVAL].average_us,
                (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_REPORT_INTERVAL].max_us);
         {
-            m61_bt_tx_metrics_t tx_metrics;
+            static m61_bt_tx_metrics_t tx_metrics;
             uintptr_t flags = bflb_irq_save();
 
             m61_bt_tx_scheduler_get_metrics(&hidp_tx_scheduler, &tx_metrics);

@@ -31,6 +31,10 @@ if(CONFIG_M61_HPM_PROFILE)
     # prebuilt SDK/driver targets as well and has broken RF initialization on
     # real BL616 hardware.
     target_compile_definitions(app PRIVATE CONFIG_M61_HPM_PROFILE=1)
+    # The profile status command prints the full USB/codec/BT snapshot.  Keep
+    # its diagnostic-only stack headroom out of production firmware and out
+    # of every realtime task.
+    target_compile_definitions(libshell PRIVATE SHELL_THREAD_STACK_SIZE=2048)
 endif()
 if(CONFIG_M61_MEMORY_BENCH)
     # Test-only: adds 44 KiB of executable test data in Flash and OCRAM.  Keep
