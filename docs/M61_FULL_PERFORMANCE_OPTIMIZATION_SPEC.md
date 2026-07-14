@@ -448,6 +448,29 @@ synthesis/IMDCT；二者也是 stereo speaker 与 mic decoder 能共享收益的
 端到端 A/B 接受，局部 stage 变快不能作为保留依据。后续不继续拆分搬运 synthesis 函数，
 转向 PVQ/MDCT 内部位精确算术、访存和函数布局分析。
 
+### 7.9 PVQ 二次幂除法消除
+
+静态审计确认 `quant_band()` 中的 `B` 从 `1 << LM` 或 1 开始，后续只进行左右移位；
+递归 `quant_partition()` 的 `(B+1)>>1` 对该输入域仍保持二次幂。因此 rotation stride、
+collapse-mask block size 和 `N_B/B` 的除数均严格为二次幂。E907 profile 新增
+`celt_udiv_pow2()`，用 `clz32 + shift` 替代这些动态 `divu`：
+
+- 3,200,480 组全宽边界/随机向量与 C 无符号除法逐值一致；该变换本身是
+  `n / 2^k == n >> k`，不改变 Opus 比特流或 PCM 算术；
+- 正式 ELF 的 `quant_partition` 两个 `divu` 和 `exp_rotation.part.0` 一个 `divu` 均消失；
+- text/ITCM 增加 32 B，data/BSS 不变，静态物理 RAM 从 197,124 B 增到 197,156 B；
+- 90 秒并发 encode+synthetic decode 中，encode 从 1,341,702 增到 1,357,295 cycles
+  （+1.16%），decode 从 935,870 降到 845,589 cycles（-9.65%）；合计从 2,277,572
+  降到 2,202,884 cycles（-3.28%），单核占比从 71.2% 降到 68.8%；
+- encode P50/P95/P99 为 4500/5250/5500 us、max 5962 us；decode 为
+  3000/3750/4000 us、max 4459 us；全部 qdrop/deadline/cancel/stale/error 为 0。
+
+尝试给 `d==1` 增加分支快路后，text/ITCM 相对原基线增加 48 B，encode/decode 分别为
+1,373,043/897,741 cycles，并发总量只改善 0.30%，且出现 1 个 BT stale，故否决该变体。
+保留无分支版本是针对最终 encode+decode 并发上限的加权选择；encode 单项回退必须继续作为
+后续候选的约束，不能用 decoder 收益隐藏。该结果也再次表明 16 B 级代码布局变化即可显著
+改变 E907 I-cache 行为，后续 PVQ 补丁必须记录关键函数地址和全链路 HPM。
+
 ## 8. 代码级性能问题清单
 
 ### P0：必须先修的正确性与测量问题
