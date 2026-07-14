@@ -73,7 +73,7 @@
 #define AUDIO_MIC_CHANNELS 1
 #define AUDIO_MIC_FRAME_SAMPLES 480
 #define AUDIO_MIC_OPUS_QUEUE_DEPTH 2
-#define AUDIO_MIC_PACKET_DEPTH 16
+#define AUDIO_MIC_PACKET_DEPTH 32
 #define AUDIO_MIC_PACKET_INVALID_SLOT UINT8_MAX
 #ifndef CONFIG_M61_DS5_MIC_DEFAULT_ENABLED
 #define CONFIG_M61_DS5_MIC_DEFAULT_ENABLED 0
@@ -485,6 +485,7 @@ static uint32_t audio_out_frames_other_packets;
 static bool audio_out_last_capture_valid;
 #endif
 static volatile uint8_t audio_mic_packet_state[AUDIO_MIC_PACKET_DEPTH];
+static volatile uint8_t audio_mic_packet_nonzero[AUDIO_MIC_PACKET_DEPTH];
 static volatile uint8_t audio_mic_packet_producer_cursor;
 static volatile uint8_t audio_mic_packet_consumer_cursor;
 static volatile uint8_t audio_mic_packet_active_slot =
@@ -915,6 +916,7 @@ static void flush_mic_queues(void)
     audio_mic_packet_count = 0;
     for (uint8_t i = 0; i < AUDIO_MIC_PACKET_DEPTH; i++) {
         audio_mic_packet_state[i] = AUDIO_MIC_PACKET_FREE;
+        audio_mic_packet_nonzero[i] = 0U;
     }
     usb_unlock(flags);
 }
@@ -1032,18 +1034,9 @@ static void push_mic_pcm_stereo(const int16_t *mono, uint16_t samples)
     uint16_t sample_offset = 0;
     while (sample_offset < samples) {
         uintptr_t flags = usb_lock();
-        int selected = -1;
+        uint8_t selected = audio_mic_packet_producer_cursor;
 
-        for (uint8_t offset = 0; offset < AUDIO_MIC_PACKET_DEPTH; offset++) {
-            uint8_t index = (uint8_t)(
-                (audio_mic_packet_producer_cursor + offset) %
-                AUDIO_MIC_PACKET_DEPTH);
-            if (audio_mic_packet_state[index] == AUDIO_MIC_PACKET_FREE) {
-                selected = index;
-                break;
-            }
-        }
-        if (selected < 0) {
+        if (audio_mic_packet_state[selected] != AUDIO_MIC_PACKET_FREE) {
             usb_diag.audio_mic_opus_dropped++;
             usb_unlock(flags);
             return;
@@ -1051,7 +1044,7 @@ static void push_mic_pcm_stereo(const int16_t *mono, uint16_t samples)
         audio_mic_packet_state[selected] = AUDIO_MIC_PACKET_FILLING;
         usb_unlock(flags);
 
-        uint8_t *packet = audio_mic_packet_ring[selected];
+        uint32_t *packet = (uint32_t *)audio_mic_packet_ring[selected];
         uint16_t packet_samples = samples - sample_offset;
         uint16_t nonzero = 0;
         if (packet_samples > AUDIO_IN_STREAM_PACKET_SIZE / 4U) {
@@ -1060,18 +1053,14 @@ static void push_mic_pcm_stereo(const int16_t *mono, uint16_t samples)
         for (uint16_t i = 0; i < packet_samples; i++) {
             int16_t pcm = mono[sample_offset + i];
             uint16_t sample = (uint16_t)pcm;
-            uint16_t out = (uint16_t)(i * 4U);
 
-            packet[out] = (uint8_t)(sample & 0xFFU);
-            packet[out + 1U] = (uint8_t)(sample >> 8);
-            packet[out + 2U] = packet[out];
-            packet[out + 3U] = packet[out + 1U];
+            packet[i] = (uint32_t)sample | ((uint32_t)sample << 16);
             if (pcm != 0) {
                 nonzero++;
             }
         }
         if (packet_samples < AUDIO_IN_STREAM_PACKET_SIZE / 4U) {
-            memset(packet + packet_samples * 4U, 0,
+            memset((uint8_t *)(packet + packet_samples), 0,
                    AUDIO_IN_STREAM_PACKET_SIZE - packet_samples * 4U);
         }
 
@@ -1080,6 +1069,7 @@ static void push_mic_pcm_stereo(const int16_t *mono, uint16_t samples)
             usb_unlock(flags);
             return;
         }
+        audio_mic_packet_nonzero[selected] = nonzero != 0U ? 1U : 0U;
         audio_mic_packet_state[selected] = AUDIO_MIC_PACKET_READY;
         audio_mic_packet_producer_cursor = (uint8_t)(
             (selected + 1U) % AUDIO_MIC_PACKET_DEPTH);
@@ -1272,7 +1262,8 @@ static void audio_ingress_task(void *pvParameters)
     }
 }
 
-static void audio_codec_task(void *pvParameters)
+static void __attribute__((aligned(32)))
+audio_codec_task(void *pvParameters)
 {
     OpusEncoder *encoder = NULL;
     OpusDecoder *decoder = NULL;
@@ -1776,29 +1767,21 @@ static void arm_audio_in(uint8_t busid)
     }
 
     flags = usb_lock();
-    for (uint8_t offset = 0; offset < AUDIO_MIC_PACKET_DEPTH; offset++) {
-        uint8_t index = (uint8_t)(
-            (audio_mic_packet_consumer_cursor + offset) %
-            AUDIO_MIC_PACKET_DEPTH);
-        if (audio_mic_packet_state[index] == AUDIO_MIC_PACKET_READY) {
-            selected = index;
-            break;
-        }
+    selected = audio_mic_packet_consumer_cursor;
+    if (audio_mic_packet_state[selected] != AUDIO_MIC_PACKET_READY) {
+        selected = AUDIO_MIC_PACKET_INVALID_SLOT;
     }
     if (selected != AUDIO_MIC_PACKET_INVALID_SLOT) {
         audio_mic_packet_state[selected] = AUDIO_MIC_PACKET_DMA_ACTIVE;
         audio_mic_packet_active_slot = selected;
         buffer = audio_mic_packet_ring[selected];
+        nonzero = audio_mic_packet_nonzero[selected] != 0U;
     } else {
         audio_mic_packet_active_slot = AUDIO_MIC_PACKET_INVALID_SLOT;
         usb_diag.audio_mic_underflow++;
     }
     audio_in_busy = true;
     usb_unlock(flags);
-
-    if (selected != AUDIO_MIC_PACKET_INVALID_SLOT) {
-        nonzero = bytes_have_nonzero(buffer, AUDIO_IN_STREAM_PACKET_SIZE);
-    }
 
     if (usbd_ep_start_write(busid, AUDIO_IN_EP, buffer,
                             AUDIO_IN_STREAM_PACKET_SIZE) == 0) {
@@ -1991,6 +1974,7 @@ static void usbd_audio_in_ep_callback(uint8_t busid, uint8_t ep, uint32_t nbytes
     if (selected < AUDIO_MIC_PACKET_DEPTH &&
         audio_mic_packet_state[selected] == AUDIO_MIC_PACKET_DMA_ACTIVE) {
         audio_mic_packet_state[selected] = AUDIO_MIC_PACKET_FREE;
+        audio_mic_packet_nonzero[selected] = 0U;
         audio_mic_packet_consumer_cursor = (uint8_t)(
             (selected + 1U) % AUDIO_MIC_PACKET_DEPTH);
         if (audio_mic_packet_count > 0U) {

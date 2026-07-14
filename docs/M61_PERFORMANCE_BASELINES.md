@@ -103,3 +103,37 @@ python tools/run_m61_full_load.py --serial-port COM5 --decoder-bench `
 PCM 恰好短缺约 1,583 个 1 ms 包，本轮主要 mic 破音证据指向解码后 10 包突发写入 16 包
 USB ring 时的溢出，随后又产生对应 underflow。Opus decoder 返回错误为 0，当前证据不支持
 先把炸音归因于 Opus 编解码质量。
+
+## 5. Mic FIFO 快速路径与 32 ms 抖动余量（有效，不晋升主最优）
+
+测试固件 SHA256：
+`D3BC074221A2FAA084A63052A29B3A69A0D13FF6552BAD088FB2A37F94550CD8`。
+
+证据：
+
+- `artifacts/full-duplex-mic-fifo32-aligned32-20260714_before.log`
+- `artifacts/full-duplex-mic-fifo32-aligned32-20260714.log`
+
+改动包括：
+
+- mic USB PCM ring 从 16 个 1 ms 包扩展到 32 个，给 10 包突发生产与 1 ms DMA 消费提供
+  22 ms 相位/调度余量；
+- producer/consumer 改为严格 FIFO 游标，删除每包最多 32 槽的关中断扫描；
+- mono→stereo 扩展改为单次 32 位写；
+- producer 保存每槽 nonzero 元数据，删除 USB IN 热路径的 192 B 重扫；
+- `audio_codec_task` 固定到 32 B 地址边界，避免同一任务因前置函数尺寸变化而任意漂移。
+
+| 指标 | 首轮失败基线 | 本候选 |
+| --- | ---: | ---: |
+| mic PCM 1 ms 包 | 91,807 / 93,390 | 93,360 / 93,360 |
+| mic PCM shortfall | 1,583 | 0 |
+| mic ring/Opus drop 复合计数 | 1,087 | 0 |
+| USB IN underflow | 1,585 / 93,389（1.697%） | 7 / 93,367（0.007%） |
+| mic decode error | 0 | 0 |
+| Windows capture status event | 0 | 0 |
+| speaker/haptics epoch drop | 142 | 242 |
+
+该候选解决了解码后 PCM ring 的持续溢出/欠载对，但 speaker/haptics epoch drop 仍非零，
+因此属于有效的 mic 流水线优化，不替换 `full-duplex-v1/current`。剩余 7 个 underflow 很可能
+来自 USB IN 打开后、首个 10 ms Opus 帧完成解码前的启动窗口，后续需用区分 startup/runtime
+的计数器核实，不能直接记为运行期零欠载。
