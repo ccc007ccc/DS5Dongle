@@ -1399,6 +1399,7 @@ audio_codec_task(void *pvParameters)
     while (1) {
         uint8_t speaker_budget = 1U;
         bool speaker_encoded = false;
+        uint8_t codec_stages_ran = 0U;
         TickType_t now;
 
 #if CONFIG_M61_HPM_PROFILE
@@ -1417,6 +1418,7 @@ audio_codec_task(void *pvParameters)
 
         while (speaker_budget > 0 && encoder &&
                m61_audio_epoch_take_encode_job(&speaker_job)) {
+            codec_stages_ran++;
             uint64_t encode_start_us;
             uint64_t encode_elapsed_us;
 #if CONFIG_M61_HPM_PROFILE
@@ -1518,6 +1520,7 @@ audio_codec_task(void *pvParameters)
 #endif
 
         if (decoder && take_mic_opus(mic_opus, &mic_created_us)) {
+            codec_stages_ran++;
             uint64_t mic_queue_age_us = bflb_mtimer_get_time_us() - mic_created_us;
             uintptr_t age_flags = usb_lock();
             usb_diag.audio_mic_queue_age_us_last =
@@ -1575,12 +1578,12 @@ audio_codec_task(void *pvParameters)
         }
 
         /*
-         * One Opus frame already consumes almost the whole 10 ms budget on
-         * BL616.  Always block for one tick after an iteration so the lower
-         * priority BT bridge gets a deterministic transmit window.  Running
-         * several catch-up encodes back-to-back starves haptics for ~50 ms.
+         * Preserve the proven 2 ms BT window after a paired encode+decode
+         * iteration.  A single-stage iteration only needs 1 ms before the
+         * scheduler is re-evaluated; this accelerates queue recovery without
+         * increasing idle polling or allowing back-to-back heavy stages.
          */
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(pdMS_TO_TICKS(codec_stages_ran == 1U ? 1U : 2U));
     }
 }
 
