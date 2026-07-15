@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         ("M61 USB hardware validator self-test", [sys.executable, "tools/validate_m61_usb_hardware.py", "--self-test"]),
         ("DS5 Windows desktop tester smoke", [sys.executable, "tools/ds5_windows_test_app.py", "--smoke-test"]),
         ("M61 realtime memory gate self-test", [sys.executable, "tools/test_m61_realtime_memory.py"]),
+        ("M61 realtime scheduler host tests", [sys.executable, "tools/test_m61_realtime_scheduler.py"]),
     ]
 
     if not args.skip_pycompile:
