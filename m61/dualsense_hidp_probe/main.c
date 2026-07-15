@@ -3294,6 +3294,14 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.reg_otg_csr,
                (unsigned long)usb_diag.reg_glb_isr,
                (unsigned long)usb_diag.reg_dev_igr);
+        printf("usb_bmx cfg0=%08lx cfg1=%08lx arb=%lu qos_cpu=%lu qos_sdu=%lu qos_dma=%lu qos_blem=%lu\r\n",
+               (unsigned long)(*(volatile const uint32_t *)0x20000320UL),
+               (unsigned long)(*(volatile const uint32_t *)0x20000324UL),
+               (unsigned long)((*(volatile const uint32_t *)0x20000320UL >> 5) & 1U),
+               (unsigned long)((*(volatile const uint32_t *)0x20000324UL >> 16) & 1U),
+               (unsigned long)((*(volatile const uint32_t *)0x20000324UL >> 17) & 1U),
+               (unsigned long)((*(volatile const uint32_t *)0x20000324UL >> 21) & 1U),
+               (unsigned long)((*(volatile const uint32_t *)0x20000324UL >> 24) & 1U));
         printf("usb_irq isg0=%08lx isg2=%08lx isg3=%08lx vdma=%08lx cxfps1=%08lx\r\n",
                (unsigned long)usb_diag.reg_isg0,
                (unsigned long)usb_diag.reg_isg2,
