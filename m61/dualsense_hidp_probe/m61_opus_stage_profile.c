@@ -1,6 +1,7 @@
 #include "m61_opus_stage_profile.h"
 
 #include <limits.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "bflb_irq.h"
@@ -30,6 +31,8 @@ static stage_total_t
 static stage_counter_t s_previous[M61_OPUS_STAGE_KIND_COUNT];
 static uint32_t s_next_boundary[M61_OPUS_STAGE_KIND_COUNT];
 static bool s_active[M61_OPUS_STAGE_KIND_COUNT];
+static uint32_t s_pvq_counts[M61_OPUS_STAGE_KIND_COUNT]
+                            [M61_OPUS_PVQ_N_BINS][M61_OPUS_PVQ_K_BINS];
 
 #define READ_COUNTER_LOW(name, value) \
     __asm volatile("csrr %0, " #name : "=r"(value) : : "memory")
@@ -118,6 +121,21 @@ m61_opus_decode_stage_mark(uint32_t boundary)
     stage_mark(M61_OPUS_STAGE_KIND_DECODE, boundary);
 }
 
+void __attribute__((section(".tcm_code.m61_opus_stage_mark")))
+m61_opus_pvq_shape_mark(uint32_t kind, uint32_t n, uint32_t k)
+{
+    if (kind >= M61_OPUS_STAGE_KIND_COUNT) {
+        return;
+    }
+    if (n >= M61_OPUS_PVQ_N_BINS) {
+        n = M61_OPUS_PVQ_N_BINS - 1U;
+    }
+    if (k >= M61_OPUS_PVQ_K_BINS) {
+        k = M61_OPUS_PVQ_K_BINS - 1U;
+    }
+    s_pvq_counts[kind][n][k]++;
+}
+
 void m61_opus_stage_profile_reset(void)
 {
     uintptr_t flags = bflb_irq_save();
@@ -127,6 +145,7 @@ void m61_opus_stage_profile_reset(void)
     memset(s_totals, 0, sizeof(s_totals));
     memset(s_active, 0, sizeof(s_active));
     memset(s_next_boundary, 0, sizeof(s_next_boundary));
+    memset(s_pvq_counts, 0, sizeof(s_pvq_counts));
     profile_barrier();
     s_sequence++;
     bflb_irq_restore(flags);
@@ -146,11 +165,14 @@ void m61_opus_stage_profile_get_snapshot(m61_opus_stage_snapshot_t *snapshot)
         sequence_before = s_sequence;
         profile_barrier();
         memcpy(totals, s_totals, sizeof(totals));
+        memcpy(snapshot->pvq_counts, s_pvq_counts,
+               sizeof(snapshot->pvq_counts));
         profile_barrier();
         sequence_after = s_sequence;
     } while ((sequence_before & 1U) != 0U || sequence_before != sequence_after);
 
-    memset(snapshot, 0, sizeof(*snapshot));
+    memset(&snapshot->enabled, 0,
+           offsetof(m61_opus_stage_snapshot_t, pvq_counts));
     snapshot->enabled = true;
     for (uint32_t kind = 0; kind < M61_OPUS_STAGE_KIND_COUNT; kind++) {
         for (uint32_t i = 0; i < M61_OPUS_STAGE_COUNT; i++) {

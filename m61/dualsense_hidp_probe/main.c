@@ -3183,6 +3183,33 @@ int cmd_ds5(int argc, char **argv)
                            (unsigned long)stage->dcache_read_miss_average);
                 }
             }
+            for (uint32_t rank = 0; rank < 12U; rank++) {
+                uint32_t best_count = 0U;
+                uint32_t best_n = 0U;
+                uint32_t best_k = 0U;
+
+                for (uint32_t n = 0; n < M61_OPUS_PVQ_N_BINS; n++) {
+                    for (uint32_t k = 0; k < M61_OPUS_PVQ_K_BINS; k++) {
+                        uint32_t count = stage_snapshot.pvq_counts
+                            [M61_OPUS_STAGE_KIND_DECODE][n][k];
+                        if (count > best_count) {
+                            best_count = count;
+                            best_n = n;
+                            best_k = k;
+                        }
+                    }
+                }
+                if (best_count == 0U) {
+                    break;
+                }
+                printf("opus_pvq_shape rank=%lu n=%lu k=%lu count=%lu\r\n",
+                       (unsigned long)(rank + 1U),
+                       (unsigned long)best_n,
+                       (unsigned long)best_k,
+                       (unsigned long)best_count);
+                stage_snapshot.pvq_counts[M61_OPUS_STAGE_KIND_DECODE]
+                                               [best_n][best_k] = 0U;
+            }
         }
 #endif
         printf("usb_decode_perf enabled=%u samples=%lu dec_us_last/avg/max=%lu/%lu/%lu dec_p50/p95/p99=%lu/%lu/%lu cycles_last/avg/max=%lu/%lu/%lu instret_avg=%lu bench_frames=%lu bench_errors=%lu\r\n",

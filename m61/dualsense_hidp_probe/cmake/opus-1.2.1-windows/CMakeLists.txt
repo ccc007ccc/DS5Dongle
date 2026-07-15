@@ -4,6 +4,8 @@ set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 project(m61_opus_1_2_1 C)
 
+option(M61_OPUS_STAGE_PROFILE "Enable M61 CELT stage markers" OFF)
+
 if(NOT DEFINED OPUS_SOURCE_DIR OR NOT EXISTS "${OPUS_SOURCE_DIR}/include/opus.h")
     message(FATAL_ERROR "OPUS_SOURCE_DIR must point to the patched Opus 1.2.1 source tree")
 endif()
@@ -161,11 +163,16 @@ target_compile_definitions(opus PRIVATE
     M61_OPUS_E907_CLZ32=1
     M61_OPUS_E907_EXACT_RCP=1
     M61_OPUS_E907_POW2_DIV=1
+    M61_OPUS_DUALSENSE_PVQ_4X9_FASTPATH=1
     M61_OPUS_E907_Q16_SMMWB=1
     M61_OPUS_E907_Q15_KMMWB2=1
     M61_OPUS_TCM_PVQ_CLUSTER=1
     M61_OPUS_TCM_MDCT_CLUSTER=1
 )
+
+if(M61_OPUS_STAGE_PROFILE)
+    target_compile_definitions(opus PRIVATE M61_OPUS_STAGE_PROFILE=1)
+endif()
 
 target_compile_options(opus PRIVATE
     -O2

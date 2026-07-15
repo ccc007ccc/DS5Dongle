@@ -80,6 +80,17 @@ diff --git a/celt/celt_encoder.c b/celt/celt_encoder.c
  
  #ifdef CUSTOM_MODES
     if (st->signalling)
+diff --git a/celt/cwrs.c b/celt/cwrs.c
+--- a/celt/cwrs.c
++++ b/celt/cwrs.c
+@@ -551,3 +551,7 @@
+ opus_val32 decode_pulses(int *_y,int _n,int _k,ec_dec *_dec){
++#if defined(M61_OPUS_STAGE_PROFILE)
++  extern void m61_opus_pvq_shape_mark(unsigned kind,unsigned n,unsigned k);
++  m61_opus_pvq_shape_mark(1,(unsigned)_n,(unsigned)_k);
++#endif
+   return cwrsi(_n,_k,ec_dec_uint(_dec,CELT_PVQ_V(_n,_k)),_y);
+ }
 diff --git a/celt/celt_decoder.c b/celt/celt_decoder.c
 --- a/celt/celt_decoder.c
 +++ b/celt/celt_decoder.c
