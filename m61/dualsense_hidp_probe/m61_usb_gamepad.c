@@ -588,7 +588,7 @@ static volatile uint8_t feature_set_queue_count;
 static volatile uint8_t feature_set_queue_high_water;
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
 static uint8_t usb_lock_depth;
 static uint32_t usb_lock_start_cycle;
 #endif
@@ -600,7 +600,7 @@ static uintptr_t usb_lock(void)
 {
     uintptr_t flags = bflb_irq_save();
 
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     if (usb_lock_depth++ == 0U) {
         __asm volatile("csrr %0, mcycle"
                        : "=r"(usb_lock_start_cycle)
@@ -616,7 +616,7 @@ static void arm_audio_out(uint8_t busid);
 
 static void usb_unlock(uintptr_t flags)
 {
-#if CONFIG_M61_HPM_PROFILE
+#if CONFIG_M61_PIPELINE_PROFILE
     uint32_t end_cycle;
     uint32_t masked_cycles = 0U;
 
