@@ -365,3 +365,28 @@ mic Opus队列和USB PCM ring的所有权锁全部保留。
 
 相对`b3ee19d`，encode成本和decode最大值继续下降；mic queue峰值轻微回升但仍处于稳定
 区间，连续两轮无硬错误。因此该提交晋升为当前codec计算最优。
+
+## 14. Mic PCM逐包链式预留（当前mic流水线最优）
+
+优化提交：`5f7ea20`。证据：
+
+- `artifacts/full-duplex-mic-pcm-chain-r1-20260716.log`
+- `artifacts/full-duplex-mic-pcm-chain-r2-20260716.log`
+
+每个10 ms decode产生10个1 ms USB PCM包。原实现每包分别锁一次预留、锁一次发布，共20次；
+新实现首次预留后，在发布当前包的同一临界区预留下一个包，总计11次。每个包仍在填充后
+立即转为READY，没有等待整批完成；USB ISR、FIFO顺序、ring深度和PCM数据均不变。
+
+| 指标 | 第1轮 | 第2轮区间/累计尾部 |
+| --- | ---: | ---: |
+| encode平均延迟/cycles | 3,928 us / 1,257,004 | 约3,871 us / 1,239,846 |
+| encode P95/P99/max | 5,250/5,500/6,110 us | 累计同左 |
+| decode平均延迟/cycles | 3,331 us / 1,063,306 | 约3,453 us / 1,101,896 |
+| decode P95/P99/max | 4,500/4,750/5,303 us | 累计4,500/4,750/5,439 us |
+| mic queue最大年龄 | 11,283 us | 11,289 us |
+| mic/codec/BT硬错误 | 0 | 0 |
+| USB IN underflow累计/区间 | 30（启动） | +0 |
+
+codec计时不包含PCM发布，因此总codec cycles与`0136396`基本持平；实际收益是每个decode
+少9次共享临界区，并表现为更低的decode平均成本与mic queue峰值。该提交记录为当前mic
+流水线最优；`0136396`继续保留codec最大延迟最优标签。
