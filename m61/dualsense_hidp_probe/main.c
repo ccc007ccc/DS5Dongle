@@ -2920,8 +2920,12 @@ int cmd_ds5(int argc, char **argv)
     if (strcmp(argv[1], "status") == 0) {
         static m61_usb_gamepad_diag_t usb_diag;
         static m61_perf_profile_snapshot_t perf_snapshot;
+        m61_perf_raw_snapshot_t perf_raw;
+        m61_opus_packet_audit_t opus_audit;
         m61_usb_gamepad_get_diag(&usb_diag);
         m61_perf_profile_get_snapshot(&perf_snapshot);
+        m61_perf_profile_get_raw_snapshot(&perf_raw);
+        m61_usb_gamepad_get_opus_packet_audit(&opus_audit);
 
         printf("bt_ready=%d discovery=%d pairing=%d pending=%d connected=%d hid_control=%d hid_interrupt=%d have_last=%d\r\n",
                bt_ready ? 1 : 0,
@@ -3092,7 +3096,7 @@ int cmd_ds5(int argc, char **argv)
                (unsigned int)usb_diag.audio_speaker_opus_force_mono,
                (unsigned int)usb_diag.audio_speaker_opus_bandwidth,
                (unsigned long)usb_diag.audio_speaker_opus_bitrate);
-        printf("usb_perf enabled=%u samples=%lu enc_p50/p95/p99=%lu/%lu/%lu cycles=%lu/%lu/%lu instret_avg=%lu\r\n",
+        printf("usb_perf enabled=%u samples=%lu enc_p50/p95/p99=%lu/%lu/%lu cycles_last/avg/max=%lu/%lu/%lu instret_avg=%lu\r\n",
                (unsigned int)usb_diag.perf_profile_enabled,
                (unsigned long)usb_diag.perf_encode_samples,
                (unsigned long)usb_diag.perf_encode_us_p50,
@@ -3102,6 +3106,38 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.perf_encode_cycles_average,
                (unsigned long)usb_diag.perf_encode_cycles_max,
                (unsigned long)usb_diag.perf_encode_instret_average);
+        printf("usb_perf_raw enc_total_us=%llu enc_total_cycles=%llu enc_total_instret=%llu hist=%lu consistent=%u dec_total_us=%llu dec_total_cycles=%llu dec_total_instret=%llu hist=%lu consistent=%u\r\n",
+               (unsigned long long)perf_raw.encode_total_us,
+               (unsigned long long)perf_raw.encode_total_cycles,
+               (unsigned long long)perf_raw.encode_total_instret,
+               (unsigned long)perf_raw.encode_histogram_samples,
+               (unsigned int)perf_raw.encode_consistent,
+               (unsigned long long)perf_raw.decode_total_us,
+               (unsigned long long)perf_raw.decode_total_cycles,
+               (unsigned long long)perf_raw.decode_total_instret,
+               (unsigned long)perf_raw.decode_histogram_samples,
+               (unsigned int)perf_raw.decode_consistent);
+        printf("usb_opus_shape speaker=%lu toc=%02x cfg=%08lx code=%02x stereo=%lu len=%u/%u/%u tocchg=%lu lenchg=%lu mic=%lu toc=%02x cfg=%08lx code=%02x stereo=%lu len=%u/%u/%u tocchg=%lu lenchg=%lu\r\n",
+               (unsigned long)opus_audit.speaker.samples,
+               (unsigned int)opus_audit.speaker.last_toc,
+               (unsigned long)opus_audit.speaker.config_mask,
+               (unsigned int)opus_audit.speaker.frame_code_mask,
+               (unsigned long)opus_audit.speaker.stereo_packets,
+               (unsigned int)opus_audit.speaker.length_min,
+               (unsigned int)opus_audit.speaker.last_length,
+               (unsigned int)opus_audit.speaker.length_max,
+               (unsigned long)opus_audit.speaker.toc_changes,
+               (unsigned long)opus_audit.speaker.length_changes,
+               (unsigned long)opus_audit.mic.samples,
+               (unsigned int)opus_audit.mic.last_toc,
+               (unsigned long)opus_audit.mic.config_mask,
+               (unsigned int)opus_audit.mic.frame_code_mask,
+               (unsigned long)opus_audit.mic.stereo_packets,
+               (unsigned int)opus_audit.mic.length_min,
+               (unsigned int)opus_audit.mic.last_length,
+               (unsigned int)opus_audit.mic.length_max,
+               (unsigned long)opus_audit.mic.toc_changes,
+               (unsigned long)opus_audit.mic.length_changes);
         printf("usb_cache ic_access/miss/ppm=%lu/%lu/%lu dc_read/miss/ppm=%lu/%lu/%lu\r\n",
                (unsigned long)usb_diag.perf_icache_access_average,
                (unsigned long)usb_diag.perf_icache_miss_average,
@@ -3149,7 +3185,7 @@ int cmd_ds5(int argc, char **argv)
             }
         }
 #endif
-        printf("usb_decode_perf enabled=%u samples=%lu dec_us=%lu/%lu/%lu dec_p50/p95/p99=%lu/%lu/%lu cycles=%lu/%lu/%lu instret_avg=%lu bench_frames=%lu bench_errors=%lu\r\n",
+        printf("usb_decode_perf enabled=%u samples=%lu dec_us_last/avg/max=%lu/%lu/%lu dec_p50/p95/p99=%lu/%lu/%lu cycles_last/avg/max=%lu/%lu/%lu instret_avg=%lu bench_frames=%lu bench_errors=%lu\r\n",
                (unsigned int)usb_diag.audio_decoder_benchmark_enabled,
                (unsigned long)usb_diag.perf_decode_samples,
                (unsigned long)usb_diag.perf_decode_us_last,

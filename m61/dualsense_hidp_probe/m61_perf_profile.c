@@ -142,6 +142,17 @@ void m61_perf_profile_init(void)
 #endif
 }
 
+static uint32_t histogram_sample_count(
+    const uint32_t histogram[M61_PERF_HISTOGRAM_BUCKETS + 1U])
+{
+    uint64_t total = 0U;
+
+    for (uint32_t i = 0; i <= M61_PERF_HISTOGRAM_BUCKETS; i++) {
+        total += histogram[i];
+    }
+    return saturate_u32(total);
+}
+
 bool m61_perf_profile_is_enabled(void)
 {
     return s_enabled;
@@ -476,4 +487,40 @@ void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot)
     snapshot->ingress_age_us_p99 = histogram_percentile(
         ingress.histogram, ingress.samples, 99U);
     snapshot->irq_mask_cycles_max = s_irq_mask_cycles_max;
+}
+
+void m61_perf_profile_get_raw_snapshot(m61_perf_raw_snapshot_t *snapshot)
+{
+    encode_profile_t encode;
+    encode_profile_t decode;
+    uint32_t sequence;
+
+    if (!snapshot) return;
+    do {
+        sequence = s_encode.sequence;
+        if (sequence & 1U) continue;
+        profile_barrier();
+        encode = s_encode;
+        profile_barrier();
+    } while (sequence != s_encode.sequence || (sequence & 1U));
+    do {
+        sequence = s_decode.sequence;
+        if (sequence & 1U) continue;
+        profile_barrier();
+        decode = s_decode;
+        profile_barrier();
+    } while (sequence != s_decode.sequence || (sequence & 1U));
+
+    snapshot->encode_total_us = encode.total_us;
+    snapshot->encode_total_cycles = encode.total_cycles;
+    snapshot->encode_total_instret = encode.total_instret;
+    snapshot->decode_total_us = decode.total_us;
+    snapshot->decode_total_cycles = decode.total_cycles;
+    snapshot->decode_total_instret = decode.total_instret;
+    snapshot->encode_histogram_samples = histogram_sample_count(encode.histogram);
+    snapshot->decode_histogram_samples = histogram_sample_count(decode.histogram);
+    snapshot->encode_consistent =
+        snapshot->encode_histogram_samples == encode.samples;
+    snapshot->decode_consistent =
+        snapshot->decode_histogram_samples == decode.samples;
 }

@@ -91,6 +91,19 @@ typedef struct {
     m61_perf_timing_snapshot_t timing[M61_PERF_TIMING_COUNT];
 } m61_perf_profile_snapshot_t;
 
+typedef struct {
+    uint64_t encode_total_us;
+    uint64_t encode_total_cycles;
+    uint64_t encode_total_instret;
+    uint64_t decode_total_us;
+    uint64_t decode_total_cycles;
+    uint64_t decode_total_instret;
+    uint32_t encode_histogram_samples;
+    uint32_t decode_histogram_samples;
+    bool encode_consistent;
+    bool decode_consistent;
+} m61_perf_raw_snapshot_t;
+
 void m61_perf_profile_init(void);
 bool m61_perf_profile_is_enabled(void);
 void m61_perf_profile_counter_begin(m61_perf_counter_sample_t *sample);
@@ -117,3 +130,4 @@ void m61_perf_profile_record_timing(m61_perf_timing_stage_t stage,
                                     uint32_t elapsed_us);
 void m61_perf_profile_record_irq_mask_cycles(uint32_t cycles);
 void m61_perf_profile_get_snapshot(m61_perf_profile_snapshot_t *snapshot);
+void m61_perf_profile_get_raw_snapshot(m61_perf_raw_snapshot_t *snapshot);

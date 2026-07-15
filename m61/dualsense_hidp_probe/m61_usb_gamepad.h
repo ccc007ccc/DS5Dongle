@@ -225,7 +225,26 @@ typedef struct {
     uint32_t reg_vdma_cxfps1;
 } m61_usb_gamepad_diag_t;
 
+typedef struct {
+    uint32_t samples;
+    uint32_t config_mask;
+    uint32_t toc_changes;
+    uint32_t length_changes;
+    uint32_t stereo_packets;
+    uint16_t length_min;
+    uint16_t length_max;
+    uint16_t last_length;
+    uint8_t last_toc;
+    uint8_t frame_code_mask;
+} m61_opus_packet_shape_t;
+
+typedef struct {
+    m61_opus_packet_shape_t speaker;
+    m61_opus_packet_shape_t mic;
+} m61_opus_packet_audit_t;
+
 void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag);
+void m61_usb_gamepad_get_opus_packet_audit(m61_opus_packet_audit_t *audit);
 
 #ifdef __cplusplus
 }

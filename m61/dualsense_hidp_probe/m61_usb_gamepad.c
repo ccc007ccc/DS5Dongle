@@ -84,6 +84,9 @@
 #define AUDIO_INGRESS_TASK_PRIORITY (configMAX_PRIORITIES - 3)
 #define AUDIO_OPUS_ENCODER_STATE_MAX 49152U
 #define AUDIO_OPUS_DECODER_STATE_MAX 24576U
+#ifndef CONFIG_M61_OPUS_PACKET_AUDIT
+#define CONFIG_M61_OPUS_PACKET_AUDIT 0
+#endif
 #define AUDIO_CODEC_DIAG_PERIOD_MS 1000U
 #define AUDIO_CODEC_ERR_STATE_TOO_SMALL -1001
 #define HAPTICS_DOWNSAMPLE_FACTOR 16
@@ -527,6 +530,52 @@ static uint32_t audio_opus_encoder_state[(AUDIO_OPUS_ENCODER_STATE_MAX + sizeof(
 static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static TaskHandle_t audio_codec_task_handle;
 static TaskHandle_t audio_ingress_task_handle;
+
+typedef struct {
+    volatile uint32_t sequence;
+    m61_opus_packet_audit_t value;
+} opus_packet_audit_store_t;
+
+static opus_packet_audit_store_t zz_opus_packet_audit;
+
+#if CONFIG_M61_OPUS_PACKET_AUDIT
+static void record_opus_packet_shape(m61_opus_packet_shape_t *shape,
+                                     const uint8_t *packet,
+                                     uint16_t length)
+{
+    uint8_t toc;
+
+    if (shape == NULL || packet == NULL || length == 0U) return;
+    toc = packet[0];
+    if (shape->samples == 0U) {
+        shape->length_min = length;
+        shape->length_max = length;
+    } else {
+        if (toc != shape->last_toc) shape->toc_changes++;
+        if (length != shape->last_length) shape->length_changes++;
+        if (length < shape->length_min) shape->length_min = length;
+        if (length > shape->length_max) shape->length_max = length;
+    }
+    shape->samples++;
+    shape->config_mask |= 1UL << (toc >> 3);
+    shape->frame_code_mask |= (uint8_t)(1U << (toc & 0x03U));
+    if (toc & 0x04U) shape->stereo_packets++;
+    shape->last_toc = toc;
+    shape->last_length = length;
+}
+
+static void record_opus_packet(bool speaker, const uint8_t *packet,
+                               uint16_t length)
+{
+    zz_opus_packet_audit.sequence++;
+    __asm volatile("" : : : "memory");
+    record_opus_packet_shape(speaker ? &zz_opus_packet_audit.value.speaker
+                                     : &zz_opus_packet_audit.value.mic,
+                             packet, length);
+    __asm volatile("" : : : "memory");
+    zz_opus_packet_audit.sequence++;
+}
+#endif
 static m61_usb_gamepad_host_report_t pending_host_report;
 static m61_usb_gamepad_host_report_t
     feature_set_queue[FEATURE_SET_QUEUE_DEPTH];
@@ -1405,6 +1454,9 @@ audio_codec_task(void *pvParameters)
 #endif
             record_speaker_encode_diag((uint32_t)encode_elapsed_us, encoded);
             if (encoded > 0) {
+#if CONFIG_M61_OPUS_PACKET_AUDIT
+                record_opus_packet(true, speaker_opus, (uint16_t)encoded);
+#endif
                 speaker_encoded = true;
                 if (m61_audio_epoch_complete_encode(speaker_job.generation,
                                                     speaker_job.epoch,
@@ -1462,6 +1514,9 @@ audio_codec_task(void *pvParameters)
             m61_perf_counter_sample_t perf_start;
 #endif
             usb_diag.audio_codec_stage = 4;
+#if CONFIG_M61_OPUS_PACKET_AUDIT
+            record_opus_packet(false, mic_opus, M61_DS5_MIC_OPUS_LEN);
+#endif
 #if CONFIG_M61_HPM_PROFILE
             decode_start_us = bflb_mtimer_get_time_us();
             m61_perf_profile_counter_begin(&perf_start);
@@ -2409,6 +2464,20 @@ uint32_t m61_usb_gamepad_event_count(uint8_t event)
     return usb_event_counts[event];
 }
 
+void m61_usb_gamepad_get_opus_packet_audit(m61_opus_packet_audit_t *audit)
+{
+    uint32_t sequence;
+
+    if (audit == NULL) return;
+    do {
+        sequence = zz_opus_packet_audit.sequence;
+        if (sequence & 1U) continue;
+        __asm volatile("" : : : "memory");
+        *audit = zz_opus_packet_audit.value;
+        __asm volatile("" : : : "memory");
+    } while (sequence != zz_opus_packet_audit.sequence || (sequence & 1U));
+}
+
 void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
 {
     m61_audio_epoch_stats_t epoch_stats;
@@ -2913,5 +2982,9 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     if (diag) {
         memset(diag, 0, sizeof(*diag));
     }
+}
+void m61_usb_gamepad_get_opus_packet_audit(m61_opus_packet_audit_t *audit)
+{
+    if (audit) memset(audit, 0, sizeof(*audit));
 }
 #endif
