@@ -2248,21 +2248,16 @@ void m61_usb_gamepad_send_report01(const uint8_t *payload, size_t len)
 
 static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src)
 {
+    uint32_t src_frame = 0U;
+    uint32_t frac = 0U;
+
     for (uint32_t out_frame = 0; out_frame < AUDIO_SPEAKER_FRAME_SAMPLES;
          out_frame++) {
-        uint32_t src_pos_num = out_frame * M61_AUDIO_EPOCH_USB_FRAMES;
-        uint32_t src_frame = src_pos_num / AUDIO_SPEAKER_FRAME_SAMPLES;
-        uint32_t frac = src_pos_num -
-                        src_frame * AUDIO_SPEAKER_FRAME_SAMPLES;
         uint32_t next_frame = src_frame + 1U;
         int32_t a;
         int32_t b;
         int32_t delta;
 
-        if (next_frame >= M61_AUDIO_EPOCH_USB_FRAMES) {
-            next_frame = src_frame;
-            frac = 0;
-        }
         a = ((int32_t)src[src_frame * 2U] +
              (int32_t)src[src_frame * 2U + 1U]) / 2;
         b = ((int32_t)src[next_frame * 2U] +
@@ -2275,6 +2270,18 @@ static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src)
         }
         dst[out_frame] = clamp_i16(
             a + delta / AUDIO_SPEAKER_FRAME_SAMPLES);
+
+        /* Exact recurrence for floor(out_frame * 512 / 480) and its
+         * remainder.  frac+512 is in [512, 991], so the source advances by
+         * exactly one or two frames without a divide or modulo operation. */
+        frac += M61_AUDIO_EPOCH_USB_FRAMES;
+        if (frac >= 2U * AUDIO_SPEAKER_FRAME_SAMPLES) {
+            src_frame += 2U;
+            frac -= 2U * AUDIO_SPEAKER_FRAME_SAMPLES;
+        } else {
+            src_frame++;
+            frac -= AUDIO_SPEAKER_FRAME_SAMPLES;
+        }
     }
 }
 
