@@ -216,3 +216,40 @@ stale 增量 `2`，USB IN underflow 增量 `10`。该轮用于当前基线记录
 PVQ 诊断统计显示 decode 热组合为 `(N,K)=(4,9)`、`(4,31)`、`(4,2)` 和 `(16,12)`。
 `N=4,K=9` 专用入口实验因改变 ITCM 与 Opus state 地址而否决，未刷写；诊断能力提交为
 `34e0af9`。
+
+## 9. Codec 2-tick bridge window（稳定性最优）
+
+测试固件 SHA256：
+`F2C3105FA8098314781BFD2BDDAB7B98EF222224686F210CD87040BB5AF1EB2F`。
+
+证据：
+
+- `artifacts/full-duplex-codec-delay2-r1-20260715_before.log`
+- `artifacts/full-duplex-codec-delay2-r1-20260715.log`
+- `artifacts/full-duplex-codec-delay2-r2-20260715_before.log`
+- `artifacts/full-duplex-codec-delay2-r2-20260715.log`
+
+本候选保持 codec task 和 BT bridge 的原优先级层次，将 codec 每轮结束后的主动阻塞从
+1 tick 增至 2 ticks；同时 `usb_unlock()` 在读取 IRQ mask 结束 cycle 后先恢复中断，再更新
+HPM 最大值，避免性能统计自身延长关中断窗口。Opus 参数、码流、PCM、USB 包和音质均未改变。
+
+| 指标 | 第 1 轮 | 第 2 轮区间 |
+| --- | ---: | ---: |
+| encode 平均延迟 | 3,825 us | 3,866 us |
+| encode P50/P95/P99 | 4,250/5,250/5,500 us | 4,250/5,250/5,750 us |
+| encode 最大延迟 | 5,839 us | 5,862 us |
+| encode cycles / instret | 1,227,549 / 207,402 | 1,240,555 / 208,453 |
+| decode 平均延迟 | 约 3,618 us | 3,599 us |
+| decode P50/P95/P99 | 4,000/4,750/5,000 us | 3,750/4,750/5,000 us |
+| decode 最大延迟 | 5,169 us | 5,609 us |
+| decode cycles / instret | 约 1,153,000 / 195,800 | 1,152,245 / 196,175 |
+| speaker/haptics qdrop/deadline | 0 / 0 | 0 / 0 |
+| Opus/PCM drop 或 codec error | 0 | 0 |
+| BT stale/retry/drop/reject/error | 0 | 0 |
+| USB IN underflow 增量 | 10 | 1 |
+
+连续两轮 90 秒真实全双工的运行期硬错误均为 0。USB IN underflow 只出现在 Windows
+重新配置 Audio IN 接口后的首帧预热窗口；两轮结束时 mic ring 分别保持 4,032 B 和
+4,224 B，且运行期间没有 mic Opus drop、PCM drop 或 decode error。因此本候选记录为当前
+稳定性最优固件，但在启动 underflow 尚未独立计数前，不替换要求原始 underflow 计数全零的
+`full-duplex-v1/current` 主性能排名。

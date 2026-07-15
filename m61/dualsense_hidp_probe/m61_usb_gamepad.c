@@ -615,17 +615,22 @@ static void usb_unlock(uintptr_t flags)
 {
 #if CONFIG_M61_HPM_PROFILE
     uint32_t end_cycle;
+    uint32_t masked_cycles = 0U;
 
     if (usb_lock_depth > 0U && --usb_lock_depth == 0U) {
         __asm volatile("csrr %0, mcycle"
                        : "=r"(end_cycle)
                        :
                        : "memory");
-        m61_perf_profile_record_irq_mask_cycles(end_cycle -
-                                                usb_lock_start_cycle);
+        masked_cycles = end_cycle - usb_lock_start_cycle;
     }
-#endif
     bflb_irq_restore(flags);
+    if (masked_cycles != 0U) {
+        m61_perf_profile_record_irq_mask_cycles(masked_cycles);
+    }
+#else
+    bflb_irq_restore(flags);
+#endif
 }
 
 static void reset_audio_pipeline(bool cancel_active_dma)
@@ -1560,7 +1565,7 @@ audio_codec_task(void *pvParameters)
          * priority BT bridge gets a deterministic transmit window.  Running
          * several catch-up encodes back-to-back starves haptics for ~50 ms.
          */
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
