@@ -199,3 +199,20 @@ complexity、帧长和固定点缩放均未改变。
 两轮 encode cycles 和 P99 均稳定改善，全链路无 drop、stale 或 codec error；复测总 codec
 cycles 仍改善 0.42%。因此作为 encoder/forward FFT 有效优化保留。由于主排名仍要求全部
 测试轮次 USB IN underflow 为 0，本候选暂不替换 `full-duplex-v1/current`。
+## 8. 2026-07-15 PVQ shape audit and clean baseline
+
+当前正式基线镜像 SHA256：`A5B3F9ADCFC334EF01D51EDCA713872B0566476AEDF661FB635E407E642E9C44`。
+证据：`artifacts/m61-history/full-duplex-opus-post-pvq-baseline-20260715/`。
+
+本轮为 90 秒真实全双工，保持 48 kHz、160 kbps、speaker mono 和 mic stereo，不改变
+质量或包型。Encode 平均 `3.977 ms`、P50/P95/P99 `4.25/5.25/5.75 ms`、最大
+`6.061 ms`，平均 `1,274,487 cycles`；Decode 平均 `3.424 ms`、P50/P95/P99
+`3.50/4.75/5.00 ms`、最大 `5.488 ms`，平均 `1,096,884 cycles`。
+
+真实 mic Opus `11,014` 包，decode error/drop 均为 0；BT 实时发送 `4216/4218`、
+stale 增量 `2`，USB IN underflow 增量 `10`。该轮用于当前基线记录，不晋升或替换历史
+最优提交。
+
+PVQ 诊断统计显示 decode 热组合为 `(N,K)=(4,9)`、`(4,31)`、`(4,2)` 和 `(16,12)`。
+`N=4,K=9` 专用入口实验因改变 ITCM 与 Opus state 地址而否决，未刷写；诊断能力提交为
+`34e0af9`。
