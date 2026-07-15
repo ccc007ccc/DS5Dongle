@@ -58,9 +58,12 @@ stale、drop、qdrop、deadline、codec error 为 0。
 
 ## 5. Deadline与预算
 
-- speaker encode deadline：以 epoch capture time 为基准，首版使用 `+10,000 us`软deadline，
-  BT配对发送使用独立更宽硬deadline。
-- mic decode deadline：以BT包入队时间为基准，首版使用 `+10,000 us`。
+- 调度器只接收调用方计算好的绝对deadline，不再把所有codec job硬编码成
+  `created+10,000 us`。不同链路的消费者、缓冲水位和硬年龄并不相同。
+- speaker encode软deadline：由epoch capture time、约10.67 ms的512帧生产周期、相邻epoch
+  配对状态和BT realtime队列水位共同计算；BT配对发送使用独立更宽硬deadline。
+- mic decode软deadline：由BT包入队时间与USB PCM ring可播放余量共同计算；ring low-water
+  高于普通EDF优先级，不能只按单包年龄判断。
 - BT realtime硬年龄继续保持 `64,000 us`，不得为通过测试而放宽。
 - 每10 ms预算窗口保留 `BT_MIN_WINDOW_US`，首版建议1,000 us；只有无realtime pending且
   两个codec job之一接近deadline时才可借用。

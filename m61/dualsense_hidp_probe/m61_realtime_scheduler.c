@@ -3,10 +3,9 @@
 #include <limits.h>
 #include <stddef.h>
 
-static uint32_t job_slack_us(uint64_t now_us, uint64_t created_us,
+static uint32_t job_slack_us(uint64_t now_us, uint64_t deadline_us,
                              uint32_t estimated_us)
 {
-    uint64_t deadline_us = created_us + M61_RT_CODEC_DEADLINE_US;
     uint64_t finish_us = now_us + estimated_us;
 
     if (finish_us >= deadline_us) {
@@ -39,12 +38,12 @@ void m61_realtime_scheduler_select(const m61_rt_snapshot_t *snapshot,
     decode_ready = (snapshot->ready & M61_RT_READY_DECODE) != 0U;
     if (encode_ready) {
         encode_slack = job_slack_us(snapshot->now_us,
-                                    snapshot->encode_created_us,
+                                    snapshot->encode_deadline_us,
                                     snapshot->encode_estimated_us);
     }
     if (decode_ready) {
         decode_slack = job_slack_us(snapshot->now_us,
-                                    snapshot->decode_created_us,
+                                    snapshot->decode_deadline_us,
                                     snapshot->decode_estimated_us);
     }
 

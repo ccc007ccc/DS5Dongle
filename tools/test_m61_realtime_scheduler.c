@@ -22,25 +22,25 @@ int main(void)
 
     snapshot.ready = M61_RT_READY_ENCODE;
     snapshot.now_us = 5000;
-    snapshot.encode_created_us = 0;
+    snapshot.encode_deadline_us = 10000;
     snapshot.encode_estimated_us = 4000;
     decision = select_action(snapshot);
     assert(decision.action == M61_RT_ACTION_ENCODE);
     assert(decision.slack_us == 1000);
 
     snapshot.ready = M61_RT_READY_ENCODE | M61_RT_READY_DECODE;
-    snapshot.decode_created_us = 3000;
+    snapshot.decode_deadline_us = 13000;
     snapshot.decode_estimated_us = 3500;
     decision = select_action(snapshot);
     assert(decision.action == M61_RT_ACTION_ENCODE);
 
-    snapshot.encode_created_us = 3000;
-    snapshot.decode_created_us = 0;
+    snapshot.encode_deadline_us = 13000;
+    snapshot.decode_deadline_us = 10000;
     decision = select_action(snapshot);
     assert(decision.action == M61_RT_ACTION_DECODE);
 
-    snapshot.encode_created_us = 0;
-    snapshot.decode_created_us = 500;
+    snapshot.encode_deadline_us = 10000;
+    snapshot.decode_deadline_us = 10500;
     snapshot.ready |= M61_RT_READY_BT_REALTIME;
     snapshot.bt_window_elapsed_us = 0;
     snapshot.now_us = 1000;
@@ -55,8 +55,8 @@ int main(void)
     snapshot = (m61_rt_snapshot_t){0};
     snapshot.ready = M61_RT_READY_ENCODE | M61_RT_READY_DECODE;
     snapshot.now_us = 1000;
-    snapshot.encode_created_us = 0;
-    snapshot.decode_created_us = 0;
+    snapshot.encode_deadline_us = 10000;
+    snapshot.decode_deadline_us = 10000;
     snapshot.encode_estimated_us = 4000;
     snapshot.decode_estimated_us = 4000;
     snapshot.last_codec = M61_RT_CODEC_ENCODE;

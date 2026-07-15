@@ -15,7 +15,6 @@ extern "C" {
 #define M61_RT_READY_HID_OUTPUT    (1UL << 5)
 #define M61_RT_READY_CONTROL       (1UL << 6)
 
-#define M61_RT_CODEC_DEADLINE_US   10000ULL
 #define M61_RT_BT_MIN_WINDOW_US    1000U
 #define M61_RT_CACHE_GUARD_US      500U
 
@@ -37,8 +36,8 @@ typedef enum {
 typedef struct {
     uint32_t ready;
     uint64_t now_us;
-    uint64_t encode_created_us;
-    uint64_t decode_created_us;
+    uint64_t encode_deadline_us;
+    uint64_t decode_deadline_us;
     uint32_t encode_estimated_us;
     uint32_t decode_estimated_us;
     uint32_t bt_window_elapsed_us;
