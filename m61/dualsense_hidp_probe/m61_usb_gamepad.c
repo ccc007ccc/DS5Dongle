@@ -1082,23 +1082,25 @@ static bool take_mic_opus(uint8_t *data, uint64_t *created_us)
 
 static void push_mic_pcm_stereo(const int16_t *mono, uint16_t samples)
 {
+    uintptr_t flags;
+    uint8_t selected;
+
     if (!mono || samples == 0) {
         return;
     }
 
     uint16_t sample_offset = 0;
-    while (sample_offset < samples) {
-        uintptr_t flags = usb_lock();
-        uint8_t selected = audio_mic_packet_producer_cursor;
-
-        if (audio_mic_packet_state[selected] != AUDIO_MIC_PACKET_FREE) {
-            usb_diag.audio_mic_opus_dropped++;
-            usb_unlock(flags);
-            return;
-        }
-        audio_mic_packet_state[selected] = AUDIO_MIC_PACKET_FILLING;
+    flags = usb_lock();
+    selected = audio_mic_packet_producer_cursor;
+    if (audio_mic_packet_state[selected] != AUDIO_MIC_PACKET_FREE) {
+        usb_diag.audio_mic_opus_dropped++;
         usb_unlock(flags);
+        return;
+    }
+    audio_mic_packet_state[selected] = AUDIO_MIC_PACKET_FILLING;
+    usb_unlock(flags);
 
+    while (sample_offset < samples) {
         uint32_t *packet = (uint32_t *)audio_mic_packet_ring[selected];
         uint16_t packet_samples = samples - sample_offset;
         uint16_t nonzero = 0;
@@ -1131,8 +1133,19 @@ static void push_mic_pcm_stereo(const int16_t *mono, uint16_t samples)
         audio_mic_packet_count++;
         usb_diag.audio_mic_pcm_bytes += AUDIO_IN_STREAM_PACKET_SIZE;
         usb_diag.audio_mic_pcm_nonzero_samples += nonzero;
-        usb_unlock(flags);
         sample_offset = (uint16_t)(sample_offset + packet_samples);
+        if (sample_offset < samples) {
+            uint8_t next = audio_mic_packet_producer_cursor;
+
+            if (audio_mic_packet_state[next] != AUDIO_MIC_PACKET_FREE) {
+                usb_diag.audio_mic_opus_dropped++;
+                usb_unlock(flags);
+                return;
+            }
+            audio_mic_packet_state[next] = AUDIO_MIC_PACKET_FILLING;
+            selected = next;
+        }
+        usb_unlock(flags);
     }
 }
 
