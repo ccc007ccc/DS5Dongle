@@ -7,6 +7,8 @@ param(
 
     [switch]$PipelineProfile,
 
+    [switch]$MicProfile,
+
     [string]$ToolchainBin = 'C:\code\MCU\tools\toolchain_gcc_t-head_windows\bin',
 
     [string]$SdkPath = 'C:\code\MCU\bl_mcu_sdk',
@@ -101,6 +103,7 @@ $env:PATH = "$ToolchainBin;$CMakeBin;$(Join-Path $SdkPath 'tools\make');$env:PAT
 $CrossCompile = Convert-ToCMakePath (Join-Path $ToolchainBin 'riscv64-unknown-elf-')
 $HpmValue = if ($HpmProfile -or $PipelineProfile) { 'y' } else { 'n' }
 $PipelineValue = if ($PipelineProfile) { 'y' } else { 'n' }
+$MicValue = if ($MicProfile) { 'y' } else { 'n' }
 $MakeArgs = @(
     "CHIP=bl616",
     "BOARD=bl616dk",
@@ -109,7 +112,8 @@ $MakeArgs = @(
     "CONFIG_M61_HPM_PROFILE=$HpmValue",
     "CONFIG_M61_PIPELINE_PROFILE=$PipelineValue",
     "CONFIG_M61_MEMORY_BENCH=n",
-    "CONFIG_M61_OPUS_STAGE_PROFILE=n"
+    "CONFIG_M61_OPUS_STAGE_PROFILE=n",
+    "CONFIG_M61_DS5_MIC_DEFAULT_ENABLED=$MicValue"
 )
 
 Write-Host "[m61-hidp-win] SDK: $SdkPath"
@@ -118,6 +122,7 @@ Write-Host "[m61-hidp-win] Opus: $OpusLibrary"
 Write-Host "[m61-hidp-win] Build: $BuildFull"
 Write-Host "[m61-hidp-win] HPM profile: $HpmValue"
 Write-Host "[m61-hidp-win] Pipeline profile: $PipelineValue"
+Write-Host "[m61-hidp-win] Mic profile: $MicValue"
 
 Push-Location $ProjectDir
 try {
