@@ -1050,8 +1050,6 @@ static void __attribute__((unused)) queue_speaker_opus(const uint8_t *data, size
 
 static void record_speaker_encode_diag(uint32_t encode_us, int encoded_len)
 {
-    uintptr_t flags = usb_lock();
-
     usb_diag.audio_speaker_encode_us_last = encode_us;
     usb_diag.audio_speaker_encode_us_total += encode_us;
     if (encode_us > usb_diag.audio_speaker_encode_us_max) {
@@ -1059,7 +1057,6 @@ static void record_speaker_encode_diag(uint32_t encode_us, int encoded_len)
     }
     usb_diag.audio_speaker_last_opus_len =
         (encoded_len > 0) ? (uint16_t)encoded_len : 0;
-    usb_unlock(flags);
 }
 
 static bool take_mic_opus(uint8_t *data, uint64_t *created_us)
@@ -1474,18 +1471,14 @@ audio_codec_task(void *pvParameters)
                                                     speaker_job.epoch,
                                                     speaker_opus,
                                                     (size_t)encoded)) {
-                    uintptr_t flags = usb_lock();
                     usb_diag.audio_speaker_encoded++;
-                    usb_unlock(flags);
                 }
             } else {
                 (void)m61_audio_epoch_complete_encode(speaker_job.generation,
                                                       speaker_job.epoch,
                                                       NULL,
                                                       0);
-                uintptr_t flags = usb_lock();
                 usb_diag.audio_speaker_encode_errors++;
-                usb_unlock(flags);
             }
             speaker_budget--;
         }
@@ -1522,7 +1515,6 @@ audio_codec_task(void *pvParameters)
         if (decoder && take_mic_opus(mic_opus, &mic_created_us)) {
             codec_stages_ran++;
             uint64_t mic_queue_age_us = bflb_mtimer_get_time_us() - mic_created_us;
-            uintptr_t age_flags = usb_lock();
             usb_diag.audio_mic_queue_age_us_last =
                 mic_queue_age_us > UINT32_MAX ? UINT32_MAX : (uint32_t)mic_queue_age_us;
             if (usb_diag.audio_mic_queue_age_us_last >
@@ -1530,7 +1522,6 @@ audio_codec_task(void *pvParameters)
                 usb_diag.audio_mic_queue_age_us_max =
                     usb_diag.audio_mic_queue_age_us_last;
             }
-            usb_unlock(age_flags);
 #if CONFIG_M61_HPM_PROFILE
             uint64_t decode_start_us;
             uint64_t decode_elapsed_us;
@@ -1559,14 +1550,10 @@ audio_codec_task(void *pvParameters)
                                                 (uint32_t)decode_elapsed_us);
 #endif
             if (decoded > 0) {
-                uintptr_t flags = usb_lock();
                 usb_diag.audio_mic_decoded++;
-                usb_unlock(flags);
                 push_mic_pcm_stereo(mic_pcm, (uint16_t)decoded);
             } else {
-                uintptr_t flags = usb_lock();
                 usb_diag.audio_mic_decode_errors++;
-                usb_unlock(flags);
             }
         }
 
