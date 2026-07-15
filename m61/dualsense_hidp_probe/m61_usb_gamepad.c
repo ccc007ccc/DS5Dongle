@@ -518,6 +518,8 @@ static volatile uint8_t speaker_opus_queue_head;
 static volatile uint8_t speaker_opus_queue_tail;
 static volatile uint8_t speaker_opus_queue_count;
 static uint8_t mic_opus_queue[AUDIO_MIC_OPUS_QUEUE_DEPTH][M61_DS5_MIC_OPUS_LEN];
+static uint64_t mic_opus_created_us[AUDIO_MIC_OPUS_QUEUE_DEPTH]
+    __attribute__((section(".wifi_ram.m61_mic_metadata"), aligned(16)));
 static volatile uint8_t mic_opus_queue_head;
 static volatile uint8_t mic_opus_queue_tail;
 static volatile uint8_t mic_opus_queue_count;
@@ -529,6 +531,7 @@ static StackType_t audio_ingress_task_stack[AUDIO_INGRESS_TASK_STACK_WORDS]
 static uint32_t audio_opus_encoder_state[(AUDIO_OPUS_ENCODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(32)));
 static uint32_t audio_opus_decoder_state[(AUDIO_OPUS_DECODER_STATE_MAX + sizeof(uint32_t) - 1U) / sizeof(uint32_t)] __attribute__((aligned(16)));
 static TaskHandle_t audio_codec_task_handle;
+
 static TaskHandle_t audio_ingress_task_handle;
 
 typedef struct {
@@ -1059,12 +1062,12 @@ static void record_speaker_encode_diag(uint32_t encode_us, int encoded_len)
     usb_unlock(flags);
 }
 
-static bool take_mic_opus(uint8_t *data)
+static bool take_mic_opus(uint8_t *data, uint64_t *created_us)
 {
     bool valid;
     uintptr_t flags;
 
-    if (!data) {
+    if (!data || !created_us) {
         return false;
     }
 
@@ -1072,6 +1075,7 @@ static bool take_mic_opus(uint8_t *data)
     valid = mic_opus_queue_count > 0;
     if (valid) {
         memcpy(data, mic_opus_queue[mic_opus_queue_tail], M61_DS5_MIC_OPUS_LEN);
+        *created_us = mic_opus_created_us[mic_opus_queue_tail];
         mic_opus_queue_tail = (uint8_t)((mic_opus_queue_tail + 1U) % AUDIO_MIC_OPUS_QUEUE_DEPTH);
         mic_opus_queue_count--;
     }
@@ -1327,6 +1331,7 @@ audio_codec_task(void *pvParameters)
     static uint8_t speaker_opus[M61_DS5_SPEAKER_OPUS_LEN];
     static uint8_t mic_opus[M61_DS5_MIC_OPUS_LEN];
     static int16_t mic_pcm[AUDIO_MIC_FRAME_SAMPLES * AUDIO_MIC_CHANNELS];
+    uint64_t mic_created_us;
     TickType_t next_diag_tick;
 
     (void)pvParameters;
@@ -1512,7 +1517,17 @@ audio_codec_task(void *pvParameters)
         }
 #endif
 
-        if (decoder && take_mic_opus(mic_opus)) {
+        if (decoder && take_mic_opus(mic_opus, &mic_created_us)) {
+            uint64_t mic_queue_age_us = bflb_mtimer_get_time_us() - mic_created_us;
+            uintptr_t age_flags = usb_lock();
+            usb_diag.audio_mic_queue_age_us_last =
+                mic_queue_age_us > UINT32_MAX ? UINT32_MAX : (uint32_t)mic_queue_age_us;
+            if (usb_diag.audio_mic_queue_age_us_last >
+                usb_diag.audio_mic_queue_age_us_max) {
+                usb_diag.audio_mic_queue_age_us_max =
+                    usb_diag.audio_mic_queue_age_us_last;
+            }
+            usb_unlock(age_flags);
 #if CONFIG_M61_HPM_PROFILE
             uint64_t decode_start_us;
             uint64_t decode_elapsed_us;
@@ -2355,6 +2370,7 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
 {
     uintptr_t flags;
     bool nonzero;
+    uint64_t created_us;
 
     if (!CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ||
         !data || len < M61_DS5_MIC_OPUS_LEN || !audio_in_open || audio_mic_mute) {
@@ -2362,6 +2378,7 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
     }
 
     nonzero = bytes_have_nonzero(data, M61_DS5_MIC_OPUS_LEN);
+    created_us = bflb_mtimer_get_time_us();
     flags = usb_lock();
     if (mic_opus_queue_count >= AUDIO_MIC_OPUS_QUEUE_DEPTH) {
         mic_opus_queue_tail = (uint8_t)((mic_opus_queue_tail + 1U) % AUDIO_MIC_OPUS_QUEUE_DEPTH);
@@ -2369,6 +2386,7 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
         usb_diag.audio_mic_opus_dropped++;
     }
     memcpy(mic_opus_queue[mic_opus_queue_head], data, M61_DS5_MIC_OPUS_LEN);
+    mic_opus_created_us[mic_opus_queue_head] = created_us;
     mic_opus_queue_head = (uint8_t)((mic_opus_queue_head + 1U) % AUDIO_MIC_OPUS_QUEUE_DEPTH);
     mic_opus_queue_count++;
     usb_diag.audio_mic_opus_packets++;
@@ -2622,6 +2640,8 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_mic_opus_dropped = usb_diag.audio_mic_opus_dropped;
     diag->audio_mic_decoded = usb_diag.audio_mic_decoded;
     diag->audio_mic_decode_errors = usb_diag.audio_mic_decode_errors;
+    diag->audio_mic_queue_age_us_last = usb_diag.audio_mic_queue_age_us_last;
+    diag->audio_mic_queue_age_us_max = usb_diag.audio_mic_queue_age_us_max;
     diag->audio_decoder_benchmark_frames =
         usb_diag.audio_decoder_benchmark_frames;
     diag->audio_decoder_benchmark_errors =

@@ -338,6 +338,7 @@ static bool hid_interrupt_prepare_pending;
 static bool disconnect_cleanup_scheduled;
 static TickType_t disconnect_cleanup_tick;
 static m61_bt_tx_scheduler_t hidp_tx_scheduler;
+
 #if CONFIG_M61_PIPELINE_PROFILE
 static uint64_t hidp_audio_last_report_us;
 static bool hidp_audio_last_report_valid;
@@ -3254,12 +3255,14 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].p95_us,
                (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].p99_us,
                (unsigned long)perf_snapshot.timing[M61_PERF_TIMING_RESAMPLE].max_us);
-        printf("usb_mic opus=%lu opus_nz=%lu odrop=%lu decoded=%lu dec_err=%lu pcm_bytes=%lu pcm_nz=%lu usb_nz_pkts=%lu usb_nz_bytes=%lu underflow=%lu oqdepth=%u ring=%u\r\n",
+        printf("usb_mic opus=%lu opus_nz=%lu odrop=%lu decoded=%lu dec_err=%lu queue_age_us=%lu/%lu pcm_bytes=%lu pcm_nz=%lu usb_nz_pkts=%lu usb_nz_bytes=%lu underflow=%lu oqdepth=%u ring=%u\r\n",
                (unsigned long)usb_diag.audio_mic_opus_packets,
                (unsigned long)usb_diag.audio_mic_opus_nonzero,
                (unsigned long)usb_diag.audio_mic_opus_dropped,
                (unsigned long)usb_diag.audio_mic_decoded,
                (unsigned long)usb_diag.audio_mic_decode_errors,
+               (unsigned long)usb_diag.audio_mic_queue_age_us_last,
+               (unsigned long)usb_diag.audio_mic_queue_age_us_max,
                (unsigned long)usb_diag.audio_mic_pcm_bytes,
                (unsigned long)usb_diag.audio_mic_pcm_nonzero_samples,
                (unsigned long)usb_diag.audio_mic_usb_nonzero_packets,
@@ -3401,7 +3404,7 @@ int cmd_ds5(int argc, char **argv)
                    bridge_task_handle
                        ? (unsigned long)uxTaskGetStackHighWaterMark(
                              bridge_task_handle)
-                       : 0UL);
+                        : 0UL);
         }
         if (have_last_dualsense_addr) {
             print_addr("last DualSense ", &last_dualsense_addr);

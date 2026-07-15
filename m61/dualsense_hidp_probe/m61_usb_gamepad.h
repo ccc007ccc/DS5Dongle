@@ -148,6 +148,8 @@ typedef struct {
     uint32_t audio_mic_opus_dropped;
     uint32_t audio_mic_decoded;
     uint32_t audio_mic_decode_errors;
+    uint32_t audio_mic_queue_age_us_last;
+    uint32_t audio_mic_queue_age_us_max;
     uint32_t audio_decoder_benchmark_frames;
     uint32_t audio_decoder_benchmark_errors;
     uint32_t audio_mic_pcm_bytes;
