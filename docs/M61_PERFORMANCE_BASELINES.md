@@ -337,3 +337,31 @@ IRQ恢复顺序、Opus、调度和协议均未改变。正式测试中的`irq_ma
 
 该提交同时降低codec成本、P99和mic排队峰值，连续两轮无运行期硬错误，因此取代
 `72ea56b`和`1c1b6bf`成为当前综合最优；两者继续作为调度与重采样的独立历史节点保留。
+
+## 13. Codec单写者诊断无IRQ屏蔽更新（当前codec计算最优）
+
+优化提交：`0136396`。证据：
+
+- `artifacts/full-duplex-lockless-codec-diag-r1-20260716.log`
+- `artifacts/full-duplex-lockless-codec-diag-r2-20260716.log`
+
+`usb_diag`为volatile逐字段快照；encode耗时/计数、mic queue年龄和decode计数仅由codec
+任务写入，不保护队列或音频数据。移除这些字段更新周围的IRQ save/restore；epoch队列、
+mic Opus队列和USB PCM ring的所有权锁全部保留。
+
+| 指标 | 第1轮 | 第2轮区间/累计尾部 |
+| --- | ---: | ---: |
+| encode平均延迟 | 3,877 us | 约3,809 us |
+| encode平均cycles | 1,240,571 | 约1,219,739 |
+| encode P50/P95/P99 | 4,250/5,250/5,750 us | 累计4,250/5,250/5,500 us |
+| encode max | 5,787 us | 未刷新 |
+| decode平均延迟 | 3,411 us | 约3,467 us |
+| decode平均cycles | 1,090,062 | 约1,107,105 |
+| decode P50/P95/P99 | 3,750/4,500/4,750 us | 同左 |
+| decode max | 5,080 us | 累计5,197 us |
+| mic queue最大年龄 | 12,792 us | 未刷新 |
+| codec/queue/BT硬错误 | 0 | 0 |
+| USB IN underflow累计/区间 | 29（启动） | +0 |
+
+相对`b3ee19d`，encode成本和decode最大值继续下降；mic queue峰值轻微回升但仍处于稳定
+区间，连续两轮无硬错误。因此该提交晋升为当前codec计算最优。
