@@ -1331,7 +1331,7 @@ audio_codec_task(void *pvParameters)
     static uint8_t speaker_opus[M61_DS5_SPEAKER_OPUS_LEN];
     static uint8_t mic_opus[M61_DS5_MIC_OPUS_LEN];
     static int16_t mic_pcm[AUDIO_MIC_FRAME_SAMPLES * AUDIO_MIC_CHANNELS];
-    uint64_t mic_created_us;
+    uint64_t mic_created_us = 0U;
     TickType_t next_diag_tick;
 
     (void)pvParameters;
