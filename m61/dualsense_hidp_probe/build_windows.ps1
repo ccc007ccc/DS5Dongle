@@ -8,6 +8,8 @@ param(
     [ValidateRange(0, 8)]
     [int]$HpmSampleShift = 4,
 
+    [switch]$UsbGamepadO2,
+
     [switch]$PipelineProfile,
 
     [switch]$MicProfile,
@@ -108,6 +110,7 @@ $env:PATH = "$ToolchainBin;$CMakeBin;$(Join-Path $SdkPath 'tools\make');$env:PAT
 
 $CrossCompile = Convert-ToCMakePath (Join-Path $ToolchainBin 'riscv64-unknown-elf-')
 $HpmValue = if ($HpmProfile -or $PipelineProfile) { 'y' } else { 'n' }
+$UsbGamepadO2Value = if ($UsbGamepadO2) { 'y' } else { 'n' }
 $PipelineValue = if ($PipelineProfile) { 'y' } else { 'n' }
 $MicValue = if ($MicProfile) { 'y' } else { 'n' }
 $OpusStageValue = if ($OpusStageProfile) { 'y' } else { 'n' }
@@ -118,6 +121,7 @@ $MakeArgs = @(
     "CROSS_COMPILE=$CrossCompile",
     "CONFIG_M61_HPM_PROFILE=$HpmValue",
     "CONFIG_M61_HPM_SAMPLE_SHIFT=$HpmSampleShift",
+    "CONFIG_M61_USB_GAMEPAD_O2=$UsbGamepadO2Value",
     "CONFIG_M61_PIPELINE_PROFILE=$PipelineValue",
     "CONFIG_M61_MEMORY_BENCH=n",
     "CONFIG_M61_OPUS_STAGE_PROFILE=$OpusStageValue",
@@ -130,6 +134,7 @@ Write-Host "[m61-hidp-win] Opus: $OpusLibrary"
 Write-Host "[m61-hidp-win] Build: $BuildFull"
 Write-Host "[m61-hidp-win] HPM profile: $HpmValue"
 Write-Host "[m61-hidp-win] HPM sample shift: $HpmSampleShift (about 1/$([Math]::Pow(2, $HpmSampleShift)))"
+Write-Host "[m61-hidp-win] USB gamepad TU O2: $UsbGamepadO2Value"
 Write-Host "[m61-hidp-win] Pipeline profile: $PipelineValue"
 Write-Host "[m61-hidp-win] Mic profile: $MicValue"
 Write-Host "[m61-hidp-win] Opus stage profile: $OpusStageValue"
