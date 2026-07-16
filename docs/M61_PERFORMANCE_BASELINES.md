@@ -390,3 +390,20 @@ mic Opus队列和USB PCM ring的所有权锁全部保留。
 codec计时不包含PCM发布，因此总codec cycles与`0136396`基本持平；实际收益是每个decode
 少9次共享临界区，并表现为更低的decode平均成本与mic queue峰值。该提交记录为当前mic
 流水线最优；`0136396`继续保留codec最大延迟最优标签。
+
+## 15. USB IN完成与下一DMA单锁续传（有效USB路径优化）
+
+优化提交：`951253a`。证据：
+
+- `artifacts/full-duplex-usb-in-single-lock-r1-20260716.log`
+- `artifacts/full-duplex-usb-in-single-lock-r2-20260716.log`
+- `artifacts/full-duplex-usb-in-single-lock-r3-20260716.log`
+
+USB IN每1 ms完成回调原先先锁一次释放旧PCM槽，随后`arm_audio_in()`再次加锁选择下一槽。
+新实现复用完成回调已有临界区准备下一DMA，锁外调用USB驱动；启动失败仍按原状态机回滚。
+FIFO、underflow、静音启动buffer及DMA槽所有权不变。
+
+三轮均为mic/codec/BT硬错误0，underflow只在首轮启动累计32，第二、三轮增量均0；Audio IN
+持续输出，ring最终分别为3,840/4,416/4,032 B。累计encode P99/max为5,750/5,845 us，
+decode P95/P99/max为4,500/5,000/5,508 us，mic queue max 13,949 us。该提交保留为USB
+路径优化，但codec尾延迟最优仍为`0136396`，mic queue最优仍由更低峰值候选单独记录。
