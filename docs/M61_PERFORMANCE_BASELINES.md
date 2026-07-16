@@ -571,3 +571,30 @@ profiling固件实测（400 MHz、1 ms窗口、完整90 s全双工）：
 
 release反向验证：runtime flag和`m61_runtime_profile_*`符号均不存在于release app/kernel，
 并且release编译不再产生`speaker_encoded`未使用警告。
+
+## 21. HPM-only release反向验证（400 MHz、1 ms窗口）
+
+本轮用于确认关闭 runtime profiling 后，正式固件是否恢复到 1 ms 调度基线；保持
+四通道 Audio OUT、真实 mic 输入、HID 20 ms、HPM 1/16 和 90 秒完整负载不变。
+
+证据：
+
+- `artifacts/full-duplex-hpm-only-post-runtime-r1-20260717_before.log`
+- `artifacts/full-duplex-hpm-only-post-runtime-r1-20260717.log`
+
+| 指标 | 本轮 |
+| --- | ---: |
+| Encode 平均/P95/P99/max | 3.575/4.500/4.750/4.920 ms |
+| Decode 平均/P95/P99/max | 2.947/4.000/4.250/4.830 ms |
+| codec cycles 平均 | 2,611,715 |
+| CPU 10 ms占用（codec-only） | 65.29% |
+| epoch/BT realtime | 8437/4218 |
+| mic decode/error/drop | 9344/0/0 |
+| mic underflow（区间） | 8 |
+| mic PCM packet shortfall | 0 |
+| qdrop/deadline/stale/USB异常/codec error | 0/0/0/0/0 |
+
+runtime profiling 关闭后 codec cycles 从诊断构建的约2.736M回落至2.612M，
+与 400 MHz release 1 ms 基线（约2.578M）同一量级；P95/P99/max 未出现回归。
+本轮确认 HPM-only release 为可用基线，后续优化应聚焦固定 D4 mic decoder 和
+四通道 ingress/512→480 重采样的尾延迟，不能把 profiling 构建数据混入晋升比较。
