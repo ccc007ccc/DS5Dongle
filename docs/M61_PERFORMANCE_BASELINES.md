@@ -469,3 +469,51 @@ speaker/mic/BT drop、stale、retry、reject和codec error为0，第二轮运行
 两轮加权 codec 合计约 `2.275M cycles`，相对已验证的 1/8 抽样窗口约下降 `0.8%`；
 Decode P99 两轮稳定下降 `0.25 ms`，而最大延迟基本持平。该提交作为局部编译优化保留，
 后续若发现更低尾延迟候选，仍须以完整双轮错误与听感结果替换。
+
+## 18. CPU 超频档位稳定性与尾延迟对照
+
+超频开关已提交于 `1d3755b`，Windows/WSL 均支持编译期目标频率；默认仍为 0（关闭）。
+400 MHz 使用 SDK 400 MHz AUPLL 配置；实验档 410/420/460/480 MHz 使用 40 MHz 晶振下
+`sdmin` 微调，仅用于板级 A/B，不代表可发布配置。所有轮次均保持原 512-frame epoch、
+512→480 speaker 重采样、160 kbps CBR、真实 mic、HPM 1/16 和完整 speaker/haptics/HID 负载。
+
+### 18.1 400 MHz（当前稳定超频候选）
+
+证据：
+
+- `artifacts/full-duplex-cpu400-stability-r1-20260716_before.log`
+- `artifacts/full-duplex-cpu400-stability-r1-20260716.log`
+- `artifacts/full-duplex-cpu400-stability-r2-20260716_before.log`
+- `artifacts/full-duplex-cpu400-stability-r2-20260716.log`
+
+| 指标 | 第1轮 | 第2轮 |
+| --- | ---: | ---: |
+| Encode 平均/P95/P99/max | 3.527/4.500/4.750/5.333 ms | 3.383/4.500/4.750/5.333 ms |
+| Decode 平均/P95/P99/max | 3.072/4.000/4.250/4.895 ms | 3.149/4.000/4.250/4.993 ms |
+| codec cycles 平均 | 2,638,892 | 2,611,387 |
+| CPU 10 ms 占用 | 65.97% | 65.29% |
+| epoch/BT realtime | 8437/4218 | 8437/4218 |
+| mic decode/error/drop | 9343/0/0 | 9345/0/0 |
+| USB IN underflow（区间） | 7 | 0 |
+| qdrop/deadline/stale/BT error | 0/0/0/0 | 0/0/0/0 |
+
+两轮均完成 90 秒，Windows mic 捕获约 4.32M 帧且 packet shortfall 为 0；400 MHz 通过稳定性
+门槛，保留为当前超频尾延迟候选。是否替换 320 MHz 当前最优仍需以用户主观听感和长期回归为准。
+
+### 18.2 410 MHz（可运行但不晋升）
+
+证据：`artifacts/full-duplex-cpu410-r1-20260716*.log`、
+`artifacts/full-duplex-cpu410-r2-20260716*.log`。两轮均无硬错误，但 Encode P99/max 为
+`5.000/5.368 ms`，高于 400 MHz 的 `4.750/5.333 ms`；cycles 也约高 2%。因此只记录历史，
+不替换最优。
+
+### 18.3 420/460/480 MHz（失败实验）
+
+- 420 MHz：空闲可连接；90 秒满载后生成 BFLB coredump，HID 仅 1995 报告，mic 仅捕获
+  1,910,880 帧，测试无有效 after 状态。
+- 460 MHz：启动/满载死机，无法完成测试。
+- 480 MHz：启动后串口异常转储，`m61 clock`/`ds5 status` 无法稳定执行；PBCLK 80 MHz
+  和 120 MHz 两种分频均未解决。
+
+这些档位不提交为有效优化，也不作为默认构建选项；继续超频必须先引入电压/温度/复位保护和
+独立恢复镜像。
