@@ -25,6 +25,19 @@
 #define CONFIG_M61_OPUS_STAGE_PROFILE 0
 #endif
 
+#ifndef CONFIG_M61_CPU_OVERCLOCK_MHZ
+#define CONFIG_M61_CPU_OVERCLOCK_MHZ 0
+#endif
+
+#if CONFIG_M61_CPU_OVERCLOCK_MHZ != 0 && \
+    CONFIG_M61_CPU_OVERCLOCK_MHZ != 384 && \
+    CONFIG_M61_CPU_OVERCLOCK_MHZ != 400 && \
+    CONFIG_M61_CPU_OVERCLOCK_MHZ != 420 && \
+    CONFIG_M61_CPU_OVERCLOCK_MHZ != 460 && \
+    CONFIG_M61_CPU_OVERCLOCK_MHZ != 480
+#error "CONFIG_M61_CPU_OVERCLOCK_MHZ must be 0, 384, 400, 420, 460, or 480"
+#endif
+
 #if CONFIG_M61_OPUS_STAGE_PROFILE
 #include "m61_opus_stage_profile.h"
 #endif
@@ -61,6 +74,7 @@
 #include "btble_lib_api.h"
 #include "bl616_glb.h"
 #include "bl616_hbn.h"
+#include "bl616_pds.h"
 #include "bl616_sys.h"
 #elif defined(BL618DG)
 #include "btble_lib_api.h"
@@ -68,6 +82,9 @@
 #include "bl618dg_hbn.h"
 #include "bl618dg_sys.h"
 #endif
+
+static void m61_apply_cpu_overclock(void);
+static uint32_t m61_measure_cpu_clock_mhz(void);
 
 #define HIDP_PSM_CONTROL 0x0011
 #define HIDP_PSM_INTERRUPT 0x0013
@@ -2726,6 +2743,11 @@ static void bt_enable_cb(int err)
     hidp_l2cap_servers_register();
     br_set_scan_mode(true, false, "bt-ready-passive");
 
+    /* The Bluetooth controller restores WIFIPLL-320 during initialization.
+     * Apply the optional CPU-only target after the controller is fully ready;
+     * USB startup waits for this callback, so no active stream is disturbed. */
+    m61_apply_cpu_overclock();
+
     printf("M61 DualSense HIDP probe ready. Use 'ds5 scan'.\r\n");
     status_led_finish_boot();
 }
@@ -3213,6 +3235,7 @@ int cmd_ds5(int argc, char **argv)
             }
         }
 #endif
+
         printf("usb_decode_perf enabled=%u samples=%lu dec_us_last/avg/max=%lu/%lu/%lu dec_p50/p95/p99=%lu/%lu/%lu cycles_last/avg/max=%lu/%lu/%lu instret_avg=%lu bench_frames=%lu bench_errors=%lu\r\n",
                (unsigned int)usb_diag.audio_decoder_benchmark_enabled,
                (unsigned long)usb_diag.perf_decode_samples,
@@ -3668,6 +3691,7 @@ static void print_m61_help(void)
 {
     printf("Usage:\r\n");
     printf("  m61 reboot-isp\r\n");
+    printf("  m61 clock\r\n");
     printf("  m61 led [status|test|auto|off|red|green|blue|connecting|connected]\r\n");
 #if CONFIG_M61_MEMORY_BENCH
     printf("  m61 membench [all|4k|40k]\r\n");
@@ -3678,6 +3702,31 @@ int cmd_m61(int argc, char **argv)
 {
     if (argc >= 2 && (strcmp(argv[1], "reboot-isp") == 0 || strcmp(argv[1], "isp") == 0)) {
         m61_reboot_to_uart_download();
+        return 0;
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "clock") == 0) {
+        uint32_t pds_cfg = BL_RD_REG(PDS_BASE, PDS_CPU_CORE_CFG1);
+        uint32_t actual_mhz = m61_measure_cpu_clock_mhz();
+#if CONFIG_M61_CPU_OVERCLOCK_MHZ == 420 || \
+    CONFIG_M61_CPU_OVERCLOCK_MHZ == 460 || \
+    CONFIG_M61_CPU_OVERCLOCK_MHZ == 480
+        uint32_t root_mhz = actual_mhz;
+        uint32_t pbclk_mhz = actual_mhz / 4U;
+#else
+        uint32_t root_mhz =
+            bflb_clk_get_system_clock(BFLB_SYSTEM_ROOT_CLOCK) / 1000000U;
+        uint32_t pbclk_mhz =
+            bflb_clk_get_system_clock(BFLB_SYSTEM_PBCLK) / 1000000U;
+#endif
+        printf("cpu_clock target=%u actual=%luMHz root=%luMHz pbclk=%luMHz pds_pll=%lu root_sel=%u xclk_sel=%u\r\n",
+               (unsigned int)CONFIG_M61_CPU_OVERCLOCK_MHZ,
+               (unsigned long)actual_mhz,
+               (unsigned long)root_mhz,
+               (unsigned long)pbclk_mhz,
+               (unsigned long)BL_GET_REG_BITS_VAL(pds_cfg, PDS_REG_PLL_SEL),
+               (unsigned int)HBN_Get_MCU_Root_CLK_Sel(),
+               (unsigned int)HBN_Get_MCU_XCLK_Sel());
         return 0;
     }
 
@@ -3710,6 +3759,87 @@ int cmd_m61(int argc, char **argv)
 }
 
 SHELL_CMD_EXPORT_ALIAS(cmd_m61, m61, M61 board commands);
+
+static uint32_t m61_measure_cpu_clock_mhz(void)
+{
+    uint64_t start_us;
+    uint64_t elapsed_us;
+    uint32_t start_cycles;
+    uint32_t end_cycles;
+
+    start_us = bflb_mtimer_get_time_us();
+    __asm volatile("csrr %0, mcycle" : "=r"(start_cycles));
+    do {
+        elapsed_us = bflb_mtimer_get_time_us() - start_us;
+    } while (elapsed_us < 2000U);
+    __asm volatile("csrr %0, mcycle" : "=r"(end_cycles));
+
+    return (uint32_t)(((uint64_t)(uint32_t)(end_cycles - start_cycles) +
+                       elapsed_us / 2U) /
+                      elapsed_us);
+}
+
+static void m61_apply_cpu_overclock(void)
+{
+#if defined(BL616) && CONFIG_M61_CPU_OVERCLOCK_MHZ != 0
+    BL_Err_Type err = SUCCESS;
+    uint32_t pds_cfg;
+    uint8_t mcu_xclk_sel = HBN_Get_MCU_XCLK_Sel();
+
+#if CONFIG_M61_CPU_OVERCLOCK_MHZ == 384
+    err = GLB_Config_AUDIO_PLL_To_384M();
+#elif CONFIG_M61_CPU_OVERCLOCK_MHZ == 400
+    err = GLB_Config_AUDIO_PLL_To_400M();
+#else
+    uint8_t xtal_type = GLB_XTAL_NONE;
+
+    if (HBN_Get_Xtal_Type(&xtal_type) != SUCCESS ||
+        xtal_type != GLB_XTAL_40M) {
+        err = ERROR;
+    } else {
+        err = GLB_Config_AUDIO_PLL_To_400M();
+        if (err == SUCCESS) {
+            /* 40 MHz XTAL, refdiv=4: each 0x1000 step is 20 MHz. */
+#if CONFIG_M61_CPU_OVERCLOCK_MHZ == 420
+            GLB_AUDIO_PLL_fine_tuning_sdmin(0x15000U);
+#elif CONFIG_M61_CPU_OVERCLOCK_MHZ == 460
+            GLB_AUDIO_PLL_fine_tuning_sdmin(0x17000U);
+#else
+            GLB_AUDIO_PLL_fine_tuning_sdmin(0x18000U);
+#endif
+            bflb_mtimer_delay_us(200U);
+        }
+    }
+#endif
+    if (err == SUCCESS) {
+        /* The SDK ROM wrapper hard-codes the BL616 root mux to WIFIPLL.
+         * Select AUPLL directly, following the silicon driver's full path. */
+        HBN_Set_MCU_XCLK_Sel(HBN_MCU_XCLK_RC32M);
+        HBN_Set_MCU_Root_CLK_Sel(HBN_MCU_ROOT_CLK_XCLK);
+        err = GLB_Set_MCU_System_CLK_Div(0, 0);
+    }
+    if (err == SUCCESS) {
+        pds_cfg = BL_RD_REG(PDS_BASE, PDS_CPU_CORE_CFG1);
+        pds_cfg = BL_SET_REG_BITS_VAL(pds_cfg, PDS_REG_PLL_SEL, 1);
+        BL_WR_REG(PDS_BASE, PDS_CPU_CORE_CFG1, pds_cfg);
+        GLB_PLL_CGEN_Clock_UnGate(GLB_PLL_CGEN_TOP_AUPLL_DIV1);
+        /* Keep HCLK=/1 and PBCLK=/4, matching the SDK/forum AUPLL path. */
+        err = GLB_Set_MCU_System_CLK_Div(0, 3);
+    }
+    if (err == SUCCESS) {
+        HBN_Set_MCU_Root_CLK_Sel(HBN_MCU_ROOT_CLK_PLL);
+        HBN_Set_MCU_XCLK_Sel(mcu_xclk_sel);
+    }
+    printf("M61 CPU overclock target=%uMHz actual=%luMHz result=%d\r\n",
+           (unsigned int)CONFIG_M61_CPU_OVERCLOCK_MHZ,
+           (unsigned long)m61_measure_cpu_clock_mhz(),
+           (int)err);
+#else
+    printf("M61 CPU clock=%luMHz overclock=off\r\n",
+           (unsigned long)(bflb_clk_get_system_clock(BFLB_SYSTEM_CPU_CLK) /
+                           1000000U));
+#endif
+}
 
 int main(void)
 {

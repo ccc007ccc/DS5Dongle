@@ -26,6 +26,14 @@ target_sources(app PRIVATE m61_realtime_scheduler.c)
 target_sources(app PRIVATE m61_perf_profile.c)
 target_sources(app PRIVATE dualsense_output.c)
 target_sources(app PRIVATE dualsense_parser.c)
+if(NOT DEFINED CONFIG_M61_CPU_OVERCLOCK_MHZ)
+    set(CONFIG_M61_CPU_OVERCLOCK_MHZ 0)
+endif()
+if(NOT CONFIG_M61_CPU_OVERCLOCK_MHZ MATCHES "^(0|384|400|420|460|480)$")
+    message(FATAL_ERROR "CONFIG_M61_CPU_OVERCLOCK_MHZ must be 0, 384, 400, 420, 460, or 480")
+endif()
+target_compile_definitions(app PRIVATE
+    CONFIG_M61_CPU_OVERCLOCK_MHZ=${CONFIG_M61_CPU_OVERCLOCK_MHZ})
 if(CONFIG_M61_USB_GAMEPAD_O2)
     # A/B only the USB/codec translation unit.  Keep the rest of the app at
     # the SDK's -Os default so code layout and BT/USB task footprints remain

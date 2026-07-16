@@ -69,6 +69,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("before", type=Path)
     parser.add_argument("after", type=Path)
+    parser.add_argument("--cpu-mhz", type=float, default=320.0)
     args = parser.parse_args()
 
     before_data = args.before.read_bytes()
@@ -187,7 +188,7 @@ def main() -> int:
         total_cycles_average = encode_cycles_average + decode_cycles_average
         print(
             f"codec_cycles_avg={total_cycles_average:.3f} "
-            f"cpu_10ms={total_cycles_average / 3_200_000.0 * 100.0:.3f}%"
+            f"cpu_10ms={total_cycles_average / (args.cpu_mhz * 10000.0) * 100.0:.3f}%"
         )
 
     for key, label in (

@@ -15,6 +15,7 @@ COMMAND="build"
 HPM_PROFILE="n"
 HPM_SAMPLE_SHIFT="${M61_HPM_SAMPLE_SHIFT:-4}"
 USB_GAMEPAD_O2="n"
+CPU_OVERCLOCK_MHZ="${M61_CPU_OVERCLOCK_MHZ:-0}"
 PIPELINE_PROFILE="n"
 MEMORY_BENCH="n"
 OPUS_STAGE_PROFILE="n"
@@ -34,7 +35,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--hpm-sample-shift 0..8] [--usb-gamepad-o2] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--hpm-sample-shift 0..8] [--usb-gamepad-o2] [--cpu-overclock 0|384|400|420|460|480] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -47,6 +48,7 @@ Environment:
   M61_OPUS_STAGE_PROFILE  y enables test-only CELT stage markers.
   M61_HPM_SAMPLE_SHIFT    HPM sampling shift, 0=all frames, 4=about 1/16.
   --usb-gamepad-o2        Compile only m61_usb_gamepad.c with -O2 (A/B).
+  M61_CPU_OVERCLOCK_MHZ   CPU target: 0 (off), 384, 400, 420, 460, or 480 MHz.
 
 Example:
   ./build.sh
@@ -101,6 +103,8 @@ build_project() {
     [[ -d "$SDK_PATH" ]] || fail "BL_SDK_BASE not found: $SDK_PATH"
     [[ "$HPM_SAMPLE_SHIFT" =~ ^[0-8]$ ]] ||
         fail "HPM sample shift must be an integer from 0 to 8"
+    [[ "$CPU_OVERCLOCK_MHZ" =~ ^(0|384|400|420|460|480)$ ]] ||
+        fail "CPU overclock must be 0, 384, 400, 420, 460, or 480 MHz"
 
     local toolchain_bin
     local opus_stage_value=0
@@ -143,6 +147,7 @@ build_project() {
     log "Mic diagnostic profile: $MIC_PROFILE"
     log "HPM sample shift: $HPM_SAMPLE_SHIFT (about 1/$((1 << HPM_SAMPLE_SHIFT)))"
     log "USB gamepad TU O2: $USB_GAMEPAD_O2"
+    log "CPU overclock: $CPU_OVERCLOCK_MHZ MHz (0=off)"
 
     cd "$PROJECT_DIR"
 
@@ -153,6 +158,7 @@ build_project() {
         "CONFIG_M61_HPM_PROFILE=$HPM_PROFILE"
         "CONFIG_M61_HPM_SAMPLE_SHIFT=$HPM_SAMPLE_SHIFT"
         "CONFIG_M61_USB_GAMEPAD_O2=$USB_GAMEPAD_O2"
+        "CONFIG_M61_CPU_OVERCLOCK_MHZ=$CPU_OVERCLOCK_MHZ"
         "CONFIG_M61_PIPELINE_PROFILE=$PIPELINE_PROFILE"
         "CONFIG_M61_MEMORY_BENCH=$MEMORY_BENCH"
         "CONFIG_M61_OPUS_STAGE_PROFILE=$OPUS_STAGE_PROFILE"
@@ -203,6 +209,12 @@ while [[ $# -gt 0 ]]; do
         --usb-gamepad-o2)
             USB_GAMEPAD_O2="y"
             shift
+            ;;
+        --cpu-overclock)
+            CPU_OVERCLOCK_MHZ="${2:?missing value for --cpu-overclock}"
+            [[ "$CPU_OVERCLOCK_MHZ" =~ ^(0|384|400|420|460|480)$ ]] ||
+                fail "--cpu-overclock must be 0, 384, 400, 420, 460, or 480"
+            shift 2
             ;;
         --pipeline-profile)
             HPM_PROFILE="y"
