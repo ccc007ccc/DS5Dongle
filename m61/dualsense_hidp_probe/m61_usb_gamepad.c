@@ -2291,6 +2291,31 @@ void m61_usb_gamepad_send_report01(const uint8_t *payload, size_t len)
 
 static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src)
 {
+#if M61_AUDIO_EPOCH_USB_FRAMES == 512U && AUDIO_SPEAKER_FRAME_SAMPLES == 480U
+    /* 512/480 reduces to 16/15.  Process the exact 15-output periodic
+       pattern directly: source frame i maps to fraction i/15 inside each
+       16-frame input group.  The +/-7 adjustment is bit-equivalent to the
+       generic path's +/-240 followed by division by 480 because the
+       original remainder is always i*32. */
+    for (uint32_t block = 0; block < 32U; block++) {
+        const int16_t *block_src = src + block * 16U * 2U;
+        int16_t *block_dst = dst + block * 15U;
+
+        for (uint32_t i = 0; i < 15U; i++) {
+            const int16_t *sample = block_src + i * 2U;
+            int32_t a = ((int32_t)sample[0] + (int32_t)sample[1]) / 2;
+            int32_t b = ((int32_t)sample[2] + (int32_t)sample[3]) / 2;
+            int32_t delta = (b - a) * (int32_t)i;
+
+            if (delta >= 0) {
+                delta += 7;
+            } else {
+                delta -= 7;
+            }
+            block_dst[i] = clamp_i16(a + delta / 15);
+        }
+    }
+#else
     uint32_t src_frame = 0U;
     uint32_t frac = 0U;
 
@@ -2326,6 +2351,7 @@ static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src)
             frac -= AUDIO_SPEAKER_FRAME_SAMPLES;
         }
     }
+#endif
 }
 
 void m61_usb_gamepad_send_state(const dualsense_state_t *state)

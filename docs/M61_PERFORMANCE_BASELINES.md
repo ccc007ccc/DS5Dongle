@@ -598,3 +598,43 @@ runtime profiling 关闭后 codec cycles 从诊断构建的约2.736M回落至2.6
 与 400 MHz release 1 ms 基线（约2.578M）同一量级；两轮 P95/P99/max 未出现回归。
 本轮确认 HPM-only release 为可用基线，后续优化应聚焦固定 D4 mic decoder 和
 四通道 ingress/512→480 重采样的尾延迟，不能把 profiling 构建数据混入晋升比较。
+
+## 22. 512→480扬声器重采样16/15精确周期快速路径
+
+生产路径每个epoch将512帧四通道USB输入中的扬声器左右声道混合为mono，再线性插值到
+480帧供Opus编码。由于`512/480=16/15`，通用递推的fraction严格按
+`0,32,...,448`循环；专用路径按32组输入16帧/输出15帧展开，并将原
+`(delta*i*32 +/- 240)/480`精确化简为`(delta*i +/- 7)/15`。其它帧长仍保留通用回退。
+
+`tools/test_m61_resample_period15.py`遍历全部`delta=-65535..65535`和15个相位，验证
+源帧映射与C99向零截断结果逐项相等；DualSense协议向量测试同时通过。采样率、位宽、
+声道混合、线性插值、舍入、Opus参数和测试负载均未改变。
+
+Pipeline A/B（诊断构建，仅用于阶段归因）：
+
+| resample指标 | 通用递推 | 16/15快速路径 |
+| --- | ---: | ---: |
+| 平均 | 104 us | 87 us |
+| P95 | 750 us | 500 us |
+| P99 | 1,000 us | 1,000 us |
+| max | 1,772 us | 902 us |
+
+Release证据：
+
+- `artifacts/full-duplex-resample-period15-release-r1-20260717_before.log`
+- `artifacts/full-duplex-resample-period15-release-r1-20260717.log`
+- `artifacts/full-duplex-resample-period15-release-r2-20260717_before.log`
+- `artifacts/full-duplex-resample-period15-release-r2-20260717.log`
+
+| 指标 | 第1轮 | 第2轮 |
+| --- | ---: | ---: |
+| Encode平均/P95/P99/max | 3.507/4.500/4.750/4.878 ms | 3.607/4.500/4.750/5.394 ms |
+| Decode平均/P95/P99/max | 2.968/4.000/4.250/4.648 ms | 2.957/4.000/4.250/4.887 ms |
+| codec cycles平均 | 2,591,470 | 2,627,922 |
+| mic underflow（区间） | 9 | 0 |
+| mic packet shortfall | 0 | 0 |
+| qdrop/deadline/stale/BT/codec error | 0/0/0/0/0 | 0/0/0/0/0 |
+
+该优化位于Opus HPM计时区间之前，因此codec cycles不应预期同步下降；release双轮
+P95/P99没有回归且所有硬错误为0。Pipeline同构A/B直接显示resample P95下降0.25 ms、
+max下降0.87 ms，故作为无损的阶段尾延迟优化晋升。
