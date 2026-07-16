@@ -444,3 +444,28 @@ wall/cycles下降约4.62%/4.64%，encode+decode合计cycles从2,380,335降到2,3
 speaker/mic/BT drop、stale、retry、reject和codec error为0，第二轮运行期underflow增量为0。
 因此该提交晋升为当前codec/Opus计算最优；是否已经消除主观“盖革计数器”式卡顿仍需用户在
 同一固件上持续试听确认。
+
+## 17. USB/codec translation unit 局部 `-O2`（当前尾延迟候选）
+
+优化提交：`405796f`。仅对 `m61_usb_gamepad.c` 追加 `-O2`，其它应用和 SDK 文件仍保持
+原有 `-Os`；Opus 库、协议、码率、采样率、声道和测试负载均未改变。构建开关为
+`-UsbGamepadO2` / `--usb-gamepad-o2`。证据：
+
+- `artifacts/full-duplex-usb-gamepad-o2-r1-20260716_before.log`
+- `artifacts/full-duplex-usb-gamepad-o2-r1-20260716.log`
+- `artifacts/full-duplex-usb-gamepad-o2-r2-20260716_before.log`
+- `artifacts/full-duplex-usb-gamepad-o2-r2-20260716.log`
+
+| 指标 | 第1轮区间 | 第2轮区间 |
+| --- | ---: | ---: |
+| encode平均延迟/cycles | 3,707 us / 1,186,734 | 3,815 us / 1,220,822 |
+| encode P95/P99/max | 5,000/5,000/5,537 us | 5,000/5,250/5,818 us |
+| decode平均延迟/cycles | 3,341 us / 1,067,807 | 3,362 us / 1,074,002 |
+| decode P95/P99/max | 4,250/4,500/5,025 us | 4,250/4,500/5,042 us |
+| codec合计cycles | 2,255,541 | 2,294,824 |
+| qdrop/deadline/stale/codec error | 0/0/0/0 | 0/0/0/0 |
+| mic underflow（区间） | 8 | 0 |
+
+两轮加权 codec 合计约 `2.275M cycles`，相对已验证的 1/8 抽样窗口约下降 `0.8%`；
+Decode P99 两轮稳定下降 `0.25 ms`，而最大延迟基本持平。该提交作为局部编译优化保留，
+后续若发现更低尾延迟候选，仍须以完整双轮错误与听感结果替换。
