@@ -32,8 +32,15 @@ endif()
 if(NOT CONFIG_M61_CPU_OVERCLOCK_MHZ MATCHES "^(0|384|400|420|460|480)$")
     message(FATAL_ERROR "CONFIG_M61_CPU_OVERCLOCK_MHZ must be 0, 384, 400, 420, 460, or 480")
 endif()
+if(NOT DEFINED CONFIG_M61_CODEC_PAIR_DELAY_MS)
+    set(CONFIG_M61_CODEC_PAIR_DELAY_MS 1)
+endif()
+if(NOT CONFIG_M61_CODEC_PAIR_DELAY_MS MATCHES "^(1|2)$")
+    message(FATAL_ERROR "CONFIG_M61_CODEC_PAIR_DELAY_MS must be 1 or 2")
+endif()
 target_compile_definitions(app PRIVATE
-    CONFIG_M61_CPU_OVERCLOCK_MHZ=${CONFIG_M61_CPU_OVERCLOCK_MHZ})
+    CONFIG_M61_CPU_OVERCLOCK_MHZ=${CONFIG_M61_CPU_OVERCLOCK_MHZ}
+    CONFIG_M61_CODEC_PAIR_DELAY_MS=${CONFIG_M61_CODEC_PAIR_DELAY_MS})
 if(CONFIG_M61_USB_GAMEPAD_O2)
     # A/B only the USB/codec translation unit.  Keep the rest of the app at
     # the SDK's -Os default so code layout and BT/USB task footprints remain

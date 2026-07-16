@@ -78,6 +78,9 @@
 #ifndef CONFIG_M61_DS5_MIC_DEFAULT_ENABLED
 #define CONFIG_M61_DS5_MIC_DEFAULT_ENABLED 0
 #endif
+#ifndef CONFIG_M61_CODEC_PAIR_DELAY_MS
+#define CONFIG_M61_CODEC_PAIR_DELAY_MS 1
+#endif
 #define AUDIO_CODEC_TASK_STACK_WORDS 8192
 #define AUDIO_CODEC_TASK_PRIORITY (configMAX_PRIORITIES - 4)
 #define AUDIO_INGRESS_TASK_STACK_WORDS 1024
@@ -1578,12 +1581,13 @@ audio_codec_task(void *pvParameters)
         }
 
         /*
-         * Preserve the proven 2 ms BT window after a paired encode+decode
-         * iteration.  A single-stage iteration only needs 1 ms before the
-         * scheduler is re-evaluated; this accelerates queue recovery without
-         * increasing idle polling or allowing back-to-back heavy stages.
+         * Leave a bounded BT/USB service window after codec work.  The
+         * validated release default is 1 ms; a 2 ms compatibility profile is
+         * retained as a build-time fallback for scheduler A/B testing.
          */
-        vTaskDelay(pdMS_TO_TICKS(codec_stages_ran == 1U ? 1U : 2U));
+        vTaskDelay(pdMS_TO_TICKS(codec_stages_ran == 1U
+                                     ? 1U
+                                     : CONFIG_M61_CODEC_PAIR_DELAY_MS));
     }
 }
 
