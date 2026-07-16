@@ -13,6 +13,7 @@ BOARD="bl616dk"
 CPU_ID=""
 COMMAND="build"
 HPM_PROFILE="n"
+HPM_SAMPLE_SHIFT="${M61_HPM_SAMPLE_SHIFT:-4}"
 PIPELINE_PROFILE="n"
 MEMORY_BENCH="n"
 OPUS_STAGE_PROFILE="n"
@@ -32,7 +33,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--hpm-sample-shift 0..8] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -43,6 +44,7 @@ Environment:
   M61_OPUS_VARIANT  source-o2-lto (default), source-o2, source-o3, sdk, or custom.
   M61_OPUS_TCM_PROFILE  pvq-mdct-clusters (default); data/energy/tf profiles are experimental.
   M61_OPUS_STAGE_PROFILE  y enables test-only CELT stage markers.
+  M61_HPM_SAMPLE_SHIFT    HPM sampling shift, 0=all frames, 4=about 1/16.
 
 Example:
   ./build.sh
@@ -95,6 +97,8 @@ clean_build() {
 
 build_project() {
     [[ -d "$SDK_PATH" ]] || fail "BL_SDK_BASE not found: $SDK_PATH"
+    [[ "$HPM_SAMPLE_SHIFT" =~ ^[0-8]$ ]] ||
+        fail "HPM sample shift must be an integer from 0 to 8"
 
     local toolchain_bin
     local opus_stage_value=0
@@ -135,6 +139,7 @@ build_project() {
     log "Opus TCM profile: $OPUS_TCM_PROFILE"
     log "Opus stage profile: $OPUS_STAGE_PROFILE"
     log "Mic diagnostic profile: $MIC_PROFILE"
+    log "HPM sample shift: $HPM_SAMPLE_SHIFT (about 1/$((1 << HPM_SAMPLE_SHIFT)))"
 
     cd "$PROJECT_DIR"
 
@@ -143,6 +148,7 @@ build_project() {
         "BOARD=$BOARD"
         "CROSS_COMPILE=$toolchain_bin/riscv64-unknown-elf-"
         "CONFIG_M61_HPM_PROFILE=$HPM_PROFILE"
+        "CONFIG_M61_HPM_SAMPLE_SHIFT=$HPM_SAMPLE_SHIFT"
         "CONFIG_M61_PIPELINE_PROFILE=$PIPELINE_PROFILE"
         "CONFIG_M61_MEMORY_BENCH=$MEMORY_BENCH"
         "CONFIG_M61_OPUS_STAGE_PROFILE=$OPUS_STAGE_PROFILE"
@@ -183,6 +189,12 @@ while [[ $# -gt 0 ]]; do
         --hpm-profile)
             HPM_PROFILE="y"
             shift
+            ;;
+        --hpm-sample-shift)
+            HPM_SAMPLE_SHIFT="${2:?missing value for --hpm-sample-shift}"
+            [[ "$HPM_SAMPLE_SHIFT" =~ ^[0-8]$ ]] ||
+                fail "--hpm-sample-shift must be an integer from 0 to 8"
+            shift 2
             ;;
         --pipeline-profile)
             HPM_PROFILE="y"

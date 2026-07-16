@@ -5,6 +5,9 @@ param(
 
     [switch]$HpmProfile,
 
+    [ValidateRange(0, 8)]
+    [int]$HpmSampleShift = 4,
+
     [switch]$PipelineProfile,
 
     [switch]$MicProfile,
@@ -114,6 +117,7 @@ $MakeArgs = @(
     "BUILD_DIR=$BuildDirName",
     "CROSS_COMPILE=$CrossCompile",
     "CONFIG_M61_HPM_PROFILE=$HpmValue",
+    "CONFIG_M61_HPM_SAMPLE_SHIFT=$HpmSampleShift",
     "CONFIG_M61_PIPELINE_PROFILE=$PipelineValue",
     "CONFIG_M61_MEMORY_BENCH=n",
     "CONFIG_M61_OPUS_STAGE_PROFILE=$OpusStageValue",
@@ -125,6 +129,7 @@ Write-Host "[m61-hidp-win] GCC: $(& $Gcc --version | Select-Object -First 1)"
 Write-Host "[m61-hidp-win] Opus: $OpusLibrary"
 Write-Host "[m61-hidp-win] Build: $BuildFull"
 Write-Host "[m61-hidp-win] HPM profile: $HpmValue"
+Write-Host "[m61-hidp-win] HPM sample shift: $HpmSampleShift (about 1/$([Math]::Pow(2, $HpmSampleShift)))"
 Write-Host "[m61-hidp-win] Pipeline profile: $PipelineValue"
 Write-Host "[m61-hidp-win] Mic profile: $MicValue"
 Write-Host "[m61-hidp-win] Opus stage profile: $OpusStageValue"

@@ -26,12 +26,17 @@ target_sources(app PRIVATE m61_realtime_scheduler.c)
 target_sources(app PRIVATE m61_perf_profile.c)
 target_sources(app PRIVATE dualsense_output.c)
 target_sources(app PRIVATE dualsense_parser.c)
+if(NOT DEFINED CONFIG_M61_HPM_SAMPLE_SHIFT)
+    set(CONFIG_M61_HPM_SAMPLE_SHIFT 4)
+endif()
 if(CONFIG_M61_HPM_PROFILE)
     # Profiling is an application-only feature.  Do not use
     # sdk_add_compile_definitions() here: that propagates the flag into the
     # prebuilt SDK/driver targets as well and has broken RF initialization on
     # real BL616 hardware.
-    target_compile_definitions(app PRIVATE CONFIG_M61_HPM_PROFILE=1)
+    target_compile_definitions(app PRIVATE
+        CONFIG_M61_HPM_PROFILE=1
+        CONFIG_M61_HPM_SAMPLE_SHIFT=${CONFIG_M61_HPM_SAMPLE_SHIFT})
     # The profile status command prints the full USB/codec/BT snapshot.  Keep
     # its diagnostic-only stack headroom out of production firmware and out
     # of every realtime task.

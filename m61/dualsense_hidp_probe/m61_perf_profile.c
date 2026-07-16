@@ -5,6 +5,14 @@
 
 #if CONFIG_M61_HPM_PROFILE
 #include <arch/risc-v/t-head/rv_hpm.h>
+
+#if CONFIG_M61_HPM_SAMPLE_SHIFT < 0 || CONFIG_M61_HPM_SAMPLE_SHIFT > 8
+#error "CONFIG_M61_HPM_SAMPLE_SHIFT must be in the range 0..8"
+#endif
+
+#define M61_HPM_SAMPLE_SHIFT ((uint32_t)CONFIG_M61_HPM_SAMPLE_SHIFT)
+#define M61_HPM_SAMPLE_MASK ((1U << M61_HPM_SAMPLE_SHIFT) - 1U)
+#define M61_HPM_UNSAMPLED UINT32_MAX
 #endif
 
 typedef struct {
@@ -51,6 +59,9 @@ static timing_profile_t s_timing[M61_PERF_TIMING_COUNT];
 #endif
 static volatile uint32_t s_irq_mask_cycles_max;
 static bool s_enabled;
+#if CONFIG_M61_HPM_PROFILE
+static uint32_t s_hpm_prng;
+#endif
 
 static void profile_barrier(void)
 {
@@ -115,6 +126,22 @@ static uint32_t read_mcountinhibit(void)
     __asm volatile("csrr %0, mcountinhibit" : "=r"(value) : : "memory");
     return value;
 }
+
+static bool hpm_sample_due(void)
+{
+    uint32_t value = s_hpm_prng;
+
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    s_hpm_prng = value;
+    return (value & M61_HPM_SAMPLE_MASK) == 0U;
+}
+
+static uint32_t scale_hpm_delta(uint32_t end, uint32_t start)
+{
+    return (end - start) << M61_HPM_SAMPLE_SHIFT;
+}
 #endif
 
 void m61_perf_profile_init(void)
@@ -134,6 +161,7 @@ void m61_perf_profile_init(void)
     const uint32_t required_mask = hpm_mask | (1UL << 0) | (1UL << 2);
     uint32_t inhibit = read_mcountinhibit();
 
+    s_hpm_prng = 0x9e3779b9U;
     RV_HPM_Set_mcountinhibit(inhibit | hpm_mask);
     RV_HPM_L1_ICache_Miss_Init_M();
     RV_HPM_L1_DCache_RdMiss_Init_M();
@@ -170,6 +198,10 @@ void m61_perf_profile_counter_begin(m61_perf_counter_sample_t *sample)
         return;
     }
     READ_COUNTER_LOW(mcycle, sample->cycle);
+    sample->instret = M61_HPM_UNSAMPLED;
+    if (!hpm_sample_due()) {
+        return;
+    }
     READ_COUNTER_LOW(minstret, sample->instret);
     READ_COUNTER_LOW(mhpmcounter3, sample->icache_access);
     READ_COUNTER_LOW(mhpmcounter4, sample->icache_miss);
@@ -188,6 +220,12 @@ void m61_perf_profile_counter_end(const m61_perf_counter_sample_t *start,
         return;
     }
     READ_COUNTER_LOW(mcycle, end.cycle);
+    if (start->instret == M61_HPM_UNSAMPLED) {
+        m61_perf_profile_record_encode(elapsed_us,
+                                       end.cycle - start->cycle,
+                                       0U, 0U, 0U, 0U, 0U);
+        return;
+    }
     READ_COUNTER_LOW(minstret, end.instret);
     READ_COUNTER_LOW(mhpmcounter3, end.icache_access);
     READ_COUNTER_LOW(mhpmcounter4, end.icache_miss);
@@ -195,12 +233,16 @@ void m61_perf_profile_counter_end(const m61_perf_counter_sample_t *start,
     READ_COUNTER_LOW(mhpmcounter15, end.dcache_read_miss);
     m61_perf_profile_record_encode(elapsed_us,
                                    end.cycle - start->cycle,
-                                   end.instret - start->instret,
-                                   end.icache_access - start->icache_access,
-                                   end.icache_miss - start->icache_miss,
-                                   end.dcache_read - start->dcache_read,
-                                   end.dcache_read_miss -
-                                       start->dcache_read_miss);
+                                   scale_hpm_delta(end.instret,
+                                                   start->instret),
+                                   scale_hpm_delta(end.icache_access,
+                                                   start->icache_access),
+                                   scale_hpm_delta(end.icache_miss,
+                                                   start->icache_miss),
+                                   scale_hpm_delta(end.dcache_read,
+                                                   start->dcache_read),
+                                   scale_hpm_delta(end.dcache_read_miss,
+                                                   start->dcache_read_miss));
 #else
     (void)start;
     (void)elapsed_us;
@@ -217,6 +259,12 @@ void m61_perf_profile_counter_end_decode(const m61_perf_counter_sample_t *start,
         return;
     }
     READ_COUNTER_LOW(mcycle, end.cycle);
+    if (start->instret == M61_HPM_UNSAMPLED) {
+        m61_perf_profile_record_decode(elapsed_us,
+                                       end.cycle - start->cycle,
+                                       0U, 0U, 0U, 0U, 0U);
+        return;
+    }
     READ_COUNTER_LOW(minstret, end.instret);
     READ_COUNTER_LOW(mhpmcounter3, end.icache_access);
     READ_COUNTER_LOW(mhpmcounter4, end.icache_miss);
@@ -224,12 +272,16 @@ void m61_perf_profile_counter_end_decode(const m61_perf_counter_sample_t *start,
     READ_COUNTER_LOW(mhpmcounter15, end.dcache_read_miss);
     m61_perf_profile_record_decode(elapsed_us,
                                    end.cycle - start->cycle,
-                                   end.instret - start->instret,
-                                   end.icache_access - start->icache_access,
-                                   end.icache_miss - start->icache_miss,
-                                   end.dcache_read - start->dcache_read,
-                                   end.dcache_read_miss -
-                                       start->dcache_read_miss);
+                                   scale_hpm_delta(end.instret,
+                                                   start->instret),
+                                   scale_hpm_delta(end.icache_access,
+                                                   start->icache_access),
+                                   scale_hpm_delta(end.icache_miss,
+                                                   start->icache_miss),
+                                   scale_hpm_delta(end.dcache_read,
+                                                   start->dcache_read),
+                                   scale_hpm_delta(end.dcache_read_miss,
+                                                   start->dcache_read_miss));
 #else
     (void)start;
     (void)elapsed_us;

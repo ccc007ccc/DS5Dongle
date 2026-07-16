@@ -74,7 +74,8 @@ rolling 10 ms和同一调度窗口的合计指标。
 
 ### 5.2 诊断构建
 
-HPM诊断按固定1/8或1/16采样率读取instret、I-cache和D-cache计数。采样帧和普通帧分开
+HPM诊断按`CONFIG_M61_HPM_SAMPLE_SHIFT`配置采样率读取instret、I-cache和D-cache计数；
+`0`为每帧、`3`约为1/8、`4`约为1/16，允许范围为0到8。采样帧和普通帧分开
 累计，禁止用采样固件平均值直接替代正式排名。
 
 ### 5.3 Outlier flight recorder
