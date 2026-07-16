@@ -1833,33 +1833,40 @@ static void arm_audio_out(uint8_t busid)
     }
 }
 
-static void arm_audio_in(uint8_t busid)
+static bool prepare_audio_in_locked(uint8_t *selected,
+                                    uint8_t **buffer,
+                                    bool *nonzero)
 {
-    uintptr_t flags;
-    uint8_t selected = AUDIO_MIC_PACKET_INVALID_SLOT;
-    uint8_t *buffer = audio_in_buffer;
-    bool nonzero = false;
-
-    if (!usb_ready || !usb_configured || !audio_in_open || audio_in_busy) {
-        return;
+    if (!selected || !buffer || !nonzero || !usb_ready || !usb_configured ||
+        !audio_in_open || audio_in_busy) {
+        return false;
     }
 
-    flags = usb_lock();
-    selected = audio_mic_packet_consumer_cursor;
-    if (audio_mic_packet_state[selected] != AUDIO_MIC_PACKET_READY) {
-        selected = AUDIO_MIC_PACKET_INVALID_SLOT;
+    *selected = audio_mic_packet_consumer_cursor;
+    *buffer = audio_in_buffer;
+    *nonzero = false;
+    if (audio_mic_packet_state[*selected] != AUDIO_MIC_PACKET_READY) {
+        *selected = AUDIO_MIC_PACKET_INVALID_SLOT;
     }
-    if (selected != AUDIO_MIC_PACKET_INVALID_SLOT) {
-        audio_mic_packet_state[selected] = AUDIO_MIC_PACKET_DMA_ACTIVE;
-        audio_mic_packet_active_slot = selected;
-        buffer = audio_mic_packet_ring[selected];
-        nonzero = audio_mic_packet_nonzero[selected] != 0U;
+    if (*selected != AUDIO_MIC_PACKET_INVALID_SLOT) {
+        audio_mic_packet_state[*selected] = AUDIO_MIC_PACKET_DMA_ACTIVE;
+        audio_mic_packet_active_slot = *selected;
+        *buffer = audio_mic_packet_ring[*selected];
+        *nonzero = audio_mic_packet_nonzero[*selected] != 0U;
     } else {
         audio_mic_packet_active_slot = AUDIO_MIC_PACKET_INVALID_SLOT;
         usb_diag.audio_mic_underflow++;
     }
     audio_in_busy = true;
-    usb_unlock(flags);
+    return true;
+}
+
+static void start_audio_in_prepared(uint8_t busid,
+                                    uint8_t selected,
+                                    uint8_t *buffer,
+                                    bool nonzero)
+{
+    uintptr_t flags;
 
     if (usbd_ep_start_write(busid, AUDIO_IN_EP, buffer,
                             AUDIO_IN_STREAM_PACKET_SIZE) == 0) {
@@ -1877,6 +1884,22 @@ static void arm_audio_in(uint8_t busid)
         audio_mic_packet_active_slot = AUDIO_MIC_PACKET_INVALID_SLOT;
         audio_in_busy = false;
         usb_unlock(flags);
+    }
+}
+
+static void arm_audio_in(uint8_t busid)
+{
+    uintptr_t flags;
+    uint8_t selected;
+    uint8_t *buffer;
+    bool nonzero;
+    bool prepared;
+
+    flags = usb_lock();
+    prepared = prepare_audio_in_locked(&selected, &buffer, &nonzero);
+    usb_unlock(flags);
+    if (prepared) {
+        start_audio_in_prepared(busid, selected, buffer, nonzero);
     }
 }
 
@@ -2043,6 +2066,10 @@ static void usbd_audio_in_ep_callback(uint8_t busid, uint8_t ep, uint32_t nbytes
 {
     uintptr_t flags;
     uint8_t selected;
+    uint8_t next_selected;
+    uint8_t *next_buffer;
+    bool next_nonzero;
+    bool next_prepared;
 
     (void)ep;
 
@@ -2060,10 +2087,18 @@ static void usbd_audio_in_ep_callback(uint8_t busid, uint8_t ep, uint32_t nbytes
         }
     }
     audio_in_busy = false;
+    next_prepared = prepare_audio_in_locked(&next_selected,
+                                            &next_buffer,
+                                            &next_nonzero);
     usb_unlock(flags);
     usb_diag.audio_in_packets++;
     usb_diag.audio_in_bytes += nbytes;
-    arm_audio_in(busid);
+    if (next_prepared) {
+        start_audio_in_prepared(busid,
+                                next_selected,
+                                next_buffer,
+                                next_nonzero);
+    }
 }
 
 static struct usbd_endpoint hid_in_ep = {
