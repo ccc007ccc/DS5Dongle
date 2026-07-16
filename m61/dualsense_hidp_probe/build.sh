@@ -16,6 +16,7 @@ HPM_PROFILE="n"
 HPM_SAMPLE_SHIFT="${M61_HPM_SAMPLE_SHIFT:-4}"
 USB_GAMEPAD_O2="n"
 CODEC_PAIR_DELAY_MS="${M61_CODEC_PAIR_DELAY_MS:-1}"
+RUNTIME_PROFILE="n"
 CPU_OVERCLOCK_MHZ="${M61_CPU_OVERCLOCK_MHZ:-0}"
 PIPELINE_PROFILE="n"
 MEMORY_BENCH="n"
@@ -36,7 +37,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--hpm-sample-shift 0..8] [--usb-gamepad-o2] [--codec-pair-delay-ms 1|2] [--cpu-overclock 0|384|400|420|460|480] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--hpm-sample-shift 0..8] [--usb-gamepad-o2] [--codec-pair-delay-ms 1|2] [--runtime-profile] [--cpu-overclock 0|384|400|420|460|480] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -50,6 +51,7 @@ Environment:
   M61_HPM_SAMPLE_SHIFT    HPM sampling shift, 0=all frames, 4=about 1/16.
   --usb-gamepad-o2        Compile only m61_usb_gamepad.c with -O2 (A/B).
   M61_CODEC_PAIR_DELAY_MS Codec task paired encode+decode wait window, 1 or 2 ms (default 1).
+  --runtime-profile       Enable diagnostic FreeRTOS task runtime/idle accounting.
   M61_CPU_OVERCLOCK_MHZ   CPU target: 0 (off), 384, 400, 420, 460, or 480 MHz.
 
 Example:
@@ -152,6 +154,7 @@ build_project() {
     log "HPM sample shift: $HPM_SAMPLE_SHIFT (about 1/$((1 << HPM_SAMPLE_SHIFT)))"
     log "USB gamepad TU O2: $USB_GAMEPAD_O2"
     log "Codec pair delay: $CODEC_PAIR_DELAY_MS ms"
+    log "Runtime profile: $RUNTIME_PROFILE (diagnostic only)"
     log "CPU overclock: $CPU_OVERCLOCK_MHZ MHz (0=off)"
 
     cd "$PROJECT_DIR"
@@ -164,6 +167,7 @@ build_project() {
         "CONFIG_M61_HPM_SAMPLE_SHIFT=$HPM_SAMPLE_SHIFT"
         "CONFIG_M61_USB_GAMEPAD_O2=$USB_GAMEPAD_O2"
         "CONFIG_M61_CODEC_PAIR_DELAY_MS=$CODEC_PAIR_DELAY_MS"
+        "CONFIG_M61_RUNTIME_PROFILE=$RUNTIME_PROFILE"
         "CONFIG_M61_CPU_OVERCLOCK_MHZ=$CPU_OVERCLOCK_MHZ"
         "CONFIG_M61_PIPELINE_PROFILE=$PIPELINE_PROFILE"
         "CONFIG_M61_MEMORY_BENCH=$MEMORY_BENCH"
@@ -221,6 +225,10 @@ while [[ $# -gt 0 ]]; do
             [[ "$CODEC_PAIR_DELAY_MS" =~ ^(1|2)$ ]] ||
                 fail "--codec-pair-delay-ms must be 1 or 2"
             shift 2
+            ;;
+        --runtime-profile)
+            RUNTIME_PROFILE="y"
+            shift
             ;;
         --cpu-overclock)
             CPU_OVERCLOCK_MHZ="${2:?missing value for --cpu-overclock}"

@@ -50,6 +50,25 @@
 #define configUSE_POSIX_ERRNO                   1
 #define configTHREAD_LOCAL_STORAGE_DELETE_CALLBACKS 0
 
+#ifndef CONFIG_M61_RUNTIME_PROFILE
+#define CONFIG_M61_RUNTIME_PROFILE              0
+#endif
+
+#if CONFIG_M61_RUNTIME_PROFILE
+/* Diagnostic-only task-switch accounting.  Release builds leave both hooks
+ * undefined, so the scheduler and realtime tasks pay no profiling cost. */
+#define INCLUDE_xTaskGetCurrentTaskHandle      1
+#define INCLUDE_xTaskGetIdleTaskHandle         1
+void m61_runtime_profile_task_switched_in(void *task);
+void m61_runtime_profile_task_switched_out(void *task);
+#define traceTASK_SWITCHED_IN() \
+    m61_runtime_profile_task_switched_in( \
+        (void *)xTaskGetCurrentTaskHandle())
+#define traceTASK_SWITCHED_OUT() \
+    m61_runtime_profile_task_switched_out( \
+        (void *)xTaskGetCurrentTaskHandle())
+#endif
+
 #define configUSE_CO_ROUTINES                   0
 #define configMAX_CO_ROUTINE_PRIORITIES         (2)
 

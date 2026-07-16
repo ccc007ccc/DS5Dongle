@@ -13,6 +13,8 @@ param(
     [ValidateSet(1, 2)]
     [int]$CodecPairDelayMs = 1,
 
+    [switch]$RuntimeProfile,
+
     [ValidateSet(0, 384, 400, 420, 460, 480)]
     [int]$CpuOverclockMhz = 0,
 
@@ -119,6 +121,7 @@ $HpmValue = if ($HpmProfile -or $PipelineProfile) { 'y' } else { 'n' }
 $UsbGamepadO2Value = if ($UsbGamepadO2) { 'y' } else { 'n' }
 $PipelineValue = if ($PipelineProfile) { 'y' } else { 'n' }
 $MicValue = if ($MicProfile) { 'y' } else { 'n' }
+$RuntimeValue = if ($RuntimeProfile) { 'y' } else { 'n' }
 $OpusStageValue = if ($OpusStageProfile) { 'y' } else { 'n' }
 $MakeArgs = @(
     "CHIP=bl616",
@@ -129,6 +132,7 @@ $MakeArgs = @(
     "CONFIG_M61_HPM_SAMPLE_SHIFT=$HpmSampleShift",
     "CONFIG_M61_USB_GAMEPAD_O2=$UsbGamepadO2Value",
     "CONFIG_M61_CODEC_PAIR_DELAY_MS=$CodecPairDelayMs",
+    "CONFIG_M61_RUNTIME_PROFILE=$RuntimeValue",
     "CONFIG_M61_CPU_OVERCLOCK_MHZ=$CpuOverclockMhz",
     "CONFIG_M61_PIPELINE_PROFILE=$PipelineValue",
     "CONFIG_M61_MEMORY_BENCH=n",
@@ -144,6 +148,7 @@ Write-Host "[m61-hidp-win] HPM profile: $HpmValue"
 Write-Host "[m61-hidp-win] HPM sample shift: $HpmSampleShift (about 1/$([Math]::Pow(2, $HpmSampleShift)))"
 Write-Host "[m61-hidp-win] USB gamepad TU O2: $UsbGamepadO2Value"
 Write-Host "[m61-hidp-win] Codec pair delay: $CodecPairDelayMs ms"
+Write-Host "[m61-hidp-win] Runtime profile: $RuntimeValue (diagnostic only)"
 Write-Host "[m61-hidp-win] CPU overclock: $CpuOverclockMhz MHz (0=off)"
 Write-Host "[m61-hidp-win] Pipeline profile: $PipelineValue"
 Write-Host "[m61-hidp-win] Mic profile: $MicValue"

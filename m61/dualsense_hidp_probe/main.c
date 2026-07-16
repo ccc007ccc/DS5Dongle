@@ -11,6 +11,7 @@
 #include "m61_audio_epoch.h"
 #include "m61_bt_tx_scheduler.h"
 #include "m61_perf_profile.h"
+#include "m61_runtime_profile.h"
 #include "m61_usb_gamepad.h"
 
 #ifndef CONFIG_M61_MEMORY_BENCH
@@ -27,6 +28,10 @@
 
 #ifndef CONFIG_M61_CPU_OVERCLOCK_MHZ
 #define CONFIG_M61_CPU_OVERCLOCK_MHZ 0
+#endif
+
+#ifndef CONFIG_M61_RUNTIME_PROFILE
+#define CONFIG_M61_RUNTIME_PROFILE 0
 #endif
 
 #if CONFIG_M61_CPU_OVERCLOCK_MHZ != 0 && \
@@ -2922,6 +2927,9 @@ static void print_help(void)
     printf("  ds5 usb-reinit\r\n");
     printf("  ds5 usb-cycle\r\n");
     printf("  ds5 decoder-bench [on|off]\r\n");
+#if CONFIG_M61_RUNTIME_PROFILE
+    printf("  ds5 runtime [status|reset]\r\n");
+#endif
 #if CONFIG_M61_OPUS_STAGE_PROFILE
     printf("  ds5 opus-stages [status|reset]\r\n");
 #endif
@@ -2943,12 +2951,29 @@ int cmd_ds5(int argc, char **argv)
     if (strcmp(argv[1], "status") == 0) {
         static m61_usb_gamepad_diag_t usb_diag;
         static m61_perf_profile_snapshot_t perf_snapshot;
+#if CONFIG_M61_RUNTIME_PROFILE
+        m61_runtime_profile_snapshot_t runtime_snapshot;
+#endif
         m61_perf_raw_snapshot_t perf_raw;
         m61_opus_packet_audit_t opus_audit;
         m61_usb_gamepad_get_diag(&usb_diag);
         m61_perf_profile_get_snapshot(&perf_snapshot);
         m61_perf_profile_get_raw_snapshot(&perf_raw);
         m61_usb_gamepad_get_opus_packet_audit(&opus_audit);
+
+#if CONFIG_M61_RUNTIME_PROFILE
+        m61_runtime_profile_get_snapshot(&runtime_snapshot);
+        printf("runtime_profile wall_cycles=%llu idle_cycles=%llu task_cycles=%llu "
+               "idle_ppm=%lu task_ppm=%lu switches=%lu\r\n",
+               (unsigned long long)runtime_snapshot.wall_cycles,
+               (unsigned long long)runtime_snapshot.idle_cycles,
+               (unsigned long long)runtime_snapshot.task_cycles,
+               (unsigned long)runtime_snapshot.idle_percent_ppm,
+               (unsigned long)runtime_snapshot.task_percent_ppm,
+               (unsigned long)runtime_snapshot.context_switches);
+#else
+        printf("runtime_profile enabled=0 (release build)\r\n");
+#endif
 
         printf("bt_ready=%d discovery=%d pairing=%d pending=%d connected=%d hid_control=%d hid_interrupt=%d have_last=%d\r\n",
                bt_ready ? 1 : 0,
@@ -3435,6 +3460,32 @@ int cmd_ds5(int argc, char **argv)
         status_led_print();
         return 0;
     }
+
+#if CONFIG_M61_RUNTIME_PROFILE
+    if (strcmp(argv[1], "runtime") == 0) {
+        if (argc < 3 || strcmp(argv[2], "status") == 0) {
+            m61_runtime_profile_snapshot_t snapshot;
+
+            m61_runtime_profile_get_snapshot(&snapshot);
+            printf("runtime_profile wall_cycles=%llu idle_cycles=%llu "
+                   "task_cycles=%llu idle_ppm=%lu task_ppm=%lu switches=%lu\r\n",
+                   (unsigned long long)snapshot.wall_cycles,
+                   (unsigned long long)snapshot.idle_cycles,
+                   (unsigned long long)snapshot.task_cycles,
+                   (unsigned long)snapshot.idle_percent_ppm,
+                   (unsigned long)snapshot.task_percent_ppm,
+                   (unsigned long)snapshot.context_switches);
+            return 0;
+        }
+        if (strcmp(argv[2], "reset") == 0) {
+            m61_runtime_profile_reset();
+            printf("runtime profile reset\r\n");
+            return 0;
+        }
+        printf("usage: ds5 runtime [status|reset]\r\n");
+        return -EINVAL;
+    }
+#endif
 
 #if CONFIG_M61_OPUS_STAGE_PROFILE
     if (strcmp(argv[1], "opus-stages") == 0) {

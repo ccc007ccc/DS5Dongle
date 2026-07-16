@@ -1411,7 +1411,9 @@ audio_codec_task(void *pvParameters)
 
     while (1) {
         uint8_t speaker_budget = 1U;
+#if CONFIG_M61_HPM_PROFILE
         bool speaker_encoded = false;
+#endif
         uint8_t codec_stages_ran = 0U;
         TickType_t now;
 
@@ -1482,7 +1484,9 @@ audio_codec_task(void *pvParameters)
 #if CONFIG_M61_OPUS_PACKET_AUDIT
                 record_opus_packet(true, speaker_opus, (uint16_t)encoded);
 #endif
+#if CONFIG_M61_HPM_PROFILE
                 speaker_encoded = true;
+#endif
                 if (m61_audio_epoch_complete_encode(speaker_job.generation,
                                                     speaker_job.epoch,
                                                     speaker_opus,

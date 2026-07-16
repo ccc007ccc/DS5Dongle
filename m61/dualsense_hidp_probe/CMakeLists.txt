@@ -38,9 +38,31 @@ endif()
 if(NOT CONFIG_M61_CODEC_PAIR_DELAY_MS MATCHES "^(1|2)$")
     message(FATAL_ERROR "CONFIG_M61_CODEC_PAIR_DELAY_MS must be 1 or 2")
 endif()
+if(NOT DEFINED CONFIG_M61_RUNTIME_PROFILE)
+    set(CONFIG_M61_RUNTIME_PROFILE 0)
+endif()
+if(NOT CONFIG_M61_RUNTIME_PROFILE MATCHES "^(0|1|y|n)$")
+    message(FATAL_ERROR "CONFIG_M61_RUNTIME_PROFILE must be 0/1 or y/n")
+endif()
+set(M61_RUNTIME_PROFILE_VALUE 0)
+if(CONFIG_M61_RUNTIME_PROFILE STREQUAL "1" OR
+   CONFIG_M61_RUNTIME_PROFILE STREQUAL "y")
+    set(M61_RUNTIME_PROFILE_VALUE 1)
+endif()
+if(M61_RUNTIME_PROFILE_VALUE)
+    if(NOT TARGET libfreertos)
+        message(FATAL_ERROR "FreeRTOS target unavailable for runtime profiling")
+    endif()
+    # Task switch hooks live in the kernel translation unit; keep the flag
+    # target-local so Bluetooth/RF/USB SDK libraries retain release codegen.
+    target_compile_definitions(libfreertos PRIVATE
+        CONFIG_M61_RUNTIME_PROFILE=1)
+    target_sources(app PRIVATE m61_runtime_profile.c)
+endif()
 target_compile_definitions(app PRIVATE
     CONFIG_M61_CPU_OVERCLOCK_MHZ=${CONFIG_M61_CPU_OVERCLOCK_MHZ}
-    CONFIG_M61_CODEC_PAIR_DELAY_MS=${CONFIG_M61_CODEC_PAIR_DELAY_MS})
+    CONFIG_M61_CODEC_PAIR_DELAY_MS=${CONFIG_M61_CODEC_PAIR_DELAY_MS}
+    CONFIG_M61_RUNTIME_PROFILE=${M61_RUNTIME_PROFILE_VALUE})
 if(CONFIG_M61_USB_GAMEPAD_O2)
     # A/B only the USB/codec translation unit.  Keep the rest of the app at
     # the SDK's -Os default so code layout and BT/USB task footprints remain
