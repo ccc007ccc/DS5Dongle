@@ -6,6 +6,7 @@ VERSION="1.2.1"
 PATCH_PROFILE="${M61_OPUS_PATCH_PROFILE:-e907}"
 TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-mdct-clusters}"
 STAGE_PROFILE="${M61_OPUS_STAGE_PROFILE:-0}"
+DS5_PROFILE="${M61_OPUS_DS5_PROFILE:-d4-fastpath}"
 VARIANT="${1:-O2-LTO}"
 TOOLCHAIN_BIN="${2:-${M61_TOOLCHAIN_BIN:-}}"
 ARCHIVE_SHA256="cfafd339ccd9c5ef8d6ab15d7e1a412c054bf4cb4ecbbbcc78c12ef2def70732"
@@ -32,6 +33,23 @@ case "$VARIANT" in
         ;;
     *)
         printf '[m61-opus-build] ERROR: variant must be O2, O2-LTO, or O3\n' >&2
+        exit 1
+        ;;
+esac
+
+case "$DS5_PROFILE" in
+    none)
+        DS5_PATCH_FILES=()
+        DS5_DEFINES=""
+        ;;
+    d4-fastpath)
+        DS5_PATCH_FILES=(
+            "$PROJECT_DIR/patches/opus-${VERSION}-m61-dualsense-d4-fastpath.patch"
+        )
+        DS5_DEFINES="-DM61_OPUS_DUALSENSE_D4_FASTPATH=1"
+        ;;
+    *)
+        printf '[m61-opus-build] ERROR: DS5 profile must be none or d4-fastpath\n' >&2
         exit 1
         ;;
 esac
@@ -73,6 +91,9 @@ case "$PATCH_PROFILE" in
         exit 1
         ;;
 esac
+
+PATCH_FILES+=("${DS5_PATCH_FILES[@]}")
+PATCH_DEFINES="${PATCH_DEFINES} ${DS5_DEFINES}"
 
 case "$TCM_PROFILE" in
     none)
@@ -129,8 +150,8 @@ else
     PATCH_SHA256="none"
 fi
 SOURCE_STAMP="$SOURCE/.m61-source-patch"
-EXPECTED_SOURCE_STAMP="profile=${PATCH_PROFILE};patch=${PATCH_SHA256}"
-EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};profile=${PATCH_PROFILE};tcm=${TCM_PROFILE};stage=${STAGE_PROFILE};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
+EXPECTED_SOURCE_STAMP="profile=${PATCH_PROFILE};ds5=${DS5_PROFILE};patch=${PATCH_SHA256}"
+EXPECTED_STAMP="opus=${VERSION};variant=${VARIANT};profile=${PATCH_PROFILE};ds5=${DS5_PROFILE};tcm=${TCM_PROFILE};stage=${STAGE_PROFILE};patch=${PATCH_SHA256};toolchain=$($TOOLCHAIN_BIN/riscv64-unknown-elf-gcc -dumpfullversion)"
 
 mkdir -p "$ROOT"
 if [[ ! -f "$ARCHIVE" ]]; then
@@ -188,8 +209,8 @@ if [[ ! -f "$STAMP" || "$(cat "$STAMP")" != "$EXPECTED_STAMP" ]]; then
     printf '%s\n' "$EXPECTED_STAMP" > "$STAMP"
 fi
 
-printf '[m61-opus-build] Building Opus %s %s profile=%s tcm=%s stage=%s\n' \
-    "$VERSION" "$VARIANT" "$PATCH_PROFILE" "$TCM_PROFILE" "$STAGE_PROFILE" >&2
+printf '[m61-opus-build] Building Opus %s %s profile=%s ds5=%s tcm=%s stage=%s\n' \
+    "$VERSION" "$VARIANT" "$PATCH_PROFILE" "$DS5_PROFILE" "$TCM_PROFILE" "$STAGE_PROFILE" >&2
 make -C "$BUILD" -j"${M61_BUILD_JOBS:-8}" >&2
 LIBRARY="$BUILD/.libs/libopus.a"
 [[ -f "$LIBRARY" ]] || {

@@ -10,8 +10,10 @@ enum { SAMPLE_RATE = 48000, FRAME_SAMPLES = 480, MAX_PACKET_BYTES = 1500 };
 int main(int argc, char **argv)
 {
     const char *path = NULL;
+    const char *output_path = NULL;
     unsigned repeat = 1;
     FILE *stream;
+    FILE *output = NULL;
     OpusDecoder *decoder;
     unsigned char packet[MAX_PACKET_BYTES];
     opus_int16 pcm[FRAME_SAMPLES];
@@ -23,6 +25,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
             path = argv[++i];
+        } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
+            output_path = argv[++i];
         } else if (strcmp(argv[i], "--repeat") == 0 && i + 1 < argc) {
             unsigned long value = strtoul(argv[++i], NULL, 0);
             if (value == 0 || value > 1000000UL)
@@ -37,6 +41,11 @@ int main(int argc, char **argv)
     stream = fopen(path, "rb");
     if (stream == NULL)
         return 3;
+    if (output_path != NULL) {
+        output = fopen(output_path, "wb");
+        if (output == NULL)
+            return 3;
+    }
     decoder = opus_decoder_create(SAMPLE_RATE, 1, &error);
     if (decoder == NULL || error != OPUS_OK)
         return 4;
@@ -64,6 +73,9 @@ int main(int argc, char **argv)
                                   pcm, FRAME_SAMPLES, 0);
             if (decoded != FRAME_SAMPLES)
                 return 7;
+            if (output != NULL &&
+                fwrite(pcm, sizeof(*pcm), FRAME_SAMPLES, output) != FRAME_SAMPLES)
+                return 8;
             for (i = 0; i < FRAME_SAMPLES; i += 32)
                 checksum = checksum * 33U + (uint16_t)pcm[i];
             frames++;
@@ -74,5 +86,7 @@ int main(int argc, char **argv)
            (unsigned long long)frames, checksum);
     opus_decoder_destroy(decoder);
     fclose(stream);
+    if (output != NULL)
+        fclose(output);
     return 0;
 }

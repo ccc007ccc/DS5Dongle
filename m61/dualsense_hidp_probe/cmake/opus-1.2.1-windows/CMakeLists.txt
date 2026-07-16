@@ -5,6 +5,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 project(m61_opus_1_2_1 C)
 
 option(M61_OPUS_STAGE_PROFILE "Enable M61 CELT stage markers" OFF)
+option(M61_OPUS_DUALSENSE_D4_FASTPATH "Enable fixed DualSense mic packet parser" ON)
 
 if(NOT DEFINED OPUS_SOURCE_DIR OR NOT EXISTS "${OPUS_SOURCE_DIR}/include/opus.h")
     message(FATAL_ERROR "OPUS_SOURCE_DIR must point to the patched Opus 1.2.1 source tree")
@@ -168,6 +169,10 @@ target_compile_definitions(opus PRIVATE
     M61_OPUS_TCM_PVQ_CLUSTER=1
     M61_OPUS_TCM_MDCT_CLUSTER=1
 )
+
+if(M61_OPUS_DUALSENSE_D4_FASTPATH)
+    target_compile_definitions(opus PRIVATE M61_OPUS_DUALSENSE_D4_FASTPATH=1)
+endif()
 
 if(M61_OPUS_STAGE_PROFILE)
     target_compile_definitions(opus PRIVATE M61_OPUS_STAGE_PROFILE=1)
