@@ -39,6 +39,13 @@ def split_integers(fields: dict[str, str], key: str) -> list[int]:
     return [int(value, 0) for value in fields[key].split("/")]
 
 
+def split_integers_any(fields: dict[str, str], *keys: str) -> list[int]:
+    for key in keys:
+        if key in fields:
+            return split_integers(fields, key)
+    raise KeyError(f"none of the status keys are present: {keys!r}")
+
+
 def split_count_values(fields: dict[str, str], key: str) -> tuple[int, list[int]]:
     count, values = fields[key].split(":", 1)
     return int(count, 0), [int(value, 0) for value in values.split("/")]
@@ -95,8 +102,8 @@ def main() -> int:
 
     samples0 = integer(perf0, "samples")
     samples1 = integer(perf1, "samples")
-    cycles0 = split_integers(perf0, "cycles")
-    cycles1 = split_integers(perf1, "cycles")
+    cycles0 = split_integers_any(perf0, "cycles_last/avg/max", "cycles")
+    cycles1 = split_integers_any(perf1, "cycles_last/avg/max", "cycles")
     encoded0 = integer(speaker0, "encoded")
     encoded1 = integer(speaker1, "encoded")
     encode_us0 = split_integers(speaker0, "enc_us")
@@ -133,10 +140,18 @@ def main() -> int:
     decode_samples0 = integer(decode0, "samples") if decode_available else 0
     decode_samples1 = integer(decode1, "samples") if decode_available else 0
     if decode_available and decode_samples1 > decode_samples0:
-        decode_cycles0 = split_integers(decode0, "cycles")
-        decode_cycles1 = split_integers(decode1, "cycles")
-        decode_us0 = split_integers(decode0, "dec_us")
-        decode_us1 = split_integers(decode1, "dec_us")
+        decode_cycles0 = split_integers_any(
+            decode0, "cycles_last/avg/max", "cycles"
+        )
+        decode_cycles1 = split_integers_any(
+            decode1, "cycles_last/avg/max", "cycles"
+        )
+        decode_us0 = split_integers_any(
+            decode0, "dec_us_last/avg/max", "dec_us"
+        )
+        decode_us1 = split_integers_any(
+            decode1, "dec_us_last/avg/max", "dec_us"
+        )
         decode_samples = decode_samples1 - decode_samples0
         decode_us_average = interval_average(
             decode_samples0, decode_us0[1], decode_samples1, decode_us1[1]
