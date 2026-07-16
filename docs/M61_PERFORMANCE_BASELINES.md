@@ -1,6 +1,6 @@
 # M61 性能基准与最优固件账本
 
-更新日期：2026-07-15
+更新日期：2026-07-16
 
 本文件只记录真机可复现结果和晋升规则。优化路线、芯片事实和风险分析仍以
 `M61_FULL_PERFORMANCE_OPTIMIZATION_SPEC.md` 为准。
@@ -68,7 +68,7 @@ python tools/run_m61_full_load.py --serial-port COM5 --decoder-bench `
 
 | 套件 | 状态 | 提交/构建 | 核心结果 | 固件位置 |
 | --- | --- | --- | --- | --- |
-| `full-duplex-v1` | 暂无合格最优项 | — | 首轮真实全双工存在明确丢包和欠载 | 待首次合格候选 |
+| `full-duplex-v1` | 当前codec/Opus计算最优；主观连续性待确认 | `9b3f8f3`, Opus 1.2.1 fixed, O2+LTO, `d4-fastpath` | encode/decode平均1,232,199/1,080,174 cycles；合计2,312,373 cycles/10 ms；decode P99/max 4,750/5,010 us；全部实时错误为0 | `artifacts/m61-best/full-duplex-v1/current/` |
 | `codec-isolation-v1` | 当前算法最优 | `72fe7a1`, Opus 1.2.1 fixed, O2+LTO, `pvq-mdct-clusters` | encode 1,357,295 cycles；decode 845,589 cycles；合计 2,202,884 cycles/10 ms（68.84%）；全部实时错误为 0 | 历史测试未保留完整二进制，下一次合格复测后填充 `current` |
 
 `codec-isolation-v1` 的证据日志为
@@ -407,3 +407,40 @@ FIFO、underflow、静音启动buffer及DMA槽所有权不变。
 持续输出，ring最终分别为3,840/4,416/4,032 B。累计encode P99/max为5,750/5,845 us，
 decode P95/P99/max为4,500/5,000/5,508 us，mic queue max 13,949 us。该提交保留为USB
 路径优化，但codec尾延迟最优仍为`0136396`，mic queue最优仍由更低峰值候选单独记录。
+
+## 16. DualSense mic D4/71 B Opus parser快路（当前codec/Opus计算最优）
+
+优化提交：`9b3f8f3`。测试固件SHA256：
+`F0F70C05CED6B586B29C347E35E00416779911AE10401886442C8EF555BEA767`。证据：
+
+- `artifacts/full-duplex-opus-d4-parser-r1-20260716_before.log`
+- `artifacts/full-duplex-opus-d4-parser-r1-20260716.log`
+- `artifacts/full-duplex-opus-d4-parser-r2-20260716_before.log`
+- `artifacts/full-duplex-opus-d4-parser-r2-20260716.log`
+
+真实手柄长期固定发送`TOC=0xD4`、总长71 B的单帧10 ms stereo CELT/SWB包。新路径仅在
+`decode_fec=0`、非self-delimited、无packet offset、48 kHz、输出buffer至少480 samples且
+TOC/长度完全匹配时，直接填入与upstream parser相同的metadata；其余合法包、PLC、FEC和异常
+包全部立即回退原始解析器。没有裁剪decoder能力，也没有改变PCM、采样率、声道或带宽。
+
+Host定点纯C验证使用12,000个真实71 B包：baseline与fast path输出的11,520,000 B PCM文件
+逐字节相同，SHA256均为
+`B257B7F74AC6DDCC19210C57DEDB1F9E90CB8D3A9425C9BD660ECA232886F963`；重复20次共
+240,000帧的stream checksum也完全一致。
+
+| 指标 | 第1轮区间 | 第2轮区间/累计尾部 |
+| --- | ---: | ---: |
+| encode平均延迟/cycles/instret | 3,907.649 us / 1,250,292 / 208,416 | 3,793.924 us / 1,214,105 / 205,678 |
+| encode P50/P95/P99/max | 4,250/5,250/5,250/5,938 us | 累计4,250/5,000/5,250/5,938 us |
+| decode平均延迟/cycles/instret | 3,398.432 us / 1,084,517 / 192,779 | 3,367.501 us / 1,075,832 / 191,601 |
+| decode P50/P95/P99/max | 3,500/4,500/4,750/5,010 us | 累计3,250/4,250/4,750/5,010 us |
+| mic queue最大年龄 | 11,411 us | 未刷新，仍为11,411 us |
+| mic/codec/BT硬错误 | 0 | 0 |
+| USB IN underflow累计/区间 | 27（正式负载前18，首轮启动+9） | +0 |
+
+相对当前顶端提交`951253a`的三轮正式区间均值，encode wall/cycles下降约1.21%/1.24%，decode
+wall/cycles下降约4.62%/4.64%，encode+decode合计cycles从2,380,335降到2,312,373，下降
+约2.86%。decode P99由5,000 us降到4,750 us，累计max由5,508 us降到5,010 us；所有
+speaker/mic/BT drop、stale、retry、reject和codec error为0，第二轮运行期underflow增量为0。
+因此该提交晋升为当前codec/Opus计算最优；是否已经消除主观“盖革计数器”式卡顿仍需用户在
+同一固件上持续试听确认。
