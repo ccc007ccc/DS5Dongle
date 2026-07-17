@@ -5,7 +5,7 @@
 ## 系统边界
 
 正式目标是单颗M61/BL616级SoC。FreeRTOS、Bouffalo蓝牙栈、CherryUSB和应用都保留在
-同一个固件镜像中。仓库不包含、也不需要ESP32/Pico协处理器。
+同一个固件镜像中。
 
 ```text
                          M61 / BL616

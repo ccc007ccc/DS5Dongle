@@ -71,11 +71,36 @@ int main(void)
     telemetry.speaker_stereo = true;
     telemetry.current_cpu_mhz = 400U;
     telemetry.requested_cpu_mhz = 384U;
-    assert(m61_web_telemetry_encode(&telemetry, report, sizeof(report)) == 8);
+    telemetry.pairing_active = true;
+    telemetry.discovery_active = true;
+    telemetry.saved_controller = true;
+    telemetry.config_loaded = true;
+    telemetry.usb_suspended = true;
+    telemetry.last_management_command = M61_WEB_COMMAND_FORGET_CONTROLLER;
+    telemetry.last_management_error = -107;
+    telemetry.management_sequence = 7U;
+    telemetry.usb_input_dropped = 11U;
+    telemetry.host_report_dropped = 13U;
+    telemetry.audio_ingress_dropped = 17U;
+    telemetry.haptics_queue_dropped = 19U;
+    telemetry.speaker_errors = 23U;
+    telemetry.microphone_errors = 29U;
+    telemetry.feature_get_queue_depth = 2U;
+    telemetry.feature_set_queue_depth = 3U;
+    telemetry.haptics_queue_depth = 4U;
+    telemetry.speaker_queue_depth = 5U;
+    assert(m61_web_telemetry_encode(&telemetry, report, sizeof(report)) == 44);
     assert(report[0] == 0xD6U && report[1] == 0x83U);
-    assert(report[2] == 1U && report[3] == 0x0FU);
+    assert(report[2] == 2U && report[3] == 0xFFU);
     assert(report[4] == 0x90U && report[5] == 0x01U);
     assert(report[6] == 0x80U && report[7] == 0x01U);
+    assert(report[8] == 1U && report[9] == M61_WEB_COMMAND_FORGET_CONTROLLER);
+    assert(report[10] == 0x95U && report[11] == 0xFFU);
+    assert(report[12] == 7U && report[16] == 11U && report[20] == 13U);
+    assert(report[24] == 17U && report[28] == 19U && report[32] == 23U);
+    assert(report[36] == 29U);
+    assert(report[40] == 2U && report[41] == 3U &&
+           report[42] == 4U && report[43] == 5U);
 
     assert(m61_web_persistent_encode(&input,
                                      persistent,
@@ -107,6 +132,18 @@ int main(void)
                                   command,
                                   sizeof(command)) ==
            M61_WEB_FEATURE_PAYLOAD_SIZE);
+    assert(m61_web_command_encode(M61_WEB_COMMAND_PAIR_CONTROLLER,
+                                  NULL,
+                                  command,
+                                  sizeof(command)) == M61_WEB_FEATURE_PAYLOAD_SIZE);
+    assert(m61_web_command_encode(M61_WEB_COMMAND_DISCONNECT_CONTROLLER,
+                                  NULL,
+                                  command,
+                                  sizeof(command)) == M61_WEB_FEATURE_PAYLOAD_SIZE);
+    assert(m61_web_command_encode(M61_WEB_COMMAND_FORGET_CONTROLLER,
+                                  NULL,
+                                  command,
+                                  sizeof(command)) == M61_WEB_FEATURE_PAYLOAD_SIZE);
 
     m61_web_runtime_set(&input);
     memset(&decoded, 0, sizeof(decoded));

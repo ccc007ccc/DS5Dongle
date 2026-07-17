@@ -424,6 +424,8 @@ static volatile uint16_t haptics_gain_q8 = HAPTICS_GAIN_Q8;
 static volatile m61_speaker_route_t speaker_route = M61_SPEAKER_ROUTE_AUTO;
 static volatile bool speaker_headphones_connected;
 static volatile bool web_bluetooth_connected;
+static m61_web_management_status_t web_management_status;
+static volatile uint32_t web_management_status_sequence;
 static volatile bool speaker_stereo_requested;
 static volatile bool speaker_stereo_active;
 static volatile bool pending_host_report_valid;
@@ -1924,7 +1926,7 @@ static void queue_host_report(uint8_t report_id, uint8_t report_type, const uint
         }
     } else {
         if (pending_host_report_valid) {
-            usb_diag.host_report_dropped++;
+            usb_diag.host_report_coalesced++;
         }
         pending_host_report.report_id = report_id;
         pending_host_report.report_type = report_type;
@@ -2793,6 +2795,17 @@ void m61_usb_gamepad_set_bluetooth_connected(bool connected)
     web_bluetooth_connected = connected;
 }
 
+void m61_usb_gamepad_set_web_management_status(
+    const m61_web_management_status_t *status)
+{
+    if (status == NULL) return;
+    web_management_status_sequence++;
+    __asm volatile("" : : : "memory");
+    web_management_status = *status;
+    __asm volatile("" : : : "memory");
+    web_management_status_sequence++;
+}
+
 uint32_t m61_usb_gamepad_audio_generation(void)
 {
     return audio_generation;
@@ -3148,7 +3161,21 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
             memcpy(&usb_control_buffer[1], firmware, sizeof(firmware) - 1U);
             encoded = (int)(sizeof(firmware) - 1U);
         } else if (report_id == M61_WEB_TELEMETRY_REPORT_ID) {
+            m61_audio_epoch_stats_t epoch_stats;
+            m61_web_management_status_t management_snapshot;
+            uint32_t sequence_before;
+            uint32_t sequence_after;
+
             memset(&telemetry, 0, sizeof(telemetry));
+            m61_audio_epoch_get_stats(&epoch_stats);
+            do {
+                sequence_before = web_management_status_sequence;
+                __asm volatile("" : : : "memory");
+                management_snapshot = web_management_status;
+                __asm volatile("" : : : "memory");
+                sequence_after = web_management_status_sequence;
+            } while ((sequence_before & 1U) != 0U ||
+                     sequence_before != sequence_after);
             m61_dvfs_get_status(&dvfs);
             telemetry.speaker_active = dvfs.speaker_active;
             telemetry.microphone_active = dvfs.mic_active;
@@ -3158,6 +3185,30 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
             telemetry.speaker_stereo = dvfs.speaker_stereo;
             telemetry.current_cpu_mhz = (uint16_t)dvfs.current_mhz;
             telemetry.requested_cpu_mhz = (uint16_t)dvfs.requested_mhz;
+            telemetry.rssi_valid = management_snapshot.rssi_valid;
+            telemetry.rssi = management_snapshot.rssi;
+            telemetry.pairing_active = management_snapshot.pairing_active;
+            telemetry.discovery_active = management_snapshot.discovery_active;
+            telemetry.saved_controller = management_snapshot.saved_controller;
+            telemetry.config_loaded = management_snapshot.config_loaded;
+            telemetry.usb_suspended = usb_suspended;
+            telemetry.last_management_command = management_snapshot.last_command;
+            telemetry.last_management_error = management_snapshot.last_error;
+            telemetry.management_sequence = management_snapshot.sequence;
+            telemetry.usb_input_dropped = usb_drop_count;
+            telemetry.host_report_dropped = usb_diag.host_report_dropped;
+            telemetry.audio_ingress_dropped = audio_ingress_dropped;
+            telemetry.haptics_queue_dropped = epoch_stats.epochs_dropped;
+            telemetry.speaker_errors = usb_diag.audio_speaker_encode_errors +
+                                       epoch_stats.epochs_dropped +
+                                       epoch_stats.encode_failures;
+            telemetry.microphone_errors = usb_diag.audio_mic_decode_errors +
+                                          usb_diag.audio_mic_opus_dropped;
+            telemetry.feature_get_queue_depth = feature_get_queue_count;
+            telemetry.feature_set_queue_depth = feature_set_queue_count;
+            telemetry.haptics_queue_depth = epoch_stats.complete_slots;
+            telemetry.speaker_queue_depth =
+                (uint8_t)(epoch_stats.encode_ready_slots + epoch_stats.encoding_slots);
             encoded = m61_web_telemetry_encode(
                 &telemetry, &usb_control_buffer[1], M61_WEB_FEATURE_PAYLOAD_SIZE);
         }
@@ -3457,6 +3508,8 @@ int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8)
     return -1;
 }
 void m61_usb_gamepad_set_bluetooth_connected(bool connected) { (void)connected; }
+void m61_usb_gamepad_set_web_management_status(
+    const m61_web_management_status_t *status) { (void)status; }
 uint32_t m61_usb_gamepad_audio_generation(void) { return 0; }
 void m61_usb_gamepad_realtime_task(void) {}
 bool m61_usb_gamepad_ready(void) { return false; }

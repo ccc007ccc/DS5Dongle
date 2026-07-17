@@ -65,7 +65,7 @@ void m61_web_config_defaults(m61_web_config_t *config)
                            M61_WEB_CAP_STATUS_LED |
                            M61_WEB_CAP_HAPTICS_GAIN |
                            M61_WEB_CAP_DVFS |
-                           M61_WEB_CAP_TELEMETRY_V1 |
+                           M61_WEB_CAP_TELEMETRY |
                            M61_WEB_CAP_IDLE_POWEROFF |
                            M61_WEB_CAP_CONTROLLER_POWEROFF |
                            M61_WEB_CAP_SUSPEND_POWEROFF;
@@ -180,7 +180,10 @@ int m61_web_command_encode(uint8_t command,
     }
     if (command != M61_WEB_COMMAND_SAVE_CONFIG &&
         command != M61_WEB_COMMAND_RECONNECT_USB &&
-        command != M61_WEB_COMMAND_POWER_OFF_CONTROLLER) {
+        command != M61_WEB_COMMAND_POWER_OFF_CONTROLLER &&
+        command != M61_WEB_COMMAND_PAIR_CONTROLLER &&
+        command != M61_WEB_COMMAND_DISCONNECT_CONTROLLER &&
+        command != M61_WEB_COMMAND_FORGET_CONTROLLER) {
         return -4;
     }
     if (config != NULL) return -4;
@@ -193,7 +196,7 @@ int m61_web_telemetry_encode(const m61_web_telemetry_t *telemetry,
 {
     uint8_t state = 0U;
 
-    if (telemetry == NULL || output == NULL || output_size < 8U) return -1;
+    if (telemetry == NULL || output == NULL || output_size < 44U) return -1;
     memset(output, 0, output_size);
     output[0] = telemetry->rssi_valid ? (uint8_t)telemetry->rssi : 0x7FU;
     output[1] = 0x80U;
@@ -204,10 +207,28 @@ int m61_web_telemetry_encode(const m61_web_telemetry_t *telemetry,
     if (telemetry->usb_configured) state |= 0x02U;
     if (telemetry->headphones_connected) state |= 0x04U;
     if (telemetry->speaker_stereo) state |= 0x08U;
-    output[3] = state;
     put_u16_le(&output[4], telemetry->current_cpu_mhz);
     put_u16_le(&output[6], telemetry->requested_cpu_mhz);
-    return 8;
+    if (telemetry->pairing_active) state |= 0x10U;
+    if (telemetry->discovery_active) state |= 0x20U;
+    if (telemetry->saved_controller) state |= 0x40U;
+    if (telemetry->config_loaded) state |= 0x80U;
+    output[3] = state;
+    output[8] = telemetry->usb_suspended ? 0x01U : 0U;
+    output[9] = telemetry->last_management_command;
+    put_u16_le(&output[10], (uint16_t)telemetry->last_management_error);
+    put_u32_le(&output[12], telemetry->management_sequence);
+    put_u32_le(&output[16], telemetry->usb_input_dropped);
+    put_u32_le(&output[20], telemetry->host_report_dropped);
+    put_u32_le(&output[24], telemetry->audio_ingress_dropped);
+    put_u32_le(&output[28], telemetry->haptics_queue_dropped);
+    put_u32_le(&output[32], telemetry->speaker_errors);
+    put_u32_le(&output[36], telemetry->microphone_errors);
+    output[40] = telemetry->feature_get_queue_depth;
+    output[41] = telemetry->feature_set_queue_depth;
+    output[42] = telemetry->haptics_queue_depth;
+    output[43] = telemetry->speaker_queue_depth;
+    return 44;
 }
 
 int m61_web_persistent_encode(const m61_web_config_t *config,

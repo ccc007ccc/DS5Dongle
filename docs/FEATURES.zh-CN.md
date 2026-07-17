@@ -29,6 +29,11 @@
 | DVFS | 常驻频率策略保存/清除 | 已验证 | EasyFlash记录；实验频率不能保存 |
 | 诊断 | `ds5 status`完整计数 | 已验证 | 队列、codec、USB、BT、Feature代理、haptics |
 | 诊断 | 编译期开关HPM/pipeline/runtime profile | 已验证 | release关闭 |
+| WebHID | 版本化`0xF6`–`0xF9`管理协议 | 已验证 | 能力、CRC持久配置、固件身份与遥测 |
+| WebHID | 配对、断开、忘记及关闭手柄 | 已验证 | 遥测返回管理结果和序号 |
+| 持久化 | M61统一运行时配置 | 已验证 | 带CRC32的EasyFlash版本记录及v1迁移 |
+| 电源 | 可配置手柄空闲关机 | 已验证 | 活动判定排除IMU噪声；默认关闭 |
+| 电源 | 主机挂起后关闭手柄 | 已实现 | 仍需真实PC睡眠/恢复验收 |
 | 恢复 | 软件重启UART ISP及刷写工具 | 已验证 | 手动BOOT/RESET仍是兜底 |
 | 板载UI | RGB连接状态灯 | 已验证 | 绿色空闲、蓝色连接中/已连接 |
 
@@ -48,19 +53,17 @@
 但320 MHz下的主观抗卡顿余量还没有达到speaker-only水平。性能优化不得降低采样率、
 位宽、码率、声道、帧长或频带。
 
-## 尚未实现
+## 剩余产品工作
 
 这些是真实产品缺口，不是隐藏编译选项：
 
-- Pico固件的WebHID配置报告`0xF6`–`0xF9`；
-- 覆盖音频路由、mic状态、轮询模式、手柄模式、USB序列号、唤醒、快捷键、增益和空闲
-  时间的版本化统一持久配置；
 - 浏览器触发固件升级/USB DFU（M61当前走UART ISP）；
-- 可选USB HID轮询率及DualSense/DualSense Edge模式；
+- 可选USB HID轮询率；
 - Windows唤醒/Game Bar快捷键模拟；
-- 固件侧haptics/扬声器增益及自适应扳机削减配置；
-- Web可读的实时性能计数与DVFS/音频控制；
-- DualSense Edge（`054C:0DF2`）全链路真机支持；
+- 自适应扳机削减配置；
+- USB remote wake验收；
+- 手柄RSSI真机可信度验收；
+- 真实PC挂起/恢复电源策略验收；
 - 默认320 MHz下长时间全双工零可闻卡顿验收。
 
 Web迁移计划以及固件/Web职责划分将写在独立config-web仓库的重构spec中。

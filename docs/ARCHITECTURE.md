@@ -6,7 +6,7 @@
 
 The production target is one M61/BL616-class SoC. FreeRTOS, the Bouffalo
 Bluetooth stack, CherryUSB, and the application all remain in one firmware
-image. The repository does not contain or require an ESP32/Pico coprocessor.
+image.
 
 ```text
                        M61 / BL616

@@ -96,9 +96,18 @@ byte-identical.
 
 The host-facing four-channel USB format never changes during a route switch.
 
-## Future management protocol
+## M61 WebHID management protocol
 
-Reports `0xF6`–`0xF9` used by the existing Pico-oriented web app are not an
-M61 protocol today. The M61 web refactor will define a versioned capability
-and configuration schema before adding them, rather than pretending the Pico
-binary layout is already compatible.
+The M61 configuration UI uses four vendor Feature reports. They are a native,
+versioned M61 protocol and do not expose private firmware memory layouts:
+
+- `0xF6`: apply/save configuration, reconnect USB, controller power-off,
+  pair, disconnect, and forget commands;
+- `0xF7`: schema-v2 configuration and capability bits;
+- `0xF8`: firmware and product identity;
+- `0xF9`: telemetry-v2 connection, runtime, management and bounded health
+  counters. Its first eight payload bytes remain compatible with telemetry v1.
+
+The 18-byte configuration body is stored as a CRC32-protected EasyFlash
+record. Invalid records fall back to release defaults: microphone and
+overclocking off, manual 320 MHz, and idle shutdown disabled.

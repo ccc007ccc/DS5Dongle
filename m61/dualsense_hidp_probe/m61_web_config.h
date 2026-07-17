@@ -12,7 +12,7 @@
 #define M61_WEB_FEATURE_PAYLOAD_SIZE 63U
 #define M61_WEB_CONFIG_SCHEMA_VERSION 2U
 #define M61_WEB_CONFIG_BODY_SIZE 18U
-#define M61_WEB_TELEMETRY_VERSION 1U
+#define M61_WEB_TELEMETRY_VERSION 2U
 #define M61_WEB_PERSISTENT_RECORD_VERSION 2U
 #define M61_WEB_PERSISTENT_RECORD_SIZE 28U
 
@@ -21,6 +21,9 @@ enum {
     M61_WEB_COMMAND_SAVE_CONFIG = 0x02U,
     M61_WEB_COMMAND_RECONNECT_USB = 0x03U,
     M61_WEB_COMMAND_POWER_OFF_CONTROLLER = 0x04U,
+    M61_WEB_COMMAND_PAIR_CONTROLLER = 0x05U,
+    M61_WEB_COMMAND_DISCONNECT_CONTROLLER = 0x06U,
+    M61_WEB_COMMAND_FORGET_CONTROLLER = 0x07U,
 };
 
 enum {
@@ -31,7 +34,7 @@ enum {
     M61_WEB_CAP_STATUS_LED = 1U << 4,
     M61_WEB_CAP_HAPTICS_GAIN = 1U << 5,
     M61_WEB_CAP_DVFS = 1U << 6,
-    M61_WEB_CAP_TELEMETRY_V1 = 1U << 7,
+    M61_WEB_CAP_TELEMETRY = 1U << 7,
     M61_WEB_CAP_IDLE_POWEROFF = 1U << 8,
     M61_WEB_CAP_CONTROLLER_POWEROFF = 1U << 9,
     M61_WEB_CAP_SUSPEND_POWEROFF = 1U << 10,
@@ -63,6 +66,24 @@ typedef struct {
     bool speaker_stereo;
     uint16_t current_cpu_mhz;
     uint16_t requested_cpu_mhz;
+    bool pairing_active;
+    bool discovery_active;
+    bool saved_controller;
+    bool config_loaded;
+    bool usb_suspended;
+    uint8_t last_management_command;
+    int16_t last_management_error;
+    uint32_t management_sequence;
+    uint32_t usb_input_dropped;
+    uint32_t host_report_dropped;
+    uint32_t audio_ingress_dropped;
+    uint32_t haptics_queue_dropped;
+    uint32_t speaker_errors;
+    uint32_t microphone_errors;
+    uint8_t feature_get_queue_depth;
+    uint8_t feature_set_queue_depth;
+    uint8_t haptics_queue_depth;
+    uint8_t speaker_queue_depth;
 } m61_web_telemetry_t;
 
 void m61_web_config_defaults(m61_web_config_t *config);

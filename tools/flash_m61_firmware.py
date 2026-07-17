@@ -11,6 +11,7 @@ import sys
 import time
 
 import serial
+from serial.tools import list_ports
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,8 @@ REBOOT_ISP_COMMANDS = (
     "reboot uart",
 )
 REBOOT_ISP_BAUDS = (115200, 2000000, 460800)
+M61_CH340_VID = 0x1A86
+M61_CH340_PID = 0x7523
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,29 @@ def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
     return reboot_confirmed
 
 
+def describe_flash_port(port: str) -> None:
+    match = next(
+        (item for item in list_ports.comports() if item.device.casefold() == port.casefold()),
+        None,
+    )
+    if match is None:
+        print(f"warning: {port} is not currently enumerated", file=sys.stderr)
+        return
+
+    identity = (
+        f"{match.vid:04X}:{match.pid:04X}"
+        if match.vid is not None and match.pid is not None
+        else "unknown VID:PID"
+    )
+    print(f"flash port: {match.device} ({match.description}; {identity})")
+    if (match.vid, match.pid) != (M61_CH340_VID, M61_CH340_PID):
+        print(
+            "warning: this is not the validated M61 CH340 UART (1A86:7523); "
+            "prefer the CH340 COM port when multiple ports are present",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", choices=sorted(FIRMWARE_APPS), default="hidp-probe", help="M61 firmware app")
@@ -167,6 +193,15 @@ def main(argv: list[str] | None = None) -> int:
         print("  1. hold BOOT")
         print("  2. press and release RESET/RST")
         print("  3. release BOOT")
+
+    describe_flash_port(args.port)
+    if args.baud <= 115200:
+        print(
+            "flash speed: safe 115200 baud "
+            "(omit -b to use the normal 460800-baud fast path)"
+        )
+    else:
+        print(f"flash speed: {args.baud} baud")
 
     if args.reboot_isp:
         print("warning: BL616 warm ISP reboot may require a physical BOOT+RESET before flashing")

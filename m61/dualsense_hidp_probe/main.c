@@ -303,6 +303,11 @@ static bool web_config_loaded;
 static TickType_t controller_last_activity_tick;
 static TickType_t usb_suspend_started_tick;
 static bool controller_poweroff_requested;
+static bool controller_rssi_valid;
+static int8_t controller_rssi;
+static uint8_t web_last_management_command;
+static int16_t web_last_management_error;
+static uint32_t web_management_sequence;
 static bool br_discovery_active;
 static bool br_discovery_found_dualsense;
 static bool pairing_mode_active;
@@ -2312,6 +2317,15 @@ static int save_m61_web_config(void)
     return 0;
 }
 
+static int finish_m61_web_command(uint8_t command, int err)
+{
+    web_last_management_command = command;
+    web_last_management_error =
+        err < INT16_MIN ? INT16_MIN : (err > INT16_MAX ? INT16_MAX : (int16_t)err);
+    web_management_sequence++;
+    return err;
+}
+
 static int handle_m61_web_command(
     const m61_usb_gamepad_host_report_t *report)
 {
@@ -2341,19 +2355,39 @@ static int handle_m61_web_command(
             m61_web_config_decode(&payload[1], payload_len - 1U, &config) < 0) {
             return -EINVAL;
         }
-        return apply_m61_web_config(&config, true);
+        return finish_m61_web_command(payload[0],
+                                      apply_m61_web_config(&config, true));
     }
     if (payload[0] == M61_WEB_COMMAND_SAVE_CONFIG) {
-        return save_m61_web_config();
+        return finish_m61_web_command(payload[0], save_m61_web_config());
     }
     if (payload[0] == M61_WEB_COMMAND_RECONNECT_USB) {
-        return m61_usb_cycle_command();
+        return finish_m61_web_command(payload[0], m61_usb_cycle_command());
     }
     if (payload[0] == M61_WEB_COMMAND_POWER_OFF_CONTROLLER) {
         int err = hidp_power_off_controller();
 
         if (err == 0) controller_poweroff_requested = true;
-        return err;
+        return finish_m61_web_command(payload[0], err);
+    }
+    if (payload[0] == M61_WEB_COMMAND_PAIR_CONTROLLER) {
+        return finish_m61_web_command(payload[0], request_pairing_mode());
+    }
+    if (payload[0] == M61_WEB_COMMAND_DISCONNECT_CONTROLLER) {
+        int err = default_conn
+                      ? bt_conn_disconnect(default_conn,
+                                           BT_HCI_ERR_REMOTE_USER_TERM_CONN)
+                      : -ENOTCONN;
+
+        return finish_m61_web_command(payload[0], err);
+    }
+    if (payload[0] == M61_WEB_COMMAND_FORGET_CONTROLLER) {
+        int err = bt_unpair(BT_ID_DEFAULT, NULL);
+
+        forget_dualsense_addr();
+        pairing_mode_active = false;
+        pairing_mode_after_disconnect = false;
+        return finish_m61_web_command(payload[0], err);
     }
     return -EINVAL;
 }
@@ -2811,6 +2845,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     bt_conn_get_info(conn, &info);
     bt_addr_to_str(info.br.dst, addr_str, sizeof(addr_str));
     printf("BR/EDR disconnected: %s reason=%u\r\n", addr_str, reason);
+    controller_rssi_valid = false;
 
     if (default_conn == conn) {
         default_conn = NULL;
@@ -3072,6 +3107,22 @@ static void auto_connect_task(void *pvParameters)
                        err);
                 if (err == 0) controller_poweroff_requested = true;
             }
+        }
+
+        {
+            m61_web_management_status_t management = {
+                .rssi_valid = controller_rssi_valid,
+                .rssi = controller_rssi,
+                .pairing_active = pairing_mode_active,
+                .discovery_active = br_discovery_active,
+                .saved_controller = have_last_dualsense_addr,
+                .config_loaded = web_config_loaded,
+                .last_command = web_last_management_command,
+                .last_error = web_last_management_error,
+                .sequence = web_management_sequence,
+            };
+
+            m61_usb_gamepad_set_web_management_status(&management);
         }
 
         if (!bt_ready) {

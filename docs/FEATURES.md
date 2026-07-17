@@ -30,6 +30,11 @@ by source/offline tests but still needs broader hardware regression, and
 | DVFS | Persist/clear resident frequency policy | Verified | EasyFlash record; experimental clocks cannot be saved |
 | Diagnostics | `ds5 status` full transport/audio counters | Verified | Queue, codec, USB, BT, Feature proxy and haptics counters |
 | Diagnostics | Compile-gated HPM/pipeline/runtime profiling | Verified | Disabled in release |
+| WebHID | Versioned `0xF6`–`0xF9` management protocol | Verified | Capabilities, CRC-backed configuration, identity and telemetry |
+| WebHID | Pair, disconnect, forget and controller power-off | Verified | Management result and sequence are reported in telemetry |
+| Persistence | Unified M61 runtime configuration | Verified | Versioned EasyFlash record with CRC32 and v1 migration |
+| Power | Configurable controller idle shutdown | Verified | Activity excludes IMU noise; disabled by default |
+| Power | Controller shutdown after host suspend | Implemented | Requires final PC sleep/resume qualification |
 | Recovery | UART ISP software reboot and flashing tool | Verified | Manual BOOT/RESET remains the recovery path |
 | Board UI | RGB connection status LED | Verified | Green idle, blue connecting/connected policy |
 
@@ -51,20 +56,17 @@ does not yet have the same subjective stutter margin as speaker-only mode.
 No sample rate, bit depth, bitrate, channel, frame-length, or frequency-band
 reduction is accepted as a performance fix.
 
-## Not yet implemented
+## Remaining product work
 
 These are real product gaps, not hidden build options:
 
-- the Pico firmware's WebHID configuration reports `0xF6`–`0xF9`;
-- a versioned, unified persistent configuration for audio route, mic state,
-  polling mode, controller mode, USB serial, wake, shortcuts, gains, and idle
-  timeout;
 - browser-triggered firmware update/USB DFU (M61 currently uses UART ISP);
-- selectable USB HID polling rate and DualSense/DualSense Edge mode;
+- selectable USB HID polling rate;
 - Windows wake/Game Bar shortcut emulation;
-- firmware-side haptics/speaker gain and adaptive-trigger reduction settings;
-- web-visible live performance counters and runtime DVFS/audio controls;
-- DualSense Edge (`054C:0DF2`) end-to-end hardware support;
+- adaptive-trigger reduction settings;
+- USB remote wake qualification;
+- trustworthy controller RSSI qualification on hardware;
+- real PC suspend/resume power-policy qualification;
 - long-duration full-duplex qualification with zero audible stutter at the
   default 320 MHz profile.
 

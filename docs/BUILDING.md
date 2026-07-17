@@ -103,6 +103,10 @@ Manual ISP entry: hold BOOT, tap and release RESET, then release BOOT.
 python tools\flash_m61_firmware.py --app hidp-probe -p COM5 --windows-build
 ```
 
+The default 460800 baud mode is the normal fast path. Select the M61 CH340
+UART (`1A86:7523`); if Windows shows multiple COM ports, do not use a port in
+an error state. Use `-b 115200` only as a conservative cable/hub fallback.
+
 For a running compatible firmware, add `--reboot-isp`. After writing, release
 BOOT and reset into normal boot if the board remains in ISP mode.
 

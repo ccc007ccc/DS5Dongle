@@ -100,6 +100,10 @@ python tools\check_m61_usb_windows.py
 python tools\validate_m61_usb_hardware.py -p COM5
 ```
 
+The normal flasher default is 460800 baud. Select the board's CH340 UART
+(`1A86:7523`, typically COM5), not another transient USB serial port. Add
+`-b 115200` only as a conservative fallback for an unstable cable or hub.
+
 If the running firmware accepts `ds5 reboot-isp`, the flasher can request ISP
 mode with `--reboot-isp`. Otherwise hold BOOT, tap RESET, then release BOOT.
 

@@ -31,6 +31,18 @@ typedef enum {
     M61_SPEAKER_ROUTE_STEREO,
 } m61_speaker_route_t;
 
+typedef struct {
+    bool rssi_valid;
+    int8_t rssi;
+    bool pairing_active;
+    bool discovery_active;
+    bool saved_controller;
+    bool config_loaded;
+    uint8_t last_command;
+    int16_t last_error;
+    uint32_t sequence;
+} m61_web_management_status_t;
+
 void m61_usb_gamepad_init(void);
 void m61_usb_gamepad_deinit(void);
 int m61_usb_gamepad_reinit(void);
@@ -60,6 +72,8 @@ void m61_usb_gamepad_set_audio_speaker_enabled(bool enabled);
 uint16_t m61_usb_gamepad_haptics_gain_q8(void);
 int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8);
 void m61_usb_gamepad_set_bluetooth_connected(bool connected);
+void m61_usb_gamepad_set_web_management_status(
+    const m61_web_management_status_t *status);
 uint32_t m61_usb_gamepad_audio_generation(void);
 void m61_usb_gamepad_realtime_task(void);
 bool m61_usb_gamepad_ready(void);
@@ -91,6 +105,7 @@ typedef struct {
     uint32_t feature_get_queue_coalesced;
     uint32_t feature_get_queue_dropped;
     uint32_t host_report_dropped;
+    uint32_t host_report_coalesced;
     uint8_t feature_get_queue_depth;
     uint8_t feature_get_queue_high_water;
     uint8_t feature_set_queue_depth;

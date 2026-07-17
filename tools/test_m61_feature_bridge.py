@@ -82,6 +82,10 @@ def check_source_wiring() -> None:
         "m61_usb_gamepad_set_haptics_gain_q8",
         "M61_WEB_COMMAND_POWER_OFF_CONTROLLER",
         "hidp_power_off_controller()",
+        "M61_WEB_COMMAND_PAIR_CONTROLLER",
+        "M61_WEB_COMMAND_DISCONNECT_CONTROLLER",
+        "M61_WEB_COMMAND_FORGET_CONTROLLER",
+        "bt_unpair(BT_ID_DEFAULT, NULL)",
     )
     for snippet in required_gamepad:
         assert snippet in gamepad, f"missing gamepad bridge logic: {snippet}"
