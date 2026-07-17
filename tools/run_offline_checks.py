@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         ("DS5 Windows desktop tester smoke", [sys.executable, "tools/ds5_windows_test_app.py", "--smoke-test"]),
         ("M61 realtime memory gate self-test", [sys.executable, "tools/test_m61_realtime_memory.py"]),
         ("M61 realtime scheduler host tests", [sys.executable, "tools/test_m61_realtime_scheduler.py"]),
+        ("M61 Web config protocol host tests", [sys.executable, "tools/test_m61_web_config.py"]),
     ]
 
     if not args.skip_pycompile:
