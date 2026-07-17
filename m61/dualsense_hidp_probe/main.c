@@ -2175,6 +2175,9 @@ static int handle_m61_web_command(
         report_id = payload[0];
         payload++;
         payload_len--;
+    } else if (payload[0] == report_id) {
+        payload++;
+        payload_len--;
     }
     if (report_id != M61_WEB_COMMAND_REPORT_ID || payload_len == 0U) {
         return -EINVAL;
