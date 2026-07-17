@@ -32,6 +32,7 @@ int main(void)
     uint8_t body[M61_WEB_CONFIG_BODY_SIZE];
     uint8_t command[M61_WEB_FEATURE_PAYLOAD_SIZE];
     uint8_t report[M61_WEB_FEATURE_PAYLOAD_SIZE];
+    uint8_t persistent[M61_WEB_PERSISTENT_RECORD_SIZE];
 
     assert(m61_web_config_encode(&input, body, sizeof(body)) ==
            M61_WEB_CONFIG_BODY_SIZE);
@@ -70,6 +71,27 @@ int main(void)
     assert(report[2] == 1U && report[3] == 0x0FU);
     assert(report[4] == 0x90U && report[5] == 0x01U);
     assert(report[6] == 0x80U && report[7] == 0x01U);
+
+    assert(m61_web_persistent_encode(&input,
+                                     persistent,
+                                     sizeof(persistent)) ==
+           M61_WEB_PERSISTENT_RECORD_SIZE);
+    assert(memcmp(persistent, "M61W", 4) == 0);
+    memset(&decoded, 0, sizeof(decoded));
+    assert(m61_web_persistent_decode(persistent,
+                                     sizeof(persistent),
+                                     &decoded) ==
+           M61_WEB_PERSISTENT_RECORD_SIZE);
+    assert(memcmp(&input, &decoded, sizeof(input)) == 0);
+    persistent[12] ^= 0x01U;
+    assert(m61_web_persistent_decode(persistent,
+                                     sizeof(persistent),
+                                     &decoded) == -5);
+
+    m61_web_runtime_set(&input);
+    memset(&decoded, 0, sizeof(decoded));
+    m61_web_runtime_get(&decoded);
+    assert(memcmp(&input, &decoded, sizeof(input)) == 0);
 
     puts("M61 Web config protocol tests passed.");
     return 0;

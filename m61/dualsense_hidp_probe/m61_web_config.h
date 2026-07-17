@@ -13,6 +13,8 @@
 #define M61_WEB_CONFIG_SCHEMA_VERSION 1U
 #define M61_WEB_CONFIG_BODY_SIZE 16U
 #define M61_WEB_TELEMETRY_VERSION 1U
+#define M61_WEB_PERSISTENT_RECORD_VERSION 1U
+#define M61_WEB_PERSISTENT_RECORD_SIZE 26U
 
 enum {
     M61_WEB_COMMAND_APPLY_CONFIG = 0x01U,
@@ -72,5 +74,13 @@ int m61_web_command_encode(uint8_t command,
 int m61_web_telemetry_encode(const m61_web_telemetry_t *telemetry,
                              uint8_t *output,
                              size_t output_size);
+int m61_web_persistent_encode(const m61_web_config_t *config,
+                              uint8_t *output,
+                              size_t output_size);
+int m61_web_persistent_decode(const uint8_t *input,
+                              size_t input_size,
+                              m61_web_config_t *config);
+void m61_web_runtime_set(const m61_web_config_t *config);
+void m61_web_runtime_get(m61_web_config_t *config);
 
 #endif

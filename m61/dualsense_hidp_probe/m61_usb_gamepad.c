@@ -419,6 +419,8 @@ static volatile bool decoder_benchmark_active;
 static volatile uint32_t audio_generation = 1;
 static volatile bool audio_mic_runtime_enabled =
     CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ? true : false;
+static volatile bool audio_speaker_runtime_enabled = true;
+static volatile uint16_t haptics_gain_q8 = HAPTICS_GAIN_Q8;
 static volatile m61_speaker_route_t speaker_route = M61_SPEAKER_ROUTE_AUTO;
 static volatile bool speaker_headphones_connected;
 static volatile bool web_bluetooth_connected;
@@ -441,7 +443,8 @@ static volatile int audio_mic_volume_db;
 
 static void update_dvfs_audio_load(void)
 {
-    m61_dvfs_set_audio_enabled(audio_out_open && !audio_speaker_mute,
+    m61_dvfs_set_audio_enabled(audio_speaker_runtime_enabled &&
+                                   audio_out_open && !audio_speaker_mute,
                                audio_mic_runtime_enabled && audio_in_open &&
                                    !audio_mic_mute,
                                speaker_stereo_requested);
@@ -933,7 +936,7 @@ static uint8_t abs_i8(int8_t value)
 
 static int8_t haptic_pcm16_to_i8(int16_t sample)
 {
-    int32_t scaled = ((int32_t)sample * HAPTICS_GAIN_Q8) / 256;
+    int32_t scaled = ((int32_t)sample * haptics_gain_q8) / 256;
     int32_t value;
 
     if (scaled > 32768) {
@@ -1210,7 +1213,8 @@ static void __attribute__((unused)) process_audio_speaker(const uint8_t *data, u
     static int16_t resampled[AUDIO_SPEAKER_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS];
     uint32_t frames;
 
-    if (!data || nbytes < AUDIO_FRAME_BYTES || audio_speaker_mute) {
+    if (!data || nbytes < AUDIO_FRAME_BYTES || audio_speaker_mute ||
+        !audio_speaker_runtime_enabled) {
         return;
     }
 
@@ -1371,7 +1375,7 @@ static void audio_ingress_task(void *pvParameters)
                                        packet.generation,
                                        packet.captured_us,
                                        packet.speaker_enabled != 0U,
-                                       HAPTICS_GAIN_Q8);
+                                       haptics_gain_q8);
 #if CONFIG_M61_PIPELINE_PROFILE
             uint64_t ingress_work_elapsed_us =
                 bflb_mtimer_get_time_us() - ingress_work_start_us;
@@ -1971,7 +1975,8 @@ static void arm_audio_out(uint8_t busid)
     audio_ingress_slot_t *slot = &audio_ingress[selected];
     slot->generation = audio_generation;
     slot->speaker_enabled =
-        (audio_out_open && !audio_speaker_mute) ? 1U : 0U;
+        (audio_speaker_runtime_enabled && audio_out_open &&
+         !audio_speaker_mute) ? 1U : 0U;
     slot->state = AUDIO_INGRESS_DMA_ACTIVE;
     audio_ingress_active_slot = (uint8_t)selected;
     audio_out_armed = true;
@@ -2749,7 +2754,33 @@ bool m61_usb_gamepad_audio_in_active(void)
 
 bool m61_usb_gamepad_audio_speaker_active(void)
 {
-    return audio_out_open && !audio_speaker_mute;
+    return audio_speaker_runtime_enabled && audio_out_open &&
+           !audio_speaker_mute;
+}
+
+bool m61_usb_gamepad_audio_speaker_enabled(void)
+{
+    return audio_speaker_runtime_enabled;
+}
+
+void m61_usb_gamepad_set_audio_speaker_enabled(bool enabled)
+{
+    if (audio_speaker_runtime_enabled == enabled) return;
+    audio_speaker_runtime_enabled = enabled;
+    reset_audio_pipeline(false);
+    update_dvfs_audio_load();
+}
+
+uint16_t m61_usb_gamepad_haptics_gain_q8(void)
+{
+    return haptics_gain_q8;
+}
+
+int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8)
+{
+    if (gain_q8 < 0x0100U || gain_q8 > 0x0200U) return -1;
+    haptics_gain_q8 = gain_q8;
+    return 0;
 }
 
 void m61_usb_gamepad_set_bluetooth_connected(bool connected)
@@ -3035,7 +3066,7 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->audio_haptic_last_peak = epoch_stats.haptics_last_peak;
     diag->audio_haptic_downsample = HAPTICS_DOWNSAMPLE_FACTOR;
     diag->audio_haptic_resample_mode = HAPTICS_RESAMPLE_MODE_PHASE_DECIMATE;
-    diag->audio_haptic_gain_q8 = HAPTICS_GAIN_Q8;
+    diag->audio_haptic_gain_q8 = haptics_gain_q8;
     diag->audio_speaker_mute = audio_speaker_mute ? 1 : 0;
     diag->audio_mic_mute = audio_mic_mute ? 1 : 0;
     diag->audio_speaker_volume_db = audio_speaker_volume_db;
@@ -3092,16 +3123,20 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
         memset(usb_control_buffer, 0, sizeof(usb_control_buffer));
         usb_control_buffer[0] = report_id;
         if (report_id == M61_WEB_CONFIG_REPORT_ID) {
-            m61_web_config_defaults(&config);
+            m61_web_runtime_get(&config);
             config.microphone_enabled = m61_usb_gamepad_audio_mic_enabled();
+            config.speaker_enabled = m61_usb_gamepad_audio_speaker_enabled();
             config.speaker_route = (uint8_t)m61_usb_gamepad_speaker_route();
+            config.haptics_gain_q8 = m61_usb_gamepad_haptics_gain_q8();
             m61_dvfs_get_status(&dvfs);
             config.cpu_governor = (uint8_t)dvfs.governor;
             config.cpu_profile =
                 dvfs.manual_profile < M61_DVFS_PROFILE_COUNT
                     ? (uint8_t)dvfs.manual_profile
                     : 3U;
-            config.manual_cpu_mhz = (uint16_t)dvfs.manual_mhz;
+            if (dvfs.manual_profile >= M61_DVFS_PROFILE_COUNT) {
+                config.manual_cpu_mhz = (uint16_t)dvfs.manual_mhz;
+            }
             encoded = m61_web_config_encode(
                 &config, &usb_control_buffer[1], M61_WEB_FEATURE_PAYLOAD_SIZE);
         } else if (report_id == M61_WEB_FIRMWARE_REPORT_ID) {
@@ -3407,6 +3442,14 @@ void m61_usb_gamepad_set_headphones_connected(bool connected) { (void)connected;
 bool m61_usb_gamepad_headphones_connected(void) { return false; }
 bool m61_usb_gamepad_audio_in_active(void) { return false; }
 bool m61_usb_gamepad_audio_speaker_active(void) { return false; }
+bool m61_usb_gamepad_audio_speaker_enabled(void) { return false; }
+void m61_usb_gamepad_set_audio_speaker_enabled(bool enabled) { (void)enabled; }
+uint16_t m61_usb_gamepad_haptics_gain_q8(void) { return HAPTICS_GAIN_Q8; }
+int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8)
+{
+    (void)gain_q8;
+    return -1;
+}
 void m61_usb_gamepad_set_bluetooth_connected(bool connected) { (void)connected; }
 uint32_t m61_usb_gamepad_audio_generation(void) { return 0; }
 void m61_usb_gamepad_realtime_task(void) {}

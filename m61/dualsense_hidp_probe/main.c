@@ -297,6 +297,9 @@ static bt_addr_t last_dualsense_addr;
 static bool have_last_dualsense_addr;
 static bool bt_ready;
 static bool storage_ready;
+#define M61_WEB_CONFIG_KEY "m61_web_config_v1"
+static m61_web_config_t web_config;
+static bool web_config_loaded;
 static bool br_discovery_active;
 static bool br_discovery_found_dualsense;
 static bool pairing_mode_active;
@@ -351,6 +354,7 @@ static bool status_led_red_on;
 static bool status_led_green_on;
 static bool status_led_blue_on;
 static bool status_led_booting = true;
+static bool status_led_runtime_enabled = true;
 static struct bflb_device_s *pair_button_gpio;
 static uint16_t pair_button_hold_ms;
 static bool pair_button_hold_fired;
@@ -1072,6 +1076,9 @@ static void status_led_apply_mode(enum status_led_mode mode, bool blink_on)
 
 static enum status_led_mode status_led_auto_mode(void)
 {
+    if (!status_led_runtime_enabled) {
+        return STATUS_LED_OFF;
+    }
     if (status_led_booting) {
         return STATUS_LED_BOOT;
     }
@@ -1194,7 +1201,8 @@ static void status_led_print(void)
     enum status_led_mode mode =
         status_led_override ? status_led_override_mode : status_led_auto_mode();
 
-    printf("led enabled=1 active_high=%d pwm=%d brightness=%u/1000 red=%u green=%u blue=%u override=%d mode=%s\r\n",
+    printf("led enabled=%d active_high=%d pwm=%d brightness=%u/1000 red=%u green=%u blue=%u override=%d mode=%s\r\n",
+           status_led_runtime_enabled ? 1 : 0,
            CONFIG_M61_STATUS_LED_ACTIVE_HIGH ? 1 : 0,
            status_led_pwm_ready ? 1 : 0,
            (unsigned int)CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE,
@@ -1203,6 +1211,16 @@ static void status_led_print(void)
            (unsigned int)CONFIG_M61_STATUS_LED_BLUE_PIN,
            status_led_override ? 1 : 0,
            status_led_mode_name(mode));
+}
+
+static void status_led_set_runtime_enabled(bool enabled)
+{
+    status_led_runtime_enabled = enabled;
+    if (!enabled) {
+        status_led_apply_mode(STATUS_LED_OFF, false);
+    } else if (!status_led_override) {
+        status_led_apply_mode(status_led_auto_mode(), true);
+    }
 }
 
 static int status_led_set_override_from_name(const char *name)
@@ -1275,6 +1293,11 @@ static void status_led_task(void *pvParameters)
 static void status_led_print(void)
 {
     printf("led enabled=0\r\n");
+}
+
+static void status_led_set_runtime_enabled(bool enabled)
+{
+    (void)enabled;
 }
 
 static int status_led_set_override_from_name(const char *name)
@@ -2158,6 +2181,113 @@ static void __attribute__((unused)) handle_usb_host_report(
     }
 }
 
+static void refresh_m61_web_config_from_runtime(void)
+{
+    m61_dvfs_status_t dvfs;
+    m61_web_config_t defaults;
+
+    m61_web_config_defaults(&defaults);
+    web_config.capabilities = defaults.capabilities;
+#if !CONFIG_M61_STATUS_LED_ENABLE
+    web_config.capabilities &= (uint16_t)~M61_WEB_CAP_STATUS_LED;
+#endif
+    web_config.microphone_enabled = m61_usb_gamepad_audio_mic_enabled();
+    web_config.speaker_enabled = m61_usb_gamepad_audio_speaker_enabled();
+    web_config.auto_reconnect_enabled = auto_start_enabled;
+    web_config.status_led_enabled = status_led_runtime_enabled;
+    web_config.speaker_route = (uint8_t)m61_usb_gamepad_speaker_route();
+    web_config.haptics_gain_q8 = m61_usb_gamepad_haptics_gain_q8();
+    m61_dvfs_get_status(&dvfs);
+    web_config.cpu_governor = (uint8_t)dvfs.governor;
+    web_config.cpu_profile =
+        dvfs.manual_profile < M61_DVFS_PROFILE_COUNT
+            ? (uint8_t)dvfs.manual_profile
+            : 3U;
+    if (dvfs.manual_profile >= M61_DVFS_PROFILE_COUNT) {
+        web_config.manual_cpu_mhz = (uint16_t)dvfs.manual_mhz;
+    }
+    m61_web_runtime_set(&web_config);
+}
+
+static int apply_m61_web_config(const m61_web_config_t *requested,
+                                bool apply_dvfs)
+{
+    m61_web_config_t next;
+    m61_web_config_t defaults;
+    int err;
+
+    if (requested == NULL || !m61_web_config_valid(requested)) return -EINVAL;
+    next = *requested;
+    m61_web_config_defaults(&defaults);
+    next.capabilities = defaults.capabilities;
+#if !CONFIG_M61_STATUS_LED_ENABLE
+    next.capabilities &= (uint16_t)~M61_WEB_CAP_STATUS_LED;
+#endif
+    if (apply_dvfs) {
+        if (next.cpu_profile < M61_DVFS_PROFILE_COUNT) {
+            err = m61_dvfs_set_profile((m61_dvfs_profile_t)next.cpu_profile);
+        } else {
+            err = m61_dvfs_set_custom_frequency(next.manual_cpu_mhz, false);
+        }
+        if (err != 0) return err;
+        err = m61_dvfs_set_governor((m61_dvfs_governor_t)next.cpu_governor);
+        if (err != 0) return err;
+    }
+    m61_usb_gamepad_set_audio_mic_enabled(next.microphone_enabled);
+    m61_usb_gamepad_set_audio_speaker_enabled(next.speaker_enabled);
+    m61_usb_gamepad_set_speaker_route((m61_speaker_route_t)next.speaker_route);
+    err = m61_usb_gamepad_set_haptics_gain_q8(next.haptics_gain_q8);
+    if (err != 0) return -EINVAL;
+    auto_start_enabled = next.auto_reconnect_enabled;
+    status_led_set_runtime_enabled(next.status_led_enabled);
+    web_config = next;
+    m61_web_runtime_set(&web_config);
+    return 0;
+}
+
+static void load_m61_web_config(void)
+{
+    uint8_t record[M61_WEB_PERSISTENT_RECORD_SIZE];
+    size_t saved_len = 0U;
+    size_t read_len;
+
+    m61_web_config_defaults(&web_config);
+    m61_web_runtime_set(&web_config);
+    if (!storage_ready) return;
+    read_len = ef_get_env_blob(M61_WEB_CONFIG_KEY,
+                               record,
+                               sizeof(record),
+                               &saved_len);
+    if (read_len != sizeof(record) || saved_len != sizeof(record) ||
+        m61_web_persistent_decode(record, sizeof(record), &web_config) < 0) {
+        printf("M61 Web config: no valid saved record; using release defaults\r\n");
+        return;
+    }
+    web_config_loaded = true;
+    (void)apply_m61_web_config(&web_config, false);
+    printf("M61 Web config: loaded schema=%u\r\n",
+           (unsigned int)M61_WEB_CONFIG_SCHEMA_VERSION);
+}
+
+static int save_m61_web_config(void)
+{
+    uint8_t record[M61_WEB_PERSISTENT_RECORD_SIZE];
+    EfErrCode flash_err;
+
+    if (!storage_ready) return -ENOTSUP;
+    refresh_m61_web_config_from_runtime();
+    if (m61_web_persistent_encode(&web_config,
+                                  record,
+                                  sizeof(record)) < 0) {
+        return -EINVAL;
+    }
+    flash_err = ef_set_env_blob(M61_WEB_CONFIG_KEY, record, sizeof(record));
+    if (flash_err == EF_NO_ERR) flash_err = ef_save_env();
+    if (flash_err != EF_NO_ERR) return -EIO;
+    web_config_loaded = true;
+    return 0;
+}
+
 static int handle_m61_web_command(
     const m61_usb_gamepad_host_report_t *report)
 {
@@ -2165,7 +2295,6 @@ static int handle_m61_web_command(
     const uint8_t *payload;
     size_t payload_len;
     uint8_t report_id;
-    int err;
 
     if (report == NULL || report->len == 0U) return -EINVAL;
     report_id = report->report_id;
@@ -2188,28 +2317,10 @@ static int handle_m61_web_command(
             m61_web_config_decode(&payload[1], payload_len - 1U, &config) < 0) {
             return -EINVAL;
         }
-        /* These fields are present in schema v1 but are not advertised until
-         * their runtime owners are implemented. Reject attempts to change the
-         * release-safe fixed values instead of silently accepting them. */
-        if (!config.speaker_enabled || !config.auto_reconnect_enabled ||
-            !config.status_led_enabled || config.haptics_gain_q8 != 0x0100U) {
-            return -ENOTSUP;
-        }
-        if (config.cpu_profile < M61_DVFS_PROFILE_COUNT) {
-            err = m61_dvfs_set_profile((m61_dvfs_profile_t)config.cpu_profile);
-        } else {
-            err = m61_dvfs_set_custom_frequency(config.manual_cpu_mhz, false);
-        }
-        if (err != 0) return err;
-        err = m61_dvfs_set_governor((m61_dvfs_governor_t)config.cpu_governor);
-        if (err != 0) return err;
-        m61_usb_gamepad_set_audio_mic_enabled(config.microphone_enabled);
-        m61_usb_gamepad_set_speaker_route(
-            (m61_speaker_route_t)config.speaker_route);
-        return 0;
+        return apply_m61_web_config(&config, true);
     }
     if (payload[0] == M61_WEB_COMMAND_SAVE_CONFIG) {
-        return m61_dvfs_save_persistent_config();
+        return save_m61_web_config();
     }
     if (payload[0] == M61_WEB_COMMAND_RECONNECT_USB) {
         return m61_usb_cycle_command();
@@ -2845,6 +2956,14 @@ static void bt_enable_cb(int err)
     /* The controller restores WIFIPLL-320 during initialization. Start DVFS
      * only after that reset; USB startup waits for this callback. */
     m61_start_dvfs();
+    if (web_config_loaded) {
+        int config_err = apply_m61_web_config(&web_config, true);
+
+        if (config_err != 0) {
+            printf("M61 Web config apply failed: %d\r\n", config_err);
+        }
+    }
+    refresh_m61_web_config_from_runtime();
 
     printf("M61 DualSense HIDP probe ready. Use 'ds5 scan'.\r\n");
     status_led_finish_boot();
@@ -4142,8 +4261,10 @@ int main(void)
     if (easyflash_init() == EF_NO_ERR) {
         storage_ready = true;
         load_last_dualsense_addr();
+        load_m61_web_config();
     } else {
         printf("easyflash init failed; saved DualSense address disabled\r\n");
+        load_m61_web_config();
     }
 #endif
 

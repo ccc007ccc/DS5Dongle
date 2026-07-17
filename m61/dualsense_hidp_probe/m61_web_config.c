@@ -3,6 +3,10 @@
 #include <string.h>
 
 static const uint8_t m61_web_magic[4] = {'M', '6', '1', 'C'};
+static const uint8_t m61_web_persistent_magic[4] = {'M', '6', '1', 'W'};
+static m61_web_config_t m61_web_runtime_config;
+static bool m61_web_runtime_initialized;
+static volatile uint32_t m61_web_runtime_sequence;
 
 static void put_u16_le(uint8_t *output, uint16_t value)
 {
@@ -15,13 +19,48 @@ static uint16_t get_u16_le(const uint8_t *input)
     return (uint16_t)input[0] | ((uint16_t)input[1] << 8);
 }
 
+static void put_u32_le(uint8_t *output, uint32_t value)
+{
+    output[0] = (uint8_t)value;
+    output[1] = (uint8_t)(value >> 8);
+    output[2] = (uint8_t)(value >> 16);
+    output[3] = (uint8_t)(value >> 24);
+}
+
+static uint32_t get_u32_le(const uint8_t *input)
+{
+    return (uint32_t)input[0] |
+           ((uint32_t)input[1] << 8) |
+           ((uint32_t)input[2] << 16) |
+           ((uint32_t)input[3] << 24);
+}
+
+static uint32_t crc32_ieee(const uint8_t *data, size_t len)
+{
+    uint32_t crc = UINT32_MAX;
+
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (unsigned int bit = 0; bit < 8U; bit++) {
+            uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
+
+            crc = (crc >> 1) ^ (0xEDB88320U & mask);
+        }
+    }
+    return ~crc;
+}
+
 void m61_web_config_defaults(m61_web_config_t *config)
 {
     if (config == NULL) return;
     memset(config, 0, sizeof(*config));
-    /* F0 exposes only settings whose complete apply/save lifecycle is wired.
-     * F1 will add capability bits together with central persistence. */
-    config->capabilities = M61_WEB_CAP_DVFS |
+    config->capabilities = M61_WEB_CAP_MICROPHONE |
+                           M61_WEB_CAP_SPEAKER_GATE |
+                           M61_WEB_CAP_SPEAKER_ROUTE |
+                           M61_WEB_CAP_AUTO_RECONNECT |
+                           M61_WEB_CAP_STATUS_LED |
+                           M61_WEB_CAP_HAPTICS_GAIN |
+                           M61_WEB_CAP_DVFS |
                            M61_WEB_CAP_TELEMETRY_V1;
     config->speaker_enabled = true;
     config->auto_reconnect_enabled = true;
@@ -147,4 +186,84 @@ int m61_web_telemetry_encode(const m61_web_telemetry_t *telemetry,
     put_u16_le(&output[4], telemetry->current_cpu_mhz);
     put_u16_le(&output[6], telemetry->requested_cpu_mhz);
     return 8;
+}
+
+int m61_web_persistent_encode(const m61_web_config_t *config,
+                              uint8_t *output,
+                              size_t output_size)
+{
+    int encoded;
+    uint32_t crc;
+
+    if (output == NULL || output_size < M61_WEB_PERSISTENT_RECORD_SIZE) {
+        return -1;
+    }
+    memset(output, 0, M61_WEB_PERSISTENT_RECORD_SIZE);
+    memcpy(output, m61_web_persistent_magic, sizeof(m61_web_persistent_magic));
+    output[4] = M61_WEB_PERSISTENT_RECORD_VERSION;
+    output[5] = M61_WEB_CONFIG_BODY_SIZE;
+    encoded = m61_web_config_encode(config,
+                                    &output[6],
+                                    M61_WEB_CONFIG_BODY_SIZE);
+    if (encoded < 0) return encoded;
+    crc = crc32_ieee(output, M61_WEB_PERSISTENT_RECORD_SIZE - 4U);
+    put_u32_le(&output[M61_WEB_PERSISTENT_RECORD_SIZE - 4U], crc);
+    return (int)M61_WEB_PERSISTENT_RECORD_SIZE;
+}
+
+int m61_web_persistent_decode(const uint8_t *input,
+                              size_t input_size,
+                              m61_web_config_t *config)
+{
+    uint32_t expected_crc;
+    uint32_t actual_crc;
+
+    if (input == NULL || config == NULL ||
+        input_size != M61_WEB_PERSISTENT_RECORD_SIZE) {
+        return -1;
+    }
+    if (memcmp(input,
+               m61_web_persistent_magic,
+               sizeof(m61_web_persistent_magic)) != 0) {
+        return -2;
+    }
+    if (input[4] != M61_WEB_PERSISTENT_RECORD_VERSION) return -3;
+    if (input[5] != M61_WEB_CONFIG_BODY_SIZE) return -1;
+    expected_crc = get_u32_le(&input[M61_WEB_PERSISTENT_RECORD_SIZE - 4U]);
+    actual_crc = crc32_ieee(input, M61_WEB_PERSISTENT_RECORD_SIZE - 4U);
+    if (actual_crc != expected_crc) return -5;
+    if (m61_web_config_decode(&input[6], M61_WEB_CONFIG_BODY_SIZE, config) < 0) {
+        return -4;
+    }
+    return (int)M61_WEB_PERSISTENT_RECORD_SIZE;
+}
+
+void m61_web_runtime_set(const m61_web_config_t *config)
+{
+    if (!m61_web_config_valid(config)) return;
+    m61_web_runtime_sequence++;
+    __asm volatile("" : : : "memory");
+    m61_web_runtime_config = *config;
+    m61_web_runtime_initialized = true;
+    __asm volatile("" : : : "memory");
+    m61_web_runtime_sequence++;
+}
+
+void m61_web_runtime_get(m61_web_config_t *config)
+{
+    uint32_t before;
+    uint32_t after;
+
+    if (config == NULL) return;
+    if (!m61_web_runtime_initialized) {
+        m61_web_config_defaults(&m61_web_runtime_config);
+        m61_web_runtime_initialized = true;
+    }
+    do {
+        before = m61_web_runtime_sequence;
+        __asm volatile("" : : : "memory");
+        *config = m61_web_runtime_config;
+        __asm volatile("" : : : "memory");
+        after = m61_web_runtime_sequence;
+    } while ((before & 1U) != 0U || before != after);
 }

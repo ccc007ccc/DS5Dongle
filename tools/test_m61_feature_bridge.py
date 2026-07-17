@@ -74,6 +74,12 @@ def check_source_wiring() -> None:
         "0x81, M61_DS5_USB_FEATURE_MAX_LEN",
         "handle_m61_web_command(&host_report)",
         "feature_id == M61_WEB_COMMAND_REPORT_ID",
+        "M61_WEB_CONFIG_KEY",
+        "load_m61_web_config()",
+        "save_m61_web_config()",
+        "apply_m61_web_config(&config, true)",
+        "m61_usb_gamepad_set_audio_speaker_enabled",
+        "m61_usb_gamepad_set_haptics_gain_q8",
     )
     for snippet in required_gamepad:
         assert snippet in gamepad, f"missing gamepad bridge logic: {snippet}"

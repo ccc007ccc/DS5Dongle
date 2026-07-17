@@ -87,16 +87,18 @@ def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
                 time.sleep(0.08)
 
             output = read_pending(ser, 300)
+            reboot_confirmed = False
             if output:
                 preview = output.decode("utf-8", errors="replace").strip()
                 if preview:
                     print_text_lossy(preview)
+                reboot_confirmed = "rebooting M61 to UART download mode" in preview
     except serial.SerialException as exc:
         print(f"warning: unable to request M61 reboot to ISP at {baud}: {exc}", file=sys.stderr)
         return False
 
     time.sleep(wait_ms / 1000.0)
-    return True
+    return reboot_confirmed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -166,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.reboot_isp:
         reboot_bauds = args.reboot_baud or list(REBOOT_ISP_BAUDS)
         for reboot_baud in reboot_bauds:
-            try_reboot_isp(args.port, reboot_baud, args.reboot_wait_ms)
+            if try_reboot_isp(args.port, reboot_baud, args.reboot_wait_ms):
+                break
 
     cmd = [
         str(FLASH_TOOL),
