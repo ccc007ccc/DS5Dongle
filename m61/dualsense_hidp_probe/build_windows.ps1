@@ -13,6 +13,9 @@ param(
     [ValidateSet(1, 2)]
     [int]$CodecPairDelayMs = 1,
 
+    [ValidateSet(0, 1)]
+    [int]$Crc32NibbleTable = 1,
+
     [switch]$RuntimeProfile,
 
     [ValidateSet(0, 384, 400, 420, 460, 480)]
@@ -137,6 +140,7 @@ $MakeArgs = @(
     "CONFIG_M61_HPM_SAMPLE_SHIFT=$HpmSampleShift",
     "CONFIG_M61_USB_GAMEPAD_O2=$UsbGamepadO2Value",
     "CONFIG_M61_CODEC_PAIR_DELAY_MS=$CodecPairDelayMs",
+    "CONFIG_M61_CRC32_NIBBLE_TABLE=$Crc32NibbleTable",
     "CONFIG_M61_RUNTIME_PROFILE=$RuntimeValue",
     "CONFIG_M61_CPU_OVERCLOCK_MHZ=$CpuOverclockMhz",
     "CONFIG_M61_PIPELINE_PROFILE=$PipelineValue",
@@ -153,6 +157,7 @@ Write-Host "[m61-hidp-win] HPM profile: $HpmValue"
 Write-Host "[m61-hidp-win] HPM sample shift: $HpmSampleShift (about 1/$([Math]::Pow(2, $HpmSampleShift)))"
 Write-Host "[m61-hidp-win] USB gamepad TU O2: $UsbGamepadO2Value"
 Write-Host "[m61-hidp-win] Codec pair delay: $CodecPairDelayMs ms"
+Write-Host "[m61-hidp-win] CRC32 nibble table: $Crc32NibbleTable (Flash-resident)"
 Write-Host "[m61-hidp-win] Runtime profile: $RuntimeValue (diagnostic only)"
 Write-Host "[m61-hidp-win] CPU overclock: $CpuOverclockMhz MHz (0=off)"
 Write-Host "[m61-hidp-win] Pipeline profile: $PipelineValue"

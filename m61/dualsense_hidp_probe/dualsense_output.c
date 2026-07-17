@@ -8,6 +8,10 @@
 #define DS5_OUTPUT_AUDIO_STATE_TAG 0x90
 #define DS5_OUTPUT_HAPTICS_TAG 0x92
 
+#ifndef CONFIG_M61_CRC32_NIBBLE_TABLE
+#define CONFIG_M61_CRC32_NIBBLE_TABLE 1
+#endif
+
 #define DS5_STATE_ENABLE_RUMBLE_EMULATION 0x01
 #define DS5_STATE_USE_RUMBLE_NOT_HAPTICS 0x02
 #define DS5_STATE_ALLOW_RIGHT_TRIGGER_FFB 0x04
@@ -60,14 +64,28 @@ static const uint8_t s_ds5_set_state_default[DS5_OUTPUT_SET_STATE_LEN] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+#if CONFIG_M61_CRC32_NIBBLE_TABLE
+static const uint32_t crc32_nibble_table[16] = {
+    0x00000000U, 0x1DB71064U, 0x3B6E20C8U, 0x26D930ACU,
+    0x76DC4190U, 0x6B6B51F4U, 0x4DB26158U, 0x5005713CU,
+    0xEDB88320U, 0xF00F9344U, 0xD6D6A3E8U, 0xCB61B38CU,
+    0x9B64C2B0U, 0x86D3D2D4U, 0xA00AE278U, 0xBDBDF21CU,
+};
+#endif
+
 static uint32_t crc32_le_update(uint32_t crc, const uint8_t *data, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
         crc ^= data[i];
+#if CONFIG_M61_CRC32_NIBBLE_TABLE
+        crc = (crc >> 4) ^ crc32_nibble_table[crc & 0x0FU];
+        crc = (crc >> 4) ^ crc32_nibble_table[crc & 0x0FU];
+#else
         for (uint8_t bit = 0; bit < 8; bit++) {
             uint32_t mask = 0U - (crc & 1U);
             crc = (crc >> 1) ^ (0xEDB88320U & mask);
         }
+#endif
     }
     return crc;
 }

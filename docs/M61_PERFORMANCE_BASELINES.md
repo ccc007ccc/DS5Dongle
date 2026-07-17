@@ -681,3 +681,47 @@ Release证据：
 相对resample-only release基线约2.59M至2.63M cycles，本候选下降约3.5%至4.0%；Decode
 P95/P99两轮稳定从4.00/4.25 ms降至3.75/4.00 ms，所有硬错误为0，因此晋升为当前
 Opus decode尾延迟与默认SRAM放置profile。
+
+## 24. Flash驻留16项CRC32表（当前BT/全链路尾延迟最优）
+
+DualSense Bluetooth输出报告最长547 B，原实现每字节执行8次逐位CRC循环。新实现使用
+16项（64 B）reflected CRC32 nibble表，每字节两次查表；多组seed、全部单字节值以及
+0/1/74/138/394/543/547 B随机输入已与逐位参考实现逐项验证相等，协议向量测试同时通过。
+
+早期实验将CRC代码和表放入SRAM，虽然BT report build更快，但Encode P95连续三轮回归，
+因此否决。本候选把函数与表都保留在普通Flash，不占用或移动TCM，并提供
+`CONFIG_M61_CRC32_NIBBLE_TABLE`、`-Crc32NibbleTable`和`--crc32-nibble-table`编译期回退。
+
+Pipeline A/B（均基于decode-MDCT最优profile）：
+
+| 指标 | 逐位CRC | Flash nibble CRC |
+| --- | ---: | ---: |
+| BT build平均 | 1.401 ms | 0.689 ms |
+| BT send平均 | 3.621 ms | 2.976 ms |
+| BT total平均 | 5.450 ms | 4.113 ms |
+| BT total max | 36.297 ms | 18.962 ms |
+| pair age平均 | 32.480 ms | 31.105 ms |
+| codec-only CPU/10 ms | 69.38% | 67.83% |
+
+Release证据：
+
+- `artifacts/full-duplex-crc32-nibble-flash-release-r1-20260717_before.log`
+- `artifacts/full-duplex-crc32-nibble-flash-release-r1-20260717.log`
+- `artifacts/full-duplex-crc32-nibble-flash-release-r2-20260717_before.log`
+- `artifacts/full-duplex-crc32-nibble-flash-release-r2-20260717.log`
+- `artifacts/full-duplex-crc32-nibble-flash-release-r3-20260717_before.log`
+- `artifacts/full-duplex-crc32-nibble-flash-release-r3-20260717.log`
+
+| 指标 | 第1轮 | 第2轮 | 第3轮 |
+| --- | ---: | ---: | ---: |
+| Encode平均/P95/P99/max | 3.673/4.500/4.750/5.138 ms | 3.483/4.250/4.750/5.138 ms（累计） | 3.530/4.250/4.750/5.138 ms（累计） |
+| Decode平均/P95/P99/max | 2.735/4.000/4.000/4.530 ms | 2.762/3.750/4.000/4.687 ms | 2.762/3.750/4.000/4.795 ms |
+| codec cycles平均 | 2,566,094 | 2,500,302 | 2,518,108 |
+| codec-only CPU/10 ms | 64.15% | 62.51% | 62.95% |
+| mic underflow（区间） | 11 | 0 | 0 |
+| mic packet shortfall | 0 | 0 | 0 |
+| qdrop/deadline/stale/BT/codec error | 0/0/0/0/0 | 0/0/0/0/0 | 0/0/0/0/0 |
+
+后两轮Encode P95稳定降至4.25 ms，Decode P95/P99保持3.75/4.00 ms，BT total平均与最大
+延迟显著下降，且连续三轮没有硬错误；因此Flash nibble CRC晋升为默认实现与当前BT/全链路
+尾延迟最优。
