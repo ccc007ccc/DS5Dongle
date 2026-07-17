@@ -586,6 +586,16 @@ def test_c_source_contract() -> None:
         "audio_mic_usb_nonzero_packets",
         "audio_speaker_encode_us_max",
     ]
+
+    reboot_isp_snippets = [
+        "ISP reboot: disconnect controller result=%d",
+        "ISP reboot: controller link released=%u",
+        "bt_conn_disconnect(default_conn",
+        "pdMS_TO_TICKS(1500U)",
+    ]
+    for snippet in reboot_isp_snippets:
+        assert snippet in m61_main_source, f"missing safe ISP reboot snippet: {snippet}"
+
     for snippet in m61_audio_snippets:
         assert snippet in m61_usb_source, f"missing M61 USB audio snippet: {snippet}"
     assert "m61_audio_epoch_fallback_due_pair" not in m61_audio_epoch_source

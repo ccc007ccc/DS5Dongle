@@ -21,6 +21,10 @@ static m61_web_config_t fixture(void)
     config.cpu_profile = 2U;
     config.manual_cpu_mhz = 400U;
     config.haptics_gain_q8 = 0x0180U;
+    config.idle_timeout_minutes = 30U;
+    config.power_off_on_usb_suspend = true;
+    config.left_stick_deadzone_percent = 8U;
+    config.right_stick_deadzone_percent = 12U;
     return config;
 }
 
@@ -30,6 +34,11 @@ int main(void)
         0x4d, 0x36, 0x31, 0x57, 0x01, 0x10, 0x4d, 0x36, 0x31, 0x43,
         0x01, 0x10, 0xff, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x40, 0x01,
         0x00, 0x01, 0xb1, 0x14, 0x2e, 0x1a,
+    };
+    static const uint8_t persistent_v2[28] = {
+        0x4d, 0x36, 0x31, 0x57, 0x02, 0x12, 0x4d, 0x36, 0x31, 0x43,
+        0x02, 0x12, 0xff, 0x07, 0x0e, 0x00, 0x00, 0x00, 0x40, 0x01,
+        0x00, 0x01, 0x00, 0x00, 0x7d, 0x8d, 0xc6, 0x48,
     };
     m61_web_config_t input = fixture();
     m61_web_config_t decoded;
@@ -47,6 +56,8 @@ int main(void)
     assert(body[8] == 0x0EU);
     assert(body[12] == 0x90U && body[13] == 0x01U);
     assert(body[14] == 0x80U && body[15] == 0x01U);
+    assert(body[16] == 30U && body[17] == 1U);
+    assert(body[18] == 8U && body[19] == 12U);
     assert(m61_web_config_decode(body, sizeof(body), &decoded) ==
            M61_WEB_CONFIG_BODY_SIZE);
     assert(memcmp(&input, &decoded, sizeof(input)) == 0);
@@ -126,6 +137,17 @@ int main(void)
     assert(decoded.manual_cpu_mhz == 320U);
     assert(decoded.idle_timeout_minutes == 0U);
     assert(decoded.power_off_on_usb_suspend == false);
+    assert(decoded.left_stick_deadzone_percent == 0U);
+    assert(decoded.right_stick_deadzone_percent == 0U);
+
+    memset(&decoded, 0, sizeof(decoded));
+    assert(m61_web_persistent_decode(persistent_v2,
+                                     sizeof(persistent_v2),
+                                     &decoded) == (int)sizeof(persistent_v2));
+    assert(decoded.idle_timeout_minutes == 0U);
+    assert(decoded.power_off_on_usb_suspend == false);
+    assert(decoded.left_stick_deadzone_percent == 0U);
+    assert(decoded.right_stick_deadzone_percent == 0U);
 
     assert(m61_web_command_encode(M61_WEB_COMMAND_POWER_OFF_CONTROLLER,
                                   NULL,

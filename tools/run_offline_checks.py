@@ -67,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
         ("M61 realtime memory gate self-test", [sys.executable, "tools/test_m61_realtime_memory.py"]),
         ("M61 realtime scheduler host tests", [sys.executable, "tools/test_m61_realtime_scheduler.py"]),
         ("M61 Web config protocol host tests", [sys.executable, "tools/test_m61_web_config.py"]),
+        ("M61 stick deadzone host tests", [sys.executable, "tools/test_m61_stick_deadzone.py"]),
+        ("M61 idle activity host tests", [sys.executable, "tools/test_dualsense_activity.py"]),
     ]
 
     if not args.skip_pycompile:

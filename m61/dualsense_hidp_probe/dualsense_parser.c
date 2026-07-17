@@ -194,8 +194,11 @@ bool dualsense_state_equal(const dualsense_state_t *lhs,
 
 bool dualsense_user_input_active(const dualsense_state_t *state)
 {
-    const uint8_t stick_min = 108U;
-    const uint8_t stick_max = 148U;
+    /* Idle detection deliberately ignores the inner 25% of stick travel so
+     * ordinary center drift cannot keep the controller awake.  This does not
+     * alter the input report sent to the host. */
+    const uint8_t stick_min = 96U;
+    const uint8_t stick_max = 160U;
 
     if (state == NULL) return false;
     return state->left_x < stick_min || state->left_x > stick_max ||

@@ -33,8 +33,9 @@ by source/offline tests but still needs broader hardware regression, and
 | WebHID | Versioned `0xF6`–`0xF9` management protocol | Verified | Capabilities, CRC-backed configuration, identity and telemetry |
 | WebHID | Pair, disconnect, forget and controller power-off | Verified | Management result and sequence are reported in telemetry |
 | Persistence | Unified M61 runtime configuration | Verified | Versioned EasyFlash record with CRC32 and v1 migration |
-| Power | Configurable controller idle shutdown | Verified | Activity excludes IMU noise; disabled by default |
+| Power | Configurable controller idle shutdown | Verified | Fixed 25% stick activity threshold excludes drift and IMU noise; disabled by default |
 | Power | Controller shutdown after host suspend | Implemented | Requires final PC sleep/resume qualification |
+| Input | Independent scaled radial stick deadzones | Implemented | Left/right 0–30%; schema v3 and Flash persistence |
 | Recovery | UART ISP software reboot and flashing tool | Verified | Manual BOOT/RESET remains the recovery path |
 | Board UI | RGB connection status LED | Verified | Green idle, blue connecting/connected policy |
 

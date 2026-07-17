@@ -775,6 +775,22 @@ static int parse_u8_hex(const char *text, uint8_t *out)
 static void m61_reboot_to_uart_download(void)
 {
 #if defined(BL616) || defined(BL618DG)
+    if (default_conn != NULL) {
+        int err = bt_conn_disconnect(default_conn,
+                                     BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(1500U);
+
+        printf("ISP reboot: disconnect controller result=%d\r\n", err);
+        while (default_conn != NULL &&
+               (int32_t)(xTaskGetTickCount() - deadline) < 0) {
+            vTaskDelay(pdMS_TO_TICKS(20U));
+        }
+        printf("ISP reboot: controller link released=%u\r\n",
+               default_conn == NULL ? 1U : 0U);
+        /* Let pending L2CAP/HCI disconnect work leave the controller stack
+         * before the warm reset enters BootROM. */
+        vTaskDelay(pdMS_TO_TICKS(250U));
+    }
     printf("rebooting M61 to UART download mode\r\n");
     vTaskDelay(pdMS_TO_TICKS(50));
     HBN_Set_User_Boot_Config(1);
@@ -2263,6 +2279,8 @@ static int apply_m61_web_config(const m61_web_config_t *requested,
     m61_usb_gamepad_set_speaker_route((m61_speaker_route_t)next.speaker_route);
     err = m61_usb_gamepad_set_haptics_gain_q8(next.haptics_gain_q8);
     if (err != 0) return -EINVAL;
+    m61_usb_gamepad_set_stick_deadzones(next.left_stick_deadzone_percent,
+                                        next.right_stick_deadzone_percent);
     auto_start_enabled = next.auto_reconnect_enabled;
     status_led_set_runtime_enabled(next.status_led_enabled);
     web_config = next;
@@ -2287,7 +2305,7 @@ static void load_m61_web_config(void)
                                record,
                                sizeof(record),
                                &saved_len);
-    if ((read_len != 26U && read_len != sizeof(record)) || read_len != saved_len ||
+    if (read_len == 0U || read_len > sizeof(record) || read_len != saved_len ||
         m61_web_persistent_decode(record, read_len, &web_config) < 0) {
         printf("M61 Web config: no valid saved record; using release defaults\r\n");
         return;

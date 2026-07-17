@@ -3,6 +3,7 @@
 #include "m61_dvfs.h"
 #include "m61_perf_profile.h"
 #include "m61_web_config.h"
+#include "m61_stick_deadzone.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -421,6 +422,8 @@ static volatile bool audio_mic_runtime_enabled =
     CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ? true : false;
 static volatile bool audio_speaker_runtime_enabled = true;
 static volatile uint16_t haptics_gain_q8 = HAPTICS_GAIN_Q8;
+static volatile uint8_t left_stick_deadzone_percent;
+static volatile uint8_t right_stick_deadzone_percent;
 static volatile m61_speaker_route_t speaker_route = M61_SPEAKER_ROUTE_AUTO;
 static volatile bool speaker_headphones_connected;
 static volatile bool web_bluetooth_connected;
@@ -2326,6 +2329,10 @@ static void make_payload_from_state(const dualsense_state_t *state, uint8_t *pay
     payload[1] = state->left_y;
     payload[2] = state->right_x;
     payload[3] = state->right_y;
+    m61_stick_deadzone_apply(&payload[0], &payload[1],
+                             left_stick_deadzone_percent);
+    m61_stick_deadzone_apply(&payload[2], &payload[3],
+                             right_stick_deadzone_percent);
     payload[4] = state->l2;
     payload[5] = state->r2;
     payload[7] = (state->dpad <= 8U) ? (state->dpad & 0x0F) : 0x08;
@@ -2788,6 +2795,13 @@ int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8)
     if (gain_q8 < 0x0100U || gain_q8 > 0x0200U) return -1;
     haptics_gain_q8 = gain_q8;
     return 0;
+}
+
+void m61_usb_gamepad_set_stick_deadzones(uint8_t left_percent,
+                                         uint8_t right_percent)
+{
+    left_stick_deadzone_percent = left_percent <= 30U ? left_percent : 30U;
+    right_stick_deadzone_percent = right_percent <= 30U ? right_percent : 30U;
 }
 
 void m61_usb_gamepad_set_bluetooth_connected(bool connected)
@@ -3506,6 +3520,12 @@ int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8)
 {
     (void)gain_q8;
     return -1;
+}
+void m61_usb_gamepad_set_stick_deadzones(uint8_t left_percent,
+                                         uint8_t right_percent)
+{
+    (void)left_percent;
+    (void)right_percent;
 }
 void m61_usb_gamepad_set_bluetooth_connected(bool connected) { (void)connected; }
 void m61_usb_gamepad_set_web_management_status(

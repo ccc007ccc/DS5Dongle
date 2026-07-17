@@ -71,6 +71,8 @@ bool m61_usb_gamepad_audio_speaker_enabled(void);
 void m61_usb_gamepad_set_audio_speaker_enabled(bool enabled);
 uint16_t m61_usb_gamepad_haptics_gain_q8(void);
 int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8);
+void m61_usb_gamepad_set_stick_deadzones(uint8_t left_percent,
+                                         uint8_t right_percent);
 void m61_usb_gamepad_set_bluetooth_connected(bool connected);
 void m61_usb_gamepad_set_web_management_status(
     const m61_web_management_status_t *status);
