@@ -4,6 +4,10 @@
 
 static const uint8_t m61_web_magic[4] = {'M', '6', '1', 'C'};
 static const uint8_t m61_web_persistent_magic[4] = {'M', '6', '1', 'W'};
+#define M61_WEB_CONFIG_SCHEMA_V1 1U
+#define M61_WEB_CONFIG_BODY_SIZE_V1 16U
+#define M61_WEB_PERSISTENT_RECORD_V1 1U
+#define M61_WEB_PERSISTENT_RECORD_SIZE_V1 26U
 static m61_web_config_t m61_web_runtime_config;
 static bool m61_web_runtime_initialized;
 static volatile uint32_t m61_web_runtime_sequence;
@@ -61,7 +65,10 @@ void m61_web_config_defaults(m61_web_config_t *config)
                            M61_WEB_CAP_STATUS_LED |
                            M61_WEB_CAP_HAPTICS_GAIN |
                            M61_WEB_CAP_DVFS |
-                           M61_WEB_CAP_TELEMETRY_V1;
+                           M61_WEB_CAP_TELEMETRY_V1 |
+                           M61_WEB_CAP_IDLE_POWEROFF |
+                           M61_WEB_CAP_CONTROLLER_POWEROFF |
+                           M61_WEB_CAP_SUSPEND_POWEROFF;
     config->speaker_enabled = true;
     config->auto_reconnect_enabled = true;
     config->status_led_enabled = true;
@@ -82,6 +89,7 @@ bool m61_web_config_valid(const m61_web_config_t *config)
         config->haptics_gain_q8 > 0x0200U) {
         return false;
     }
+    if (config->idle_timeout_minutes > 60U) return false;
     return true;
 }
 
@@ -110,6 +118,8 @@ int m61_web_config_encode(const m61_web_config_t *config,
     output[11] = config->cpu_profile;
     put_u16_le(&output[12], config->manual_cpu_mhz);
     put_u16_le(&output[14], config->haptics_gain_q8);
+    output[16] = config->idle_timeout_minutes;
+    if (config->power_off_on_usb_suspend) output[17] = 0x01U;
     return M61_WEB_CONFIG_BODY_SIZE;
 }
 
@@ -119,13 +129,20 @@ int m61_web_config_decode(const uint8_t *input,
 {
     uint8_t flags;
 
-    if (input == NULL || config == NULL ||
-        input_size < M61_WEB_CONFIG_BODY_SIZE) {
+    uint8_t version;
+    uint8_t body_size;
+
+    if (input == NULL || config == NULL || input_size < M61_WEB_CONFIG_BODY_SIZE_V1) {
         return -1;
     }
     if (memcmp(input, m61_web_magic, sizeof(m61_web_magic)) != 0) return -2;
-    if (input[4] != M61_WEB_CONFIG_SCHEMA_VERSION) return -3;
-    if (input[5] != M61_WEB_CONFIG_BODY_SIZE) return -1;
+    version = input[4];
+    body_size = input[5];
+    if (version != M61_WEB_CONFIG_SCHEMA_V1 &&
+        version != M61_WEB_CONFIG_SCHEMA_VERSION) return -3;
+    if ((version == M61_WEB_CONFIG_SCHEMA_V1 && body_size != M61_WEB_CONFIG_BODY_SIZE_V1) ||
+        (version == M61_WEB_CONFIG_SCHEMA_VERSION && body_size != M61_WEB_CONFIG_BODY_SIZE) ||
+        input_size < body_size) return -1;
     memset(config, 0, sizeof(*config));
     config->capabilities = get_u16_le(&input[6]);
     flags = input[8];
@@ -138,7 +155,11 @@ int m61_web_config_decode(const uint8_t *input,
     config->cpu_profile = input[11];
     config->manual_cpu_mhz = get_u16_le(&input[12]);
     config->haptics_gain_q8 = get_u16_le(&input[14]);
-    return m61_web_config_valid(config) ? (int)M61_WEB_CONFIG_BODY_SIZE : -4;
+    if (version >= M61_WEB_CONFIG_SCHEMA_VERSION) {
+        config->idle_timeout_minutes = input[16];
+        config->power_off_on_usb_suspend = (input[17] & 0x01U) != 0U;
+    }
+    return m61_web_config_valid(config) ? (int)body_size : -4;
 }
 
 int m61_web_command_encode(uint8_t command,
@@ -158,7 +179,8 @@ int m61_web_command_encode(uint8_t command,
         return encoded < 0 ? encoded : (int)M61_WEB_FEATURE_PAYLOAD_SIZE;
     }
     if (command != M61_WEB_COMMAND_SAVE_CONFIG &&
-        command != M61_WEB_COMMAND_RECONNECT_USB) {
+        command != M61_WEB_COMMAND_RECONNECT_USB &&
+        command != M61_WEB_COMMAND_POWER_OFF_CONTROLLER) {
         return -4;
     }
     if (config != NULL) return -4;
@@ -218,8 +240,13 @@ int m61_web_persistent_decode(const uint8_t *input,
     uint32_t expected_crc;
     uint32_t actual_crc;
 
+    uint8_t record_version;
+    uint8_t body_size;
+    size_t expected_size;
+
     if (input == NULL || config == NULL ||
-        input_size != M61_WEB_PERSISTENT_RECORD_SIZE) {
+        (input_size != M61_WEB_PERSISTENT_RECORD_SIZE &&
+         input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V1)) {
         return -1;
     }
     if (memcmp(input,
@@ -227,15 +254,25 @@ int m61_web_persistent_decode(const uint8_t *input,
                sizeof(m61_web_persistent_magic)) != 0) {
         return -2;
     }
-    if (input[4] != M61_WEB_PERSISTENT_RECORD_VERSION) return -3;
-    if (input[5] != M61_WEB_CONFIG_BODY_SIZE) return -1;
-    expected_crc = get_u32_le(&input[M61_WEB_PERSISTENT_RECORD_SIZE - 4U]);
-    actual_crc = crc32_ieee(input, M61_WEB_PERSISTENT_RECORD_SIZE - 4U);
+    record_version = input[4];
+    body_size = input[5];
+    if (record_version == M61_WEB_PERSISTENT_RECORD_V1 &&
+        body_size == M61_WEB_CONFIG_BODY_SIZE_V1) {
+        expected_size = M61_WEB_PERSISTENT_RECORD_SIZE_V1;
+    } else if (record_version == M61_WEB_PERSISTENT_RECORD_VERSION &&
+               body_size == M61_WEB_CONFIG_BODY_SIZE) {
+        expected_size = M61_WEB_PERSISTENT_RECORD_SIZE;
+    } else {
+        return -3;
+    }
+    if (input_size != expected_size) return -1;
+    expected_crc = get_u32_le(&input[expected_size - 4U]);
+    actual_crc = crc32_ieee(input, expected_size - 4U);
     if (actual_crc != expected_crc) return -5;
-    if (m61_web_config_decode(&input[6], M61_WEB_CONFIG_BODY_SIZE, config) < 0) {
+    if (m61_web_config_decode(&input[6], body_size, config) < 0) {
         return -4;
     }
-    return (int)M61_WEB_PERSISTENT_RECORD_SIZE;
+    return (int)expected_size;
 }
 
 void m61_web_runtime_set(const m61_web_config_t *config)

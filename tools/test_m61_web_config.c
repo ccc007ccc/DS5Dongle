@@ -26,6 +26,11 @@ static m61_web_config_t fixture(void)
 
 int main(void)
 {
+    static const uint8_t persistent_v1[26] = {
+        0x4d, 0x36, 0x31, 0x57, 0x01, 0x10, 0x4d, 0x36, 0x31, 0x43,
+        0x01, 0x10, 0xff, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x40, 0x01,
+        0x00, 0x01, 0xb1, 0x14, 0x2e, 0x1a,
+    };
     m61_web_config_t input = fixture();
     m61_web_config_t decoded;
     m61_web_telemetry_t telemetry = {0};
@@ -87,6 +92,21 @@ int main(void)
     assert(m61_web_persistent_decode(persistent,
                                      sizeof(persistent),
                                      &decoded) == -5);
+
+    memset(&decoded, 0, sizeof(decoded));
+    assert(m61_web_persistent_decode(persistent_v1,
+                                     sizeof(persistent_v1),
+                                     &decoded) == (int)sizeof(persistent_v1));
+    assert(decoded.microphone_enabled == false);
+    assert(decoded.manual_cpu_mhz == 320U);
+    assert(decoded.idle_timeout_minutes == 0U);
+    assert(decoded.power_off_on_usb_suspend == false);
+
+    assert(m61_web_command_encode(M61_WEB_COMMAND_POWER_OFF_CONTROLLER,
+                                  NULL,
+                                  command,
+                                  sizeof(command)) ==
+           M61_WEB_FEATURE_PAYLOAD_SIZE);
 
     m61_web_runtime_set(&input);
     memset(&decoded, 0, sizeof(decoded));

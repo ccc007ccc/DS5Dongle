@@ -54,6 +54,7 @@ void m61_usb_gamepad_set_headphones_connected(bool connected);
 bool m61_usb_gamepad_headphones_connected(void);
 bool m61_usb_gamepad_audio_in_active(void);
 bool m61_usb_gamepad_audio_speaker_active(void);
+bool m61_usb_gamepad_usb_suspended(void);
 bool m61_usb_gamepad_audio_speaker_enabled(void);
 void m61_usb_gamepad_set_audio_speaker_enabled(bool enabled);
 uint16_t m61_usb_gamepad_haptics_gain_q8(void);

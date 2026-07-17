@@ -300,6 +300,9 @@ static bool storage_ready;
 #define M61_WEB_CONFIG_KEY "m61_web_config_v1"
 static m61_web_config_t web_config;
 static bool web_config_loaded;
+static TickType_t controller_last_activity_tick;
+static TickType_t usb_suspend_started_tick;
+static bool controller_poweroff_requested;
 static bool br_discovery_active;
 static bool br_discovery_found_dualsense;
 static bool pairing_mode_active;
@@ -1382,6 +1385,9 @@ static void hidp_l2cap_connected(struct bt_l2cap_chan *chan)
         pairing_mode_active = false;
         br_set_scan_mode(false, false, "hidp-ready");
         auto_next_bringup_tick = xTaskGetTickCount();
+        controller_last_activity_tick = xTaskGetTickCount();
+        controller_poweroff_requested = false;
+        usb_suspend_started_tick = 0;
     }
 }
 
@@ -1431,6 +1437,9 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
         bool first_full_report = state.is_full_report && !full_report_seen;
 
         hidp_parsed_reports++;
+        if (dualsense_user_input_active(&state)) {
+            controller_last_activity_tick = xTaskGetTickCount();
+        }
         if (state.is_full_report) {
             hidp_full_reports++;
         }
@@ -1849,6 +1858,15 @@ static int hidp_set_feature_from_usb(uint8_t report_id, const uint8_t *data, siz
                                  K_NO_WAIT);
 }
 
+static int hidp_power_off_controller(void)
+{
+    uint8_t payload[47] = { 0 };
+
+    if (!hid_control.connected) return -ENOTCONN;
+    payload[0] = 0x02U;
+    return hidp_set_feature_from_usb(0x08U, payload, sizeof(payload));
+}
+
 static int hidp_send_usb_output_report(const uint8_t *data, size_t len, bool includes_report_id)
 {
     struct net_buf *buf;
@@ -2214,10 +2232,12 @@ static int apply_m61_web_config(const m61_web_config_t *requested,
 {
     m61_web_config_t next;
     m61_web_config_t defaults;
+    bool reset_idle_timer;
     int err;
 
     if (requested == NULL || !m61_web_config_valid(requested)) return -EINVAL;
     next = *requested;
+    reset_idle_timer = next.idle_timeout_minutes != web_config.idle_timeout_minutes;
     m61_web_config_defaults(&defaults);
     next.capabilities = defaults.capabilities;
 #if !CONFIG_M61_STATUS_LED_ENABLE
@@ -2241,6 +2261,10 @@ static int apply_m61_web_config(const m61_web_config_t *requested,
     auto_start_enabled = next.auto_reconnect_enabled;
     status_led_set_runtime_enabled(next.status_led_enabled);
     web_config = next;
+    if (reset_idle_timer) {
+        controller_last_activity_tick = xTaskGetTickCount();
+        controller_poweroff_requested = false;
+    }
     m61_web_runtime_set(&web_config);
     return 0;
 }
@@ -2258,8 +2282,8 @@ static void load_m61_web_config(void)
                                record,
                                sizeof(record),
                                &saved_len);
-    if (read_len != sizeof(record) || saved_len != sizeof(record) ||
-        m61_web_persistent_decode(record, sizeof(record), &web_config) < 0) {
+    if ((read_len != 26U && read_len != sizeof(record)) || read_len != saved_len ||
+        m61_web_persistent_decode(record, read_len, &web_config) < 0) {
         printf("M61 Web config: no valid saved record; using release defaults\r\n");
         return;
     }
@@ -2324,6 +2348,12 @@ static int handle_m61_web_command(
     }
     if (payload[0] == M61_WEB_COMMAND_RECONNECT_USB) {
         return m61_usb_cycle_command();
+    }
+    if (payload[0] == M61_WEB_COMMAND_POWER_OFF_CONTROLLER) {
+        int err = hidp_power_off_controller();
+
+        if (err == 0) controller_poweroff_requested = true;
+        return err;
     }
     return -EINVAL;
 }
@@ -3012,6 +3042,37 @@ static void auto_connect_task(void *pvParameters)
 
         pair_button_poll();
         process_deferred_disconnect_cleanup(now);
+
+        if (m61_usb_gamepad_usb_suspended()) {
+            if (usb_suspend_started_tick == 0U) usb_suspend_started_tick = now;
+        } else {
+            usb_suspend_started_tick = 0U;
+        }
+
+        if (default_conn && hid_control.connected && hid_interrupt.connected &&
+            !controller_poweroff_requested) {
+            m61_web_config_t power_config;
+            m61_web_runtime_get(&power_config);
+            bool idle_expired =
+                power_config.idle_timeout_minutes != 0U &&
+                tick_due(now,
+                         controller_last_activity_tick +
+                             pdMS_TO_TICKS((uint32_t)power_config.idle_timeout_minutes *
+                                           60U * 1000U));
+            bool suspend_expired =
+                power_config.power_off_on_usb_suspend &&
+                usb_suspend_started_tick != 0U &&
+                tick_due(now, usb_suspend_started_tick + pdMS_TO_TICKS(3000U));
+
+            if (idle_expired || suspend_expired) {
+                int err = hidp_power_off_controller();
+
+                printf("power policy: controller off reason=%s result=%d\r\n",
+                       idle_expired ? "idle" : "usb-suspend",
+                       err);
+                if (err == 0) controller_poweroff_requested = true;
+            }
+        }
 
         if (!bt_ready) {
             vTaskDelay(pdMS_TO_TICKS(DS5_AUTO_TASK_PERIOD_MS));

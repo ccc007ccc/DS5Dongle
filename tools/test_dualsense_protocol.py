@@ -505,6 +505,8 @@ def test_c_source_contract() -> None:
         "state->gyro_y = read_i16_le(p + 19);",
         "state->accel_x = read_i16_le(p + 21);",
         "state->battery_percent = p[52] & 0x0F;",
+        "bool dualsense_user_input_active",
+        "state->dpad != 8U",
     ]
     for snippet in required_snippets:
         assert snippet in source, f"missing C parser snippet: {snippet}"
@@ -613,6 +615,8 @@ def test_c_source_contract() -> None:
         "status_led_finish_boot();",
         "if (auto_start_enabled && !pairing_mode_active",
         "return STATUS_LED_OFF;",
+        "hidp_power_off_controller()",
+        "power policy: controller off reason=%s",
     ]
     for snippet in m61_bridge_snippets:
         assert snippet in m61_main_source, f"missing M61 bridge snippet: {snippet}"

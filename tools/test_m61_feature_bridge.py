@@ -80,6 +80,8 @@ def check_source_wiring() -> None:
         "apply_m61_web_config(&config, true)",
         "m61_usb_gamepad_set_audio_speaker_enabled",
         "m61_usb_gamepad_set_haptics_gain_q8",
+        "M61_WEB_COMMAND_POWER_OFF_CONTROLLER",
+        "hidp_power_off_controller()",
     )
     for snippet in required_gamepad:
         assert snippet in gamepad, f"missing gamepad bridge logic: {snippet}"

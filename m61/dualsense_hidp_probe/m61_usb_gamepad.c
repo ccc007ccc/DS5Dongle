@@ -2758,6 +2758,11 @@ bool m61_usb_gamepad_audio_speaker_active(void)
            !audio_speaker_mute;
 }
 
+bool m61_usb_gamepad_usb_suspended(void)
+{
+    return usb_suspended;
+}
+
 bool m61_usb_gamepad_audio_speaker_enabled(void)
 {
     return audio_speaker_runtime_enabled;
@@ -3442,6 +3447,7 @@ void m61_usb_gamepad_set_headphones_connected(bool connected) { (void)connected;
 bool m61_usb_gamepad_headphones_connected(void) { return false; }
 bool m61_usb_gamepad_audio_in_active(void) { return false; }
 bool m61_usb_gamepad_audio_speaker_active(void) { return false; }
+bool m61_usb_gamepad_usb_suspended(void) { return false; }
 bool m61_usb_gamepad_audio_speaker_enabled(void) { return false; }
 void m61_usb_gamepad_set_audio_speaker_enabled(bool enabled) { (void)enabled; }
 uint16_t m61_usb_gamepad_haptics_gain_q8(void) { return HAPTICS_GAIN_Q8; }

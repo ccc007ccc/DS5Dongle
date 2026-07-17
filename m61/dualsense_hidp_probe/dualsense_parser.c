@@ -192,6 +192,20 @@ bool dualsense_state_equal(const dualsense_state_t *lhs,
     return memcmp(lhs, rhs, sizeof(*lhs)) == 0;
 }
 
+bool dualsense_user_input_active(const dualsense_state_t *state)
+{
+    const uint8_t stick_min = 108U;
+    const uint8_t stick_max = 148U;
+
+    if (state == NULL) return false;
+    return state->left_x < stick_min || state->left_x > stick_max ||
+           state->left_y < stick_min || state->left_y > stick_max ||
+           state->right_x < stick_min || state->right_x > stick_max ||
+           state->right_y < stick_min || state->right_y > stick_max ||
+           state->l2 > 8U || state->r2 > 8U || state->dpad != 8U ||
+           state->buttons != 0U;
+}
+
 const char *dualsense_dpad_name(uint8_t dpad)
 {
     switch (dpad) {

@@ -79,6 +79,7 @@ bool dualsense_parse_report(const uint8_t *data, size_t len,
                             dualsense_parse_result_t *result);
 bool dualsense_state_equal(const dualsense_state_t *lhs,
                            const dualsense_state_t *rhs);
+bool dualsense_user_input_active(const dualsense_state_t *state);
 const char *dualsense_dpad_name(uint8_t dpad);
 void dualsense_format_buttons(uint32_t buttons, char *out, size_t out_len);
 void dualsense_format_state(const dualsense_state_t *state,

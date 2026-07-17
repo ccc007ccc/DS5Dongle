@@ -115,7 +115,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--reboot-isp",
         action="store_true",
-        help="ask a running M61 helper/default shell to reboot into UART download mode before flashing",
+        help=(
+            "ask a running M61 shell to warm-reboot into UART download mode; "
+            "some BL616 boards then fail BootROM eFuse reads and require physical BOOT+RESET"
+        ),
     )
     parser.add_argument(
         "--reboot-baud",
@@ -166,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  3. release BOOT")
 
     if args.reboot_isp:
+        print("warning: BL616 warm ISP reboot may require a physical BOOT+RESET before flashing")
         reboot_bauds = args.reboot_baud or list(REBOOT_ISP_BAUDS)
         for reboot_baud in reboot_bauds:
             if try_reboot_isp(args.port, reboot_baud, args.reboot_wait_ms):

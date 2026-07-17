@@ -10,16 +10,17 @@
 #define M61_WEB_FIRMWARE_REPORT_ID 0xF8U
 #define M61_WEB_TELEMETRY_REPORT_ID 0xF9U
 #define M61_WEB_FEATURE_PAYLOAD_SIZE 63U
-#define M61_WEB_CONFIG_SCHEMA_VERSION 1U
-#define M61_WEB_CONFIG_BODY_SIZE 16U
+#define M61_WEB_CONFIG_SCHEMA_VERSION 2U
+#define M61_WEB_CONFIG_BODY_SIZE 18U
 #define M61_WEB_TELEMETRY_VERSION 1U
-#define M61_WEB_PERSISTENT_RECORD_VERSION 1U
-#define M61_WEB_PERSISTENT_RECORD_SIZE 26U
+#define M61_WEB_PERSISTENT_RECORD_VERSION 2U
+#define M61_WEB_PERSISTENT_RECORD_SIZE 28U
 
 enum {
     M61_WEB_COMMAND_APPLY_CONFIG = 0x01U,
     M61_WEB_COMMAND_SAVE_CONFIG = 0x02U,
     M61_WEB_COMMAND_RECONNECT_USB = 0x03U,
+    M61_WEB_COMMAND_POWER_OFF_CONTROLLER = 0x04U,
 };
 
 enum {
@@ -31,6 +32,9 @@ enum {
     M61_WEB_CAP_HAPTICS_GAIN = 1U << 5,
     M61_WEB_CAP_DVFS = 1U << 6,
     M61_WEB_CAP_TELEMETRY_V1 = 1U << 7,
+    M61_WEB_CAP_IDLE_POWEROFF = 1U << 8,
+    M61_WEB_CAP_CONTROLLER_POWEROFF = 1U << 9,
+    M61_WEB_CAP_SUSPEND_POWEROFF = 1U << 10,
 };
 
 typedef struct {
@@ -44,6 +48,8 @@ typedef struct {
     uint8_t cpu_profile;
     uint16_t manual_cpu_mhz;
     uint16_t haptics_gain_q8;
+    uint8_t idle_timeout_minutes;
+    bool power_off_on_usb_suspend;
 } m61_web_config_t;
 
 typedef struct {
