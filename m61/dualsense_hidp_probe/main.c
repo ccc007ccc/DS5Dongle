@@ -14,6 +14,7 @@
 #include "m61_perf_profile.h"
 #include "m61_runtime_profile.h"
 #include "m61_usb_gamepad.h"
+#include "m61_web_config.h"
 
 #ifndef CONFIG_M61_MEMORY_BENCH
 #define CONFIG_M61_MEMORY_BENCH 0
@@ -2157,6 +2158,62 @@ static void __attribute__((unused)) handle_usb_host_report(
     }
 }
 
+static int handle_m61_web_command(
+    const m61_usb_gamepad_host_report_t *report)
+{
+    m61_web_config_t config;
+    const uint8_t *payload;
+    size_t payload_len;
+    uint8_t report_id;
+    int err;
+
+    if (report == NULL || report->len == 0U) return -EINVAL;
+    report_id = report->report_id;
+    payload = report->data;
+    payload_len = report->len;
+    if (report_id == 0U) {
+        report_id = payload[0];
+        payload++;
+        payload_len--;
+    }
+    if (report_id != M61_WEB_COMMAND_REPORT_ID || payload_len == 0U) {
+        return -EINVAL;
+    }
+
+    if (payload[0] == M61_WEB_COMMAND_APPLY_CONFIG) {
+        if (payload_len < 1U + M61_WEB_CONFIG_BODY_SIZE ||
+            m61_web_config_decode(&payload[1], payload_len - 1U, &config) < 0) {
+            return -EINVAL;
+        }
+        /* These fields are present in schema v1 but are not advertised until
+         * their runtime owners are implemented. Reject attempts to change the
+         * release-safe fixed values instead of silently accepting them. */
+        if (!config.speaker_enabled || !config.auto_reconnect_enabled ||
+            !config.status_led_enabled || config.haptics_gain_q8 != 0x0100U) {
+            return -ENOTSUP;
+        }
+        if (config.cpu_profile < M61_DVFS_PROFILE_COUNT) {
+            err = m61_dvfs_set_profile((m61_dvfs_profile_t)config.cpu_profile);
+        } else {
+            err = m61_dvfs_set_custom_frequency(config.manual_cpu_mhz, false);
+        }
+        if (err != 0) return err;
+        err = m61_dvfs_set_governor((m61_dvfs_governor_t)config.cpu_governor);
+        if (err != 0) return err;
+        m61_usb_gamepad_set_audio_mic_enabled(config.microphone_enabled);
+        m61_usb_gamepad_set_speaker_route(
+            (m61_speaker_route_t)config.speaker_route);
+        return 0;
+    }
+    if (payload[0] == M61_WEB_COMMAND_SAVE_CONFIG) {
+        return m61_dvfs_save_persistent_config();
+    }
+    if (payload[0] == M61_WEB_COMMAND_RECONNECT_USB) {
+        return m61_usb_cycle_command();
+    }
+    return -EINVAL;
+}
+
 static void usb_hid_bridge_task(void *pvParameters)
 {
     bool feature_pending = false;
@@ -2225,6 +2282,20 @@ static void usb_hid_bridge_task(void *pvParameters)
                     generation,
                     now_us);
             } else {
+                uint8_t feature_id = host_report.report_id;
+
+                if (feature_id == 0U && host_report.len > 0U) {
+                    feature_id = host_report.data[0];
+                }
+                if (feature_id == M61_WEB_COMMAND_REPORT_ID) {
+                    int web_err = handle_m61_web_command(&host_report);
+
+                    if (web_err != 0) {
+                        printf("M61 Web command failed: %d\r\n", web_err);
+                    }
+                    host_reports_this_tick++;
+                    continue;
+                }
                 pending_feature_set = host_report;
                 feature_set_pending = true;
                 host_reports_this_tick++;
@@ -2572,6 +2643,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
         default_conn = conn;
     }
     auto_sequence_started = true;
+    m61_usb_gamepad_set_bluetooth_connected(true);
     hidp_active_open_allowed = outgoing_conn;
     auto_reset_link_state();
     remember_dualsense_addr(info.br.dst, true);
@@ -2602,6 +2674,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     if (pending_conn == conn) {
         pending_conn = NULL;
     }
+    m61_usb_gamepad_set_bluetooth_connected(false);
     hidp_active_open_allowed = false;
     auto_connect_after_scan = false;
     auto_reset_link_state();

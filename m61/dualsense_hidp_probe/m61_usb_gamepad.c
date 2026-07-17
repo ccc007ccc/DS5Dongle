@@ -2,6 +2,7 @@
 #include "m61_audio_epoch.h"
 #include "m61_dvfs.h"
 #include "m61_perf_profile.h"
+#include "m61_web_config.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -420,6 +421,7 @@ static volatile bool audio_mic_runtime_enabled =
     CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ? true : false;
 static volatile m61_speaker_route_t speaker_route = M61_SPEAKER_ROUTE_AUTO;
 static volatile bool speaker_headphones_connected;
+static volatile bool web_bluetooth_connected;
 static volatile bool speaker_stereo_requested;
 static volatile bool speaker_stereo_active;
 static volatile bool pending_host_report_valid;
@@ -2750,6 +2752,11 @@ bool m61_usb_gamepad_audio_speaker_active(void)
     return audio_out_open && !audio_speaker_mute;
 }
 
+void m61_usb_gamepad_set_bluetooth_connected(bool connected)
+{
+    web_bluetooth_connected = connected;
+}
+
 uint32_t m61_usb_gamepad_audio_generation(void)
 {
     return audio_generation;
@@ -3074,6 +3081,55 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
         return;
     }
 
+    if (report_id >= M61_WEB_COMMAND_REPORT_ID &&
+        report_id <= M61_WEB_TELEMETRY_REPORT_ID) {
+        m61_web_config_t config;
+        m61_web_telemetry_t telemetry;
+        m61_dvfs_status_t dvfs;
+        const char firmware[] = "M61 DS5Dongle web=1 config=1";
+        int encoded = 0;
+
+        memset(usb_control_buffer, 0, sizeof(usb_control_buffer));
+        usb_control_buffer[0] = report_id;
+        if (report_id == M61_WEB_CONFIG_REPORT_ID) {
+            m61_web_config_defaults(&config);
+            config.microphone_enabled = m61_usb_gamepad_audio_mic_enabled();
+            config.speaker_route = (uint8_t)m61_usb_gamepad_speaker_route();
+            m61_dvfs_get_status(&dvfs);
+            config.cpu_governor = (uint8_t)dvfs.governor;
+            config.cpu_profile =
+                dvfs.manual_profile < M61_DVFS_PROFILE_COUNT
+                    ? (uint8_t)dvfs.manual_profile
+                    : 3U;
+            config.manual_cpu_mhz = (uint16_t)dvfs.manual_mhz;
+            encoded = m61_web_config_encode(
+                &config, &usb_control_buffer[1], M61_WEB_FEATURE_PAYLOAD_SIZE);
+        } else if (report_id == M61_WEB_FIRMWARE_REPORT_ID) {
+            memcpy(&usb_control_buffer[1], firmware, sizeof(firmware) - 1U);
+            encoded = (int)(sizeof(firmware) - 1U);
+        } else if (report_id == M61_WEB_TELEMETRY_REPORT_ID) {
+            memset(&telemetry, 0, sizeof(telemetry));
+            m61_dvfs_get_status(&dvfs);
+            telemetry.speaker_active = dvfs.speaker_active;
+            telemetry.microphone_active = dvfs.mic_active;
+            telemetry.bluetooth_connected = web_bluetooth_connected;
+            telemetry.usb_configured = usb_configured;
+            telemetry.headphones_connected = speaker_headphones_connected;
+            telemetry.speaker_stereo = dvfs.speaker_stereo;
+            telemetry.current_cpu_mhz = (uint16_t)dvfs.current_mhz;
+            telemetry.requested_cpu_mhz = (uint16_t)dvfs.requested_mhz;
+            encoded = m61_web_telemetry_encode(
+                &telemetry, &usb_control_buffer[1], M61_WEB_FEATURE_PAYLOAD_SIZE);
+        }
+        if (encoded >= 0) {
+            uint32_t out_len = M61_WEB_FEATURE_PAYLOAD_SIZE + 1U;
+
+            if (out_len > requested_len) out_len = requested_len;
+            *len = out_len;
+        }
+        return;
+    }
+
     flags = usb_lock();
     entry = find_feature_cache(report_id);
     if (entry) {
@@ -3133,6 +3189,14 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t
 
         invalidate_feature_cache_locked(0x81);
         usb_unlock(flags);
+    }
+    if (report_type == HID_REPORT_FEATURE &&
+        effective_report_id >= M61_WEB_COMMAND_REPORT_ID &&
+        effective_report_id <= M61_WEB_TELEMETRY_REPORT_ID) {
+        if (effective_report_id == M61_WEB_COMMAND_REPORT_ID) {
+            queue_host_report(report_id, report_type, report, report_len);
+        }
+        return;
     }
     queue_host_report(report_id, report_type, report, report_len);
 }
@@ -3343,6 +3407,7 @@ void m61_usb_gamepad_set_headphones_connected(bool connected) { (void)connected;
 bool m61_usb_gamepad_headphones_connected(void) { return false; }
 bool m61_usb_gamepad_audio_in_active(void) { return false; }
 bool m61_usb_gamepad_audio_speaker_active(void) { return false; }
+void m61_usb_gamepad_set_bluetooth_connected(bool connected) { (void)connected; }
 uint32_t m61_usb_gamepad_audio_generation(void) { return 0; }
 void m61_usb_gamepad_realtime_task(void) {}
 bool m61_usb_gamepad_ready(void) { return false; }

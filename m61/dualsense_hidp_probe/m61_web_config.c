@@ -19,10 +19,9 @@ void m61_web_config_defaults(m61_web_config_t *config)
 {
     if (config == NULL) return;
     memset(config, 0, sizeof(*config));
-    config->capabilities = M61_WEB_CAP_MICROPHONE |
-                           M61_WEB_CAP_SPEAKER_ROUTE |
-                           M61_WEB_CAP_AUTO_RECONNECT |
-                           M61_WEB_CAP_DVFS |
+    /* F0 exposes only settings whose complete apply/save lifecycle is wired.
+     * F1 will add capability bits together with central persistence. */
+    config->capabilities = M61_WEB_CAP_DVFS |
                            M61_WEB_CAP_TELEMETRY_V1;
     config->speaker_enabled = true;
     config->auto_reconnect_enabled = true;

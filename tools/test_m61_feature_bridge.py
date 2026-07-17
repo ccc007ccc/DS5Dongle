@@ -61,6 +61,10 @@ def check_source_wiring() -> None:
         "invalidate_feature_cache_locked(0x81);",
         "usb_diag.feature_get_queue_coalesced++",
         "remove_queued_feature_request_locked(report_id);",
+        "report_id >= M61_WEB_COMMAND_REPORT_ID",
+        "report_id <= M61_WEB_TELEMETRY_REPORT_ID",
+        "m61_web_config_encode(",
+        "m61_web_telemetry_encode(",
     )
     required_main = (
         "buf->data + 1,",
@@ -68,6 +72,8 @@ def check_source_wiring() -> None:
         "Factory/system queries use SET 0x80",
         "m61_usb_gamepad_request_feature_report(",
         "0x81, M61_DS5_USB_FEATURE_MAX_LEN",
+        "handle_m61_web_command(&host_report)",
+        "feature_id == M61_WEB_COMMAND_REPORT_ID",
     )
     for snippet in required_gamepad:
         assert snippet in gamepad, f"missing gamepad bridge logic: {snippet}"
