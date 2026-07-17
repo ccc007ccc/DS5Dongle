@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="1.2.1"
 PATCH_PROFILE="${M61_OPUS_PATCH_PROFILE:-e907}"
-TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-mdct-clusters}"
+TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-mdct-decode-mdct}"
 STAGE_PROFILE="${M61_OPUS_STAGE_PROFILE:-0}"
 DS5_PROFILE="${M61_OPUS_DS5_PROFILE:-d4-fastpath}"
 VARIANT="${1:-O2-LTO}"

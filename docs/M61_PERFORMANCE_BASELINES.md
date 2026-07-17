@@ -638,3 +638,46 @@ Release证据：
 该优化位于Opus HPM计时区间之前，因此codec cycles不应预期同步下降；release双轮
 P95/P99没有回归且所有硬错误为0。Pipeline同构A/B直接显示resample P95下降0.25 ms、
 max下降0.87 ms，故作为无损的阶段尾延迟优化晋升。
+
+## 23. Decode MDCT独立SRAM放置（当前Opus尾延迟最优）
+
+`pvq-mdct-decode-mdct`在既有PVQ与通用MDCT cluster基础上，仅将decode侧MDCT入口放入
+SRAM；没有搬入完整decode synthesis/denormalise cluster，避免大范围代码布局变化。
+Opus算法、定点缩放、PCM、码率、带宽、帧长和协议均未改变。Windows与WSL构建均保留
+profile选择，正式默认由`pvq-mdct-clusters`晋升为`pvq-mdct-decode-mdct`。
+
+Stage诊断A/B：
+
+| Decode阶段 | 原profile | decode-MDCT |
+| --- | ---: | ---: |
+| setup/entropy/coarse | 95,685 cycles | 73,572 cycles |
+| tf/allocation/energy | 149,987 cycles | 133,179 cycles |
+| PVQ | 481,637 cycles | 473,152 cycles |
+| finalize/synthesis | 318,523 cycles | 288,288 cycles |
+| postfilter | 43,630 cycles | 44,370 cycles |
+| state/deemphasis | 47,773 cycles | 61,629 cycles |
+| decode平均/P95/P99/max | 3.262/4.500/5.000/5.575 ms | 2.946/4.000/4.500/4.845 ms |
+
+完整decode-clusters候选虽然stage诊断更快，但release双轮Encode P95和Decode P95均回归，
+已否决。N=4 CWRS展开同样因I-cache工作集增大使PVQ从481,637升至610,336 cycles，未保留。
+
+Release证据：
+
+- `artifacts/full-duplex-tcm-decode-mdct-release-r1-20260717_before.log`
+- `artifacts/full-duplex-tcm-decode-mdct-release-r1-20260717.log`
+- `artifacts/full-duplex-tcm-decode-mdct-release-r2-20260717_before.log`
+- `artifacts/full-duplex-tcm-decode-mdct-release-r2-20260717.log`
+
+| 指标 | 第1轮 | 第2轮 |
+| --- | ---: | ---: |
+| Encode平均/P95/P99/max | 3.485/4.500/4.750/4.954 ms | 3.603/4.500/4.750/4.954 ms（累计） |
+| Decode平均/P95/P99/max | 2.732/3.750/4.000/4.826 ms | 2.762/3.750/4.000/4.826 ms（累计） |
+| codec cycles平均 | 2,489,641 | 2,548,610 |
+| codec-only CPU/10 ms | 62.24% | 63.72% |
+| mic underflow（区间） | 3 | 0 |
+| mic PCM packet shortfall | 0 | 0 |
+| qdrop/deadline/stale/BT/codec error | 0/0/0/0/0 | 0/0/0/0/0 |
+
+相对resample-only release基线约2.59M至2.63M cycles，本候选下降约3.5%至4.0%；Decode
+P95/P99两轮稳定从4.00/4.25 ms降至3.75/4.00 ms，所有硬错误为0，因此晋升为当前
+Opus decode尾延迟与默认SRAM放置profile。

@@ -24,6 +24,9 @@ param(
 
     [switch]$OpusStageProfile,
 
+    [ValidateSet('pvq-mdct-clusters', 'pvq-mdct-decode-clusters', 'pvq-mdct-decode-mdct')]
+    [string]$OpusTcmProfile = 'pvq-mdct-decode-mdct',
+
     [string]$ToolchainBin = 'C:\code\MCU\tools\toolchain_gcc_t-head_windows\bin',
 
     [string]$SdkPath = 'C:\code\MCU\bl_mcu_sdk',
@@ -40,7 +43,8 @@ $BuildDirName = 'build-win'
 $BuildDir = Join-Path $ProjectDir $BuildDirName
 $OpusRoot = Join-Path $ProjectDir '.cache\third_party\opus-1.2.1'
 $OpusSource = Join-Path $OpusRoot 'opus-1.2.1'
-$OpusBuild = Join-Path $OpusRoot 'build-win-O2-LTO-e907-pvq-mdct-clusters-stage0'
+$OpusStageTag = if ($OpusStageProfile) { 'stage1' } else { 'stage0' }
+$OpusBuild = Join-Path $OpusRoot "build-win-O2-LTO-e907-$OpusTcmProfile-$OpusStageTag"
 $OpusCMakeSource = Join-Path $ProjectDir 'cmake\opus-1.2.1-windows'
 $DefaultOpusLibrary = Join-Path $OpusBuild '.libs\libopus.a'
 
@@ -90,6 +94,7 @@ if ($Command -in @('Build', 'All') -and [string]::IsNullOrWhiteSpace($OpusLibrar
         "-DCMAKE_RANLIB=$(Convert-ToCMakePath $GccRanlib)",
         "-DCMAKE_MAKE_PROGRAM=$(Convert-ToCMakePath $Ninja)",
         "-DM61_OPUS_STAGE_PROFILE=$(if ($OpusStageProfile) { 'ON' } else { 'OFF' })"
+        "-DM61_OPUS_TCM_PROFILE=$OpusTcmProfile"
     )
     & $CMake @OpusConfigureArgs
     if ($LASTEXITCODE -ne 0) {
@@ -153,6 +158,7 @@ Write-Host "[m61-hidp-win] CPU overclock: $CpuOverclockMhz MHz (0=off)"
 Write-Host "[m61-hidp-win] Pipeline profile: $PipelineValue"
 Write-Host "[m61-hidp-win] Mic profile: $MicValue"
 Write-Host "[m61-hidp-win] Opus stage profile: $OpusStageValue"
+Write-Host "[m61-hidp-win] Opus TCM profile: $OpusTcmProfile"
 
 Push-Location $ProjectDir
 try {

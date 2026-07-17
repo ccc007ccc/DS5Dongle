@@ -6,6 +6,15 @@ project(m61_opus_1_2_1 C)
 
 option(M61_OPUS_STAGE_PROFILE "Enable M61 CELT stage markers" OFF)
 option(M61_OPUS_DUALSENSE_D4_FASTPATH "Enable fixed DualSense mic packet parser" ON)
+set(M61_OPUS_TCM_PROFILE "pvq-mdct-decode-mdct" CACHE STRING
+    "M61 Opus SRAM placement profile")
+set_property(CACHE M61_OPUS_TCM_PROFILE PROPERTY STRINGS
+    pvq-mdct-clusters pvq-mdct-decode-clusters pvq-mdct-decode-mdct)
+if(NOT M61_OPUS_TCM_PROFILE STREQUAL "pvq-mdct-clusters" AND
+   NOT M61_OPUS_TCM_PROFILE STREQUAL "pvq-mdct-decode-clusters" AND
+   NOT M61_OPUS_TCM_PROFILE STREQUAL "pvq-mdct-decode-mdct")
+    message(FATAL_ERROR "Unsupported M61_OPUS_TCM_PROFILE=${M61_OPUS_TCM_PROFILE}")
+endif()
 
 if(NOT DEFINED OPUS_SOURCE_DIR OR NOT EXISTS "${OPUS_SOURCE_DIR}/include/opus.h")
     message(FATAL_ERROR "OPUS_SOURCE_DIR must point to the patched Opus 1.2.1 source tree")
@@ -169,6 +178,16 @@ target_compile_definitions(opus PRIVATE
     M61_OPUS_TCM_PVQ_CLUSTER=1
     M61_OPUS_TCM_MDCT_CLUSTER=1
 )
+
+if(M61_OPUS_TCM_PROFILE STREQUAL "pvq-mdct-decode-clusters")
+    target_compile_definitions(opus PRIVATE
+        M61_OPUS_TCM_DECODE_DENORM=1
+        M61_OPUS_TCM_DECODE_SYNTH=1
+        M61_OPUS_TCM_DECODE_MDCT=1)
+endif()
+if(M61_OPUS_TCM_PROFILE STREQUAL "pvq-mdct-decode-mdct")
+    target_compile_definitions(opus PRIVATE M61_OPUS_TCM_DECODE_MDCT=1)
+endif()
 
 if(M61_OPUS_DUALSENSE_D4_FASTPATH)
     target_compile_definitions(opus PRIVATE M61_OPUS_DUALSENSE_D4_FASTPATH=1)

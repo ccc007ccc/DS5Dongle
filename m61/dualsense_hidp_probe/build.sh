@@ -24,7 +24,7 @@ OPUS_STAGE_PROFILE="n"
 MIC_PROFILE="n"
 OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
 OPUS_VARIANT="${M61_OPUS_VARIANT:-source-o2-lto}"
-OPUS_TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-mdct-clusters}"
+OPUS_TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-mdct-decode-mdct}"
 
 log() {
     printf '[m61-hidp-build] %s\n' "$*"
@@ -46,7 +46,7 @@ Environment:
   M61_TOOLCHAIN_BIN Optional T-HEAD toolchain bin directory.
   M61_OPUS_LIBRARY  Optional source-built libopus.a used instead of the SDK archive.
   M61_OPUS_VARIANT  source-o2-lto (default), source-o2, source-o3, sdk, or custom.
-  M61_OPUS_TCM_PROFILE  pvq-mdct-clusters (default); data/energy/tf profiles are experimental.
+  M61_OPUS_TCM_PROFILE  pvq-mdct-decode-mdct (default); other placements are experimental.
   M61_OPUS_STAGE_PROFILE  y enables test-only CELT stage markers.
   M61_HPM_SAMPLE_SHIFT    HPM sampling shift, 0=all frames, 4=about 1/16.
   --usb-gamepad-o2        Compile only m61_usb_gamepad.c with -O2 (A/B).
