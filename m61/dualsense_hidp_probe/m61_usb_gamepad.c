@@ -53,7 +53,8 @@
 #define HID_INT_EP_INTERVAL 1
 #define USB_DUALSENSE_CONFIG_DESC_SIZE 0x00E3
 #define HID_DUALSENSE_REPORT_DESC_SIZE 321
-#define FEATURE_CACHE_SLOTS 12
+#define FEATURE_CACHE_SLOTS 32
+#define FEATURE_GET_QUEUE_DEPTH 16
 #define FEATURE_SET_QUEUE_DEPTH 8
 #define AUDIO_INPUT_CHANNELS 4
 #define AUDIO_BYTES_PER_SAMPLE 2
@@ -137,6 +138,11 @@ typedef struct {
     uint32_t len;
     uint8_t data[M61_DS5_USB_FEATURE_MAX_LEN];
 } feature_cache_entry_t;
+
+typedef struct {
+    uint8_t report_id;
+    uint32_t requested_len;
+} feature_get_request_t;
 
 #if CONFIG_M61_USB_GAMEPAD_ENABLE
 static const uint8_t device_descriptor[] = {
@@ -416,7 +422,6 @@ static volatile m61_speaker_route_t speaker_route = M61_SPEAKER_ROUTE_AUTO;
 static volatile bool speaker_headphones_connected;
 static volatile bool speaker_stereo_requested;
 static volatile bool speaker_stereo_active;
-static volatile bool pending_feature_request_valid;
 static volatile bool pending_host_report_valid;
 static volatile bool usb_initialized;
 static volatile uint32_t usb_sent_count;
@@ -425,8 +430,6 @@ static volatile int usb_init_result = -1;
 static volatile uint8_t usb_last_event;
 static volatile uint32_t usb_event_counts[16];
 static volatile m61_usb_gamepad_diag_t usb_diag;
-static volatile uint8_t pending_feature_report_id;
-static volatile uint32_t pending_feature_report_len;
 static volatile uint32_t audio_out_sample_rate = AUDIO_SAMPLE_RATE;
 static volatile uint32_t audio_in_sample_rate = AUDIO_SAMPLE_RATE;
 static volatile bool audio_speaker_mute;
@@ -604,6 +607,11 @@ static volatile uint8_t feature_set_queue_head;
 static volatile uint8_t feature_set_queue_tail;
 static volatile uint8_t feature_set_queue_count;
 static volatile uint8_t feature_set_queue_high_water;
+static feature_get_request_t feature_get_queue[FEATURE_GET_QUEUE_DEPTH];
+static volatile uint8_t feature_get_queue_head;
+static volatile uint8_t feature_get_queue_tail;
+static volatile uint8_t feature_get_queue_count;
+static volatile uint8_t feature_get_queue_high_water;
 static feature_cache_entry_t feature_cache[FEATURE_CACHE_SLOTS];
 static uint8_t feature_cache_replace_index;
 #if CONFIG_M61_PIPELINE_PROFILE
@@ -1749,14 +1757,98 @@ static const struct usb_descriptor dualsense_descriptor = {
     .string_descriptor_callback = string_descriptor_callback,
 };
 
-static void queue_feature_request(uint8_t report_id, uint32_t requested_len)
+static feature_cache_entry_t *find_feature_cache(uint8_t report_id)
 {
-    uintptr_t flags = usb_lock();
+    for (size_t i = 0; i < FEATURE_CACHE_SLOTS; i++) {
+        if (feature_cache[i].valid && feature_cache[i].report_id == report_id) {
+            return &feature_cache[i];
+        }
+    }
+    return NULL;
+}
 
-    pending_feature_report_id = report_id;
-    pending_feature_report_len = requested_len;
-    pending_feature_request_valid = true;
+static void invalidate_feature_cache_locked(uint8_t report_id)
+{
+    feature_cache_entry_t *entry = find_feature_cache(report_id);
+
+    if (entry) {
+        entry->valid = false;
+        entry->len = 0;
+        usb_diag.feature_cache_invalidations++;
+    }
+}
+
+static void clear_feature_get_queue_locked(void)
+{
+    feature_get_queue_head = 0;
+    feature_get_queue_tail = 0;
+    feature_get_queue_count = 0;
+}
+
+static void remove_queued_feature_request_locked(uint8_t report_id)
+{
+    uint8_t retained = 0;
+
+    for (uint8_t i = 0; i < feature_get_queue_count; i++) {
+        uint8_t read_index = (uint8_t)(
+            (feature_get_queue_tail + i) % FEATURE_GET_QUEUE_DEPTH);
+
+        if (feature_get_queue[read_index].report_id != report_id) {
+            uint8_t write_index = (uint8_t)(
+                (feature_get_queue_tail + retained) % FEATURE_GET_QUEUE_DEPTH);
+            if (write_index != read_index) {
+                feature_get_queue[write_index] = feature_get_queue[read_index];
+            }
+            retained++;
+        }
+    }
+    feature_get_queue_count = retained;
+    feature_get_queue_head = (uint8_t)(
+        (feature_get_queue_tail + retained) % FEATURE_GET_QUEUE_DEPTH);
+}
+
+static bool queue_feature_request(uint8_t report_id, uint32_t requested_len)
+{
+    uintptr_t flags;
+
+    if (report_id == 0U) {
+        return false;
+    }
+    if (requested_len == 0U || requested_len > M61_DS5_USB_FEATURE_MAX_LEN) {
+        requested_len = M61_DS5_USB_FEATURE_MAX_LEN;
+    }
+
+    flags = usb_lock();
+    for (uint8_t i = 0; i < feature_get_queue_count; i++) {
+        uint8_t index = (uint8_t)(
+            (feature_get_queue_tail + i) % FEATURE_GET_QUEUE_DEPTH);
+        feature_get_request_t *queued = &feature_get_queue[index];
+
+        if (queued->report_id == report_id) {
+            if (requested_len > queued->requested_len) {
+                queued->requested_len = requested_len;
+            }
+            usb_diag.feature_get_queue_coalesced++;
+            usb_unlock(flags);
+            return true;
+        }
+    }
+    if (feature_get_queue_count >= FEATURE_GET_QUEUE_DEPTH) {
+        usb_diag.feature_get_queue_dropped++;
+        usb_unlock(flags);
+        return false;
+    }
+
+    feature_get_queue[feature_get_queue_head].report_id = report_id;
+    feature_get_queue[feature_get_queue_head].requested_len = requested_len;
+    feature_get_queue_head = (uint8_t)(
+        (feature_get_queue_head + 1U) % FEATURE_GET_QUEUE_DEPTH);
+    feature_get_queue_count++;
+    if (feature_get_queue_count > feature_get_queue_high_water) {
+        feature_get_queue_high_water = feature_get_queue_count;
+    }
     usb_unlock(flags);
+    return true;
 }
 
 static void update_last_out_state_diag(uint8_t report_id, const uint8_t *data, uint32_t len)
@@ -1791,16 +1883,6 @@ static void update_last_out_state_diag(uint8_t report_id, const uint8_t *data, u
     usb_diag.last_out_led_red = payload[DS5_USB_STATE_LED_RED];
     usb_diag.last_out_led_green = payload[DS5_USB_STATE_LED_RED + 1U];
     usb_diag.last_out_led_blue = payload[DS5_USB_STATE_LED_RED + 2U];
-}
-
-static feature_cache_entry_t *find_feature_cache(uint8_t report_id)
-{
-    for (size_t i = 0; i < FEATURE_CACHE_SLOTS; i++) {
-        if (feature_cache[i].valid && feature_cache[i].report_id == report_id) {
-            return &feature_cache[i];
-        }
-    }
-    return NULL;
 }
 
 static void queue_host_report(uint8_t report_id, uint8_t report_type, const uint8_t *data, uint32_t len)
@@ -2000,6 +2082,8 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             feature_set_queue_head = 0;
             feature_set_queue_tail = 0;
             feature_set_queue_count = 0;
+            clear_feature_get_queue_locked();
+            invalidate_feature_cache_locked(0x81);
             usb_suspended = false;
             usb_out_armed = false;
             audio_out_open = false;
@@ -2468,7 +2552,30 @@ void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data
     entry->report_id = report_id;
     entry->len = (uint32_t)len;
     memcpy(entry->data, data, len);
+    remove_queued_feature_request_locked(report_id);
     usb_diag.feature_cache_stores++;
+    usb_unlock(flags);
+}
+
+void m61_usb_gamepad_request_feature_report(uint8_t report_id,
+                                            uint32_t requested_len)
+{
+    (void)queue_feature_request(report_id, requested_len);
+}
+
+void m61_usb_gamepad_clear_feature_reports(void)
+{
+    uintptr_t flags = usb_lock();
+
+    for (size_t i = 0; i < FEATURE_CACHE_SLOTS; i++) {
+        if (feature_cache[i].valid) {
+            usb_diag.feature_cache_invalidations++;
+        }
+        feature_cache[i].valid = false;
+        feature_cache[i].len = 0;
+    }
+    feature_cache_replace_index = 0;
+    clear_feature_get_queue_locked();
     usb_unlock(flags);
 }
 
@@ -2482,11 +2589,16 @@ bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requeste
     }
 
     flags = usb_lock();
-    valid = pending_feature_request_valid;
+    valid = feature_get_queue_count > 0U;
     if (valid) {
-        *report_id = pending_feature_report_id;
-        *requested_len = pending_feature_report_len;
-        pending_feature_request_valid = false;
+        const feature_get_request_t *request =
+            &feature_get_queue[feature_get_queue_tail];
+
+        *report_id = request->report_id;
+        *requested_len = request->requested_len;
+        feature_get_queue_tail = (uint8_t)(
+            (feature_get_queue_tail + 1U) % FEATURE_GET_QUEUE_DEPTH);
+        feature_get_queue_count--;
     }
     usb_unlock(flags);
     return valid;
@@ -2731,7 +2843,12 @@ void m61_usb_gamepad_get_diag(m61_usb_gamepad_diag_t *diag)
     diag->feature_cache_hits = usb_diag.feature_cache_hits;
     diag->feature_cache_misses = usb_diag.feature_cache_misses;
     diag->feature_cache_stores = usb_diag.feature_cache_stores;
+    diag->feature_cache_invalidations = usb_diag.feature_cache_invalidations;
+    diag->feature_get_queue_coalesced = usb_diag.feature_get_queue_coalesced;
+    diag->feature_get_queue_dropped = usb_diag.feature_get_queue_dropped;
     diag->host_report_dropped = usb_diag.host_report_dropped;
+    diag->feature_get_queue_depth = feature_get_queue_count;
+    diag->feature_get_queue_high_water = feature_get_queue_high_water;
     diag->feature_set_queue_depth = feature_set_queue_count;
     diag->feature_set_queue_high_water = feature_set_queue_high_water;
     diag->audio_open = usb_diag.audio_open;
@@ -3000,12 +3117,23 @@ uint8_t usbd_hid_get_protocol(uint8_t busid, uint8_t intf)
 
 void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id, uint8_t report_type, uint8_t *report, uint32_t report_len)
 {
+    uint8_t effective_report_id = report_id;
+
     (void)busid;
     (void)intf;
 
     usb_diag.hid_set_report++;
     usb_diag.last_report_id = report_id;
     usb_diag.last_report_type = report_type;
+    if (effective_report_id == 0U && report && report_len > 0U) {
+        effective_report_id = report[0];
+    }
+    if (report_type == HID_REPORT_FEATURE && effective_report_id == 0x80U) {
+        uintptr_t flags = usb_lock();
+
+        invalidate_feature_cache_locked(0x81);
+        usb_unlock(flags);
+    }
     queue_host_report(report_id, report_type, report, report_len);
 }
 
@@ -3162,6 +3290,12 @@ void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data
     (void)data;
     (void)len;
 }
+void m61_usb_gamepad_request_feature_report(uint8_t report_id, uint32_t requested_len)
+{
+    (void)report_id;
+    (void)requested_len;
+}
+void m61_usb_gamepad_clear_feature_reports(void) {}
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len)
 {
     (void)report_id;

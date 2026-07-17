@@ -479,6 +479,7 @@ static void auto_reset_link_state(void)
 #endif
     dualsense_headphones_connected = false;
     m61_usb_gamepad_set_headphones_connected(false);
+    m61_usb_gamepad_clear_feature_reports();
     auto_bringup_attempts = 0;
     auto_next_hidp_tick = 0;
     auto_next_bringup_tick = 0;
@@ -1394,7 +1395,11 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
     }
 
     if (channel == &hid_control && buf->len >= 3 && buf->data[0] == 0xA3) {
-        m61_usb_gamepad_store_feature_report(buf->data[1], buf->data + 2, buf->len - 2);
+        /* HIDP adds only the transaction byte.  USB feature reports still
+         * include their report ID as byte zero. */
+        m61_usb_gamepad_store_feature_report(buf->data[1],
+                                             buf->data + 1,
+                                             buf->len - 1);
     }
 
     if (channel == &hid_interrupt &&
@@ -2205,7 +2210,8 @@ static void usb_hid_bridge_task(void *pvParameters)
             }
         }
 
-        while (host_reports_this_tick < CONFIG_M61_DS5_HOST_REPORTS_PER_TICK &&
+        while (!feature_set_pending &&
+               host_reports_this_tick < CONFIG_M61_DS5_HOST_REPORTS_PER_TICK &&
                m61_usb_gamepad_take_host_report(&host_report)) {
             if (host_report.report_type == HIDP_REPORT_TYPE_OUTPUT) {
                 if (hidp_tx_scheduler.state31.pending) {
@@ -2310,6 +2316,39 @@ static void usb_hid_bridge_task(void *pvParameters)
             }
         }
 
+        /* SET must reach the HID control channel before a following GET.
+         * Factory/system queries use SET 0x80 to select a page and GET 0x81
+         * to read that page. */
+        if (feature_set_pending) {
+            uint8_t report_id = pending_feature_set.report_id;
+            const uint8_t *payload = pending_feature_set.data;
+            size_t payload_len = pending_feature_set.len;
+            int err;
+
+            if (payload_len > 0 &&
+                (report_id == 0 || payload[0] == report_id)) {
+                if (report_id == 0) {
+                    report_id = payload[0];
+                }
+                payload++;
+                payload_len--;
+            }
+            err = hidp_set_feature_from_usb(report_id, payload, payload_len);
+            if (err == 0) {
+                feature_set_pending = false;
+                if (report_id == 0x80U) {
+                    m61_usb_gamepad_request_feature_report(
+                        0x81, M61_DS5_USB_FEATURE_MAX_LEN);
+                }
+            } else if (err != -ENOMEM && err != -EAGAIN) {
+                printf("usb feature set forward failed id=0x%02x len=%u err=%d\r\n",
+                       report_id,
+                       (unsigned int)payload_len,
+                       err);
+                feature_set_pending = false;
+            }
+        }
+
         while (feature_reports_this_tick < CONFIG_M61_DS5_FEATURE_REPORTS_PER_TICK) {
             int err;
 
@@ -2339,29 +2378,6 @@ static void usb_hid_bridge_task(void *pvParameters)
             }
             feature_pending = false;
             feature_reports_this_tick++;
-        }
-
-        if (feature_set_pending) {
-            uint8_t report_id = pending_feature_set.report_id;
-            const uint8_t *payload = pending_feature_set.data;
-            size_t payload_len = pending_feature_set.len;
-            int err;
-
-            if (report_id == 0 && payload_len > 0) {
-                report_id = payload[0];
-                payload++;
-                payload_len--;
-            }
-            err = hidp_set_feature_from_usb(report_id, payload, payload_len);
-            if (err == 0) {
-                feature_set_pending = false;
-            } else if (err != -ENOMEM && err != -EAGAIN) {
-                printf("usb feature set forward failed id=0x%02x len=%u err=%d\r\n",
-                       report_id,
-                       (unsigned int)payload_len,
-                       err);
-                feature_set_pending = false;
-            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS));
@@ -3045,13 +3061,18 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.hid_set_protocol,
                (unsigned int)usb_diag.last_report_id,
                (unsigned int)usb_diag.last_report_type);
-        printf("usb_ds5 out=%lu last_out=0x%02x/%lu feature hit=%lu miss=%lu store=%lu feature_set_q=%u/%u host_drop=%lu\r\n",
+        printf("usb_ds5 out=%lu last_out=0x%02x/%lu feature hit=%lu miss=%lu store=%lu invalid=%lu get_q=%u/%u coalesce=%lu drop=%lu set_q=%u/%u host_drop=%lu\r\n",
                (unsigned long)usb_diag.hid_out_report,
                (unsigned int)usb_diag.last_out_report_id,
                (unsigned long)usb_diag.last_out_report_len,
                (unsigned long)usb_diag.feature_cache_hits,
                (unsigned long)usb_diag.feature_cache_misses,
                (unsigned long)usb_diag.feature_cache_stores,
+               (unsigned long)usb_diag.feature_cache_invalidations,
+               (unsigned int)usb_diag.feature_get_queue_depth,
+               (unsigned int)usb_diag.feature_get_queue_high_water,
+               (unsigned long)usb_diag.feature_get_queue_coalesced,
+               (unsigned long)usb_diag.feature_get_queue_dropped,
                (unsigned int)usb_diag.feature_set_queue_depth,
                (unsigned int)usb_diag.feature_set_queue_high_water,
                (unsigned long)usb_diag.host_report_dropped);

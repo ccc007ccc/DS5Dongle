@@ -125,8 +125,8 @@
 | Mute light | `MuteLightMode` | 随 `0x02` payload 透传 | 部分 | 验证 mute 灯模式 |
 | Light brightness/fade | `LightBrightness` / `LightFadeAnimation` | 随 `0x02` payload 透传 | 部分 | 验证亮度和动画 |
 | 音量/静音控制 | USB Audio control + `SetStateData` | HID payload 可透传，USB Audio control 缺失 | 缺失 | 实现 UAC mute/volume 回调 |
-| Feature GET | Host GET_REPORT -> BT feature get -> cache | 已有转发/cache | 部分 | 验证 calibration/firmware/hardware info |
-| Feature SET | Host SET_REPORT feature -> BT control with CRC | 已有雏形 | 部分 | 验证 `0x80`、Edge profile 相关不会误处理 |
+| Feature GET | Host GET_REPORT -> BT feature get -> cache | 已修正 HIDP transaction/Report ID 边界；32 槽完整报告缓存和 16 槽去重 FIFO 可覆盖描述符内全部 ID；实机验证 `0x09` MAC、`0x20` firmware 和动态 `0x81` 均完整返回 | 完成 | 后续新增 Feature ID 时补对应解析测试 |
+| Feature SET | Host SET_REPORT feature -> BT control with CRC | 已规范化是否携带 Report ID 的 USB payload；`SET 0x80` 会先失效旧 `0x81`，BT 控制通道严格先 SET 后 GET；实机连续 16 页查询无 queue drop | 完成 | Edge profile 写入属于独立高风险功能，另行验证 |
 | 输出状态合并 | 上游 `state_mgr` 维护最新状态 | 已有 63-byte state cache 和 47-byte USB `0x02` flag 合并 | 部分 | 实机验证 LED/rumble/trigger 后再补配置持久化 |
 | DSX 高频 output | DSX/Steam 可能高频刷新 LED/rumble/trigger | 已新增 USB `0x02` 最新态合并、20ms 蓝牙转发限速、每轮 host/feature report 处理上限，并新增 `usb_ds5_last`/`bt_state`/`hidp_usb_output` 诊断 | 部分 | 刷写 SHA `C3586805...` 后用户确认 DSX 功能可用；串口 shell 在 DSX 高负载下仍可能无回包，继续优化调度/诊断 |
 
