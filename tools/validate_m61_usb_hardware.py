@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import tempfile
 
-import audit_requirements
 import capture_m61_hidp_log
 import check_m61_usb_windows
 
@@ -42,6 +42,11 @@ SAMPLE_USB_STATUS_LOG = "\n".join([
     "hidp_reports parsed=42 full=42 mic_audio=0 log=quiet",
 ])
 
+USB_STATUS_RE = re.compile(
+    r"usb_gamepad\s+ready=(?P<ready>[01])\s+configured=(?P<configured>[01])\s+"
+    r"busy=(?P<busy>[01])\s+sent=(?P<sent>\d+)\s+dropped=(?P<dropped>\d+)"
+)
+
 
 def classify_windows(sample_json: Path | None) -> tuple[bool, str]:
     try:
@@ -72,7 +77,25 @@ def capture_usb_status(port: str, baud: int, output: Path, duration: int) -> int
 
 
 def check_usb_status(log_path: Path) -> tuple[bool, str]:
-    return audit_requirements.audit_usb_status(log_path)
+    text = log_path.read_text(encoding="utf-8", errors="ignore")
+    matches = list(USB_STATUS_RE.finditer(text))
+    if not matches:
+        return False, f"{log_path} does not contain a parseable usb_gamepad status line"
+
+    configured = [match for match in matches if match.group("configured") == "1"]
+    if not configured:
+        return False, f"{log_path} does not show usb_gamepad configured=1"
+
+    sent_values = [int(match.group("sent")) for match in configured]
+    max_sent = max(sent_values)
+    if max_sent <= 0:
+        return False, f"{log_path} shows configured=1 but no USB reports sent yet"
+    if len(sent_values) >= 2 and sent_values[-1] > sent_values[0]:
+        return True, (
+            f"{log_path} shows configured=1 and sent increased "
+            f"{sent_values[0]}->{sent_values[-1]}"
+        )
+    return True, f"{log_path} shows configured=1 and sent={max_sent}"
 
 
 def self_test() -> int:

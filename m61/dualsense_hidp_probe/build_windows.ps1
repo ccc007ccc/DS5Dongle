@@ -8,7 +8,7 @@ param(
     [ValidateRange(0, 8)]
     [int]$HpmSampleShift = 4,
 
-    [switch]$UsbGamepadO2,
+    [switch]$UsbGamepadO2 = $true,
 
     [ValidateSet(1, 2)]
     [int]$CodecPairDelayMs = 1,
@@ -30,18 +30,28 @@ param(
     [ValidateSet('pvq-mdct-clusters', 'pvq-mdct-decode-clusters', 'pvq-mdct-decode-mdct')]
     [string]$OpusTcmProfile = 'pvq-mdct-decode-mdct',
 
-    [string]$ToolchainBin = 'C:\code\MCU\tools\toolchain_gcc_t-head_windows\bin',
+    [string]$ToolchainBin = $env:M61_TOOLCHAIN_BIN,
 
-    [string]$SdkPath = 'C:\code\MCU\bl_mcu_sdk',
+    [string]$SdkPath = $env:BL_SDK_BASE,
 
     [string]$OpusLibrary = '',
 
-    [switch]$RebuildOpus
+    [switch]$RebuildOpus,
+
+    [switch]$AllowUnverifiedDependencies
 )
 
 $ErrorActionPreference = 'Stop'
 
 $ProjectDir = Split-Path -Parent $PSCommandPath
+$RepoRoot = (Resolve-Path (Join-Path $ProjectDir '..\..')).Path
+$WorkspaceRoot = (Resolve-Path (Join-Path $ProjectDir '..\..\..')).Path
+if ([string]::IsNullOrWhiteSpace($ToolchainBin)) {
+    $ToolchainBin = Join-Path $WorkspaceRoot 'tools\toolchain_gcc_t-head_windows\bin'
+}
+if ([string]::IsNullOrWhiteSpace($SdkPath)) {
+    $SdkPath = Join-Path $WorkspaceRoot 'bl_mcu_sdk'
+}
 $BuildDirName = 'build-win'
 $BuildDir = Join-Path $ProjectDir $BuildDirName
 $OpusRoot = Join-Path $ProjectDir '.cache\third_party\opus-1.2.1'
@@ -71,8 +81,21 @@ $CMake = Resolve-ExistingPath (Join-Path $CMakeBin 'cmake.exe') 'SDK CMake'
 $Ninja = Resolve-ExistingPath (Join-Path $SdkPath 'tools\ninja\ninja.exe') 'SDK Ninja'
 $GccAr = Resolve-ExistingPath (Join-Path $ToolchainBin 'riscv64-unknown-elf-gcc-ar.exe') 'RISC-V GCC AR'
 $GccRanlib = Resolve-ExistingPath (Join-Path $ToolchainBin 'riscv64-unknown-elf-gcc-ranlib.exe') 'RISC-V GCC ranlib'
+$Python = (Get-Command python -ErrorAction Stop).Source
+
+if (-not $AllowUnverifiedDependencies) {
+    & $Python (Join-Path $RepoRoot 'tools\verify_m61_build_environment.py') `
+        --sdk $SdkPath --toolchain-bin $ToolchainBin
+    if ($LASTEXITCODE -ne 0) {
+        throw "M61 dependency verification failed with exit code $LASTEXITCODE"
+    }
+}
 
 if ($Command -in @('Build', 'All') -and [string]::IsNullOrWhiteSpace($OpusLibrary)) {
+    & (Join-Path $ProjectDir 'prepare_opus_source.ps1')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Locked Opus source preparation failed with exit code $LASTEXITCODE"
+    }
     Resolve-ExistingPath $OpusSource 'Patched Opus 1.2.1 source' | Out-Null
     Resolve-ExistingPath $OpusCMakeSource 'Windows Opus CMake project' | Out-Null
 
@@ -131,6 +154,13 @@ $PipelineValue = if ($PipelineProfile) { 'y' } else { 'n' }
 $MicValue = if ($MicProfile) { 'y' } else { 'n' }
 $RuntimeValue = if ($RuntimeProfile) { 'y' } else { 'n' }
 $OpusStageValue = if ($OpusStageProfile) { 'y' } else { 'n' }
+$UsbGamepadO2Bool = if ($UsbGamepadO2Value -eq 'y') { 'true' } else { 'false' }
+$Crc32NibbleTableBool = if ($Crc32NibbleTable -eq 1) { 'true' } else { 'false' }
+$HpmBool = if ($HpmValue -eq 'y') { 'true' } else { 'false' }
+$RuntimeBool = if ($RuntimeValue -eq 'y') { 'true' } else { 'false' }
+$PipelineBool = if ($PipelineValue -eq 'y') { 'true' } else { 'false' }
+$OpusStageBool = if ($OpusStageValue -eq 'y') { 'true' } else { 'false' }
+$MicBool = if ($MicValue -eq 'y') { 'true' } else { 'false' }
 $MakeArgs = @(
     "CHIP=bl616",
     "BOARD=bl616dk",
@@ -182,6 +212,44 @@ try {
         $Firmware = Get-ChildItem -LiteralPath (Join-Path $BuildFull 'build_out') `
             -Filter 'm61_dualsense_hidp_probe_bl616.bin' -ErrorAction Stop |
             Select-Object -First 1
+        $Elf = Get-ChildItem -LiteralPath (Join-Path $BuildFull 'build_out') `
+            -Filter 'm61_dualsense_hidp_probe_bl616.elf' -ErrorAction Stop |
+            Select-Object -First 1
+        $Map = Get-ChildItem -LiteralPath (Join-Path $BuildFull 'build_out') `
+            -Filter 'm61_dualsense_hidp_probe_bl616.map' -ErrorAction Stop |
+            Select-Object -First 1
+        $Manifest = Join-Path $Firmware.DirectoryName `
+            'm61_dualsense_hidp_probe_bl616.manifest.json'
+        $ManifestArgs = @(
+            (Join-Path $RepoRoot 'tools\generate_m61_build_manifest.py'),
+            '--firmware', $Firmware.FullName,
+            '--elf', $Elf.FullName,
+            '--map', $Map.FullName,
+            '--sdk', $SdkPath,
+            '--toolchain-bin', $ToolchainBin,
+            '--output', $Manifest,
+            '--setting', 'chip=bl616',
+            '--setting', 'board=bl616dk',
+            '--setting', 'wramLengthBytes=163840',
+            '--setting', 'opusVariant=O2-LTO-e907-d4-fastpath',
+            '--setting', "opusTcmProfile=$OpusTcmProfile",
+            '--setting', "usbGamepadO2=$UsbGamepadO2Bool",
+            '--setting', "codecPairDelayMs=$CodecPairDelayMs",
+            '--setting', "crc32NibbleTable=$Crc32NibbleTableBool",
+            '--setting', "hpmProfile=$HpmBool",
+            '--setting', "runtimeProfile=$RuntimeBool",
+            '--setting', "pipelineProfile=$PipelineBool",
+            '--setting', "opusStageProfile=$OpusStageBool",
+            '--setting', "micDefaultEnabled=$MicBool",
+            '--setting', "compileTimeCpuOverclockMhz=$CpuOverclockMhz",
+            '--setting', 'runtimeCpuGovernor=manual',
+            '--setting', 'runtimeCpuMhz=320',
+            '--setting', 'speakerRoute=auto'
+        )
+        & $Python @ManifestArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "M61 build manifest generation failed with exit code $LASTEXITCODE"
+        }
         Write-Host "[m61-hidp-win] Firmware: $($Firmware.FullName)"
     }
 } finally {

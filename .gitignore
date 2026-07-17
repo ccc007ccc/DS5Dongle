@@ -16,3 +16,6 @@ sdkconfig.raw_hidp.old
 .idea/
 .cache/
 __pycache__/
+.pytest_cache/
+artifacts/
+docs/vendor/*.pdf

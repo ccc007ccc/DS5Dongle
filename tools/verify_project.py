@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Repository-level checks for the pure-M61 DualSense adapter."""
+"""Repository-level open-source and release-configuration checks."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -13,54 +14,46 @@ def main() -> int:
     failures: list[str] = []
     required_files = [
         "README.md",
-        "docs/PROJECT_STANDARD.md",
-        "docs/IMPLEMENTATION_STATUS.md",
-        "docs/DUALSENSE_REPORT_31.md",
-        "docs/M61_BLUETOOTH_CAPABILITY.md",
-        "docs/M61_NATIVE_USB_WIRING.md",
-        "docs/WAKEUP_RUNBOOK.md",
-        "m61/FreeRTOSConfig.h",
-        "m61/dualsense_hidp_probe/CMakeLists.txt",
-        "m61/dualsense_hidp_probe/build.sh",
-        "m61/dualsense_hidp_probe/defconfig",
-        "m61/dualsense_hidp_probe/main.c",
-        "m61/dualsense_hidp_probe/dualsense_parser.c",
-        "m61/dualsense_hidp_probe/dualsense_parser.h",
-        "m61/dualsense_hidp_probe/dualsense_output.c",
-        "m61/dualsense_hidp_probe/dualsense_output.h",
-        "m61/dualsense_hidp_probe/m61_usb_gamepad.c",
-        "m61/dualsense_hidp_probe/m61_usb_gamepad.h",
-        "tools/flash_m61_firmware.py",
-        "tools/check_m61_hidp_log.py",
-        "tools/check_m61_usb_windows.py",
-        "tools/validate_m61_hidp_hardware.py",
-        "tools/validate_m61_usb_hardware.py",
-        "tools/run_offline_checks.py",
+        "README.zh-CN.md",
+        "CONTRIBUTING.md",
+        "CONTRIBUTING.zh-CN.md",
+        "THIRD_PARTY_NOTICES.md",
+        "benchmarks/PERFORMANCE_BEST.csv",
+        "benchmarks/README.md",
+        "benchmarks/README.zh-CN.md",
+        "docs/ARCHITECTURE.md",
+        "docs/ARCHITECTURE.zh-CN.md",
+        "docs/BUILDING.md",
+        "docs/BUILDING.zh-CN.md",
+        "docs/DEVELOPMENT.md",
+        "docs/DEVELOPMENT.zh-CN.md",
+        "docs/FEATURES.md",
+        "docs/FEATURES.zh-CN.md",
+        "docs/HARDWARE.md",
+        "docs/HARDWARE.zh-CN.md",
+        "docs/OPEN_SOURCE.md",
+        "docs/OPEN_SOURCE.zh-CN.md",
+        "docs/PERFORMANCE.md",
+        "docs/PERFORMANCE.zh-CN.md",
+        "docs/PROTOCOL.md",
+        "docs/PROTOCOL.zh-CN.md",
+        "m61/dualsense_hidp_probe/reproducible-build.lock.json",
+        "m61/dualsense_hidp_probe/prepare_opus_source.ps1",
+        "tools/verify_m61_build_environment.py",
+        "tools/generate_m61_build_manifest.py",
     ]
     forbidden_paths = [
-        "CMakeLists.txt",
-        "sdkconfig.defaults",
-        "sdkconfig.raw_hidp.defaults",
-        "main",
-        "m61/esp32_prog_bridge",
-        "tools/build_esp32_stage1.py",
-        "tools/capture_stage1_log.py",
-        "tools/check_stage1_log.py",
-        "tools/flash_m61_bridge.py",
-        "tools/flash_stage1_auto.py",
-        "tools/flash_stage1_m61.py",
-        "tools/flash_stage1_manual.py",
-        "tools/m61_esp32_control.py",
-        "tools/test_stage1_log_checker.py",
-        "tools/validate_stage1_hardware.py",
-        "docs/M61_DEBUG_BRIDGE.md",
-        "docs/STAGE1_VALIDATION.md",
         ".gitmodules",
         "pico_sdk_import.cmake",
         "boards",
         "cmake",
         "lib",
         "src",
+        "docs/PROJECT_STANDARD.md",
+        "docs/IMPLEMENTATION_STATUS.md",
+        "docs/WAKEUP_RUNBOOK.md",
+        "tools/audit_requirements.py",
+        "tools/test_requirements_audit.py",
     ]
 
     for path in required_files:
@@ -68,26 +61,69 @@ def main() -> int:
             failures.append(f"missing required file: {path}")
     for path in forbidden_paths:
         if (ROOT / path).exists():
-            failures.append(f"non-M61 path must not exist: {path}")
+            failures.append(f"obsolete or non-M61 path must not exist: {path}")
 
-    cmake = (ROOT / "m61/dualsense_hidp_probe/CMakeLists.txt").read_text(encoding="utf-8")
-    for source in ("dualsense_output.c", "dualsense_parser.c", "m61_usb_gamepad.c"):
-        if f"target_sources(app PRIVATE {source})" not in cmake:
-            failures.append(f"M61 CMake must compile local source: {source}")
-    if "../../main" in cmake:
-        failures.append("M61 CMake must not reference the deleted root main directory")
+    lock_path = ROOT / "m61/dualsense_hidp_probe/reproducible-build.lock.json"
+    if lock_path.is_file():
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        release = lock.get("releaseProfile", {})
+        expected = {
+            "wramLengthBytes": 163840,
+            "opusVariant": "O2-LTO-e907-d4-fastpath",
+            "opusTcmProfile": "pvq-mdct-decode-mdct",
+            "usbGamepadO2": True,
+            "codecPairDelayMs": 1,
+            "crc32NibbleTable": True,
+            "hpmProfile": False,
+            "runtimeProfile": False,
+            "pipelineProfile": False,
+            "micDefaultEnabled": False,
+            "compileTimeCpuOverclockMhz": 0,
+            "runtimeCpuMhz": 320,
+        }
+        for key, value in expected.items():
+            if release.get(key) != value:
+                failures.append(
+                    f"release lock {key}={release.get(key)!r}; expected {value!r}"
+                )
+        if len(lock.get("opus", {}).get("patches", [])) != 11:
+            failures.append("release lock must contain the 11-patch Opus stack")
 
-    standard = (ROOT / "docs/PROJECT_STANDARD.md").read_text(encoding="utf-8")
-    for marker in (
-        "DualSense --Classic Bluetooth HIDP--> M61 --USB DualSense composite--> PC",
-        "仓库只保留 M61 实现",
-        "BL618 的 `USB_DP`/`USB_DM`",
-    ):
-        if marker not in standard:
-            failures.append(f"project standard missing marker: {marker}")
+    cmake_path = ROOT / "m61/dualsense_hidp_probe/CMakeLists.txt"
+    opus_cmake_path = (
+        ROOT / "m61/dualsense_hidp_probe/cmake/opus-1.2.1-windows/CMakeLists.txt"
+    )
+    if cmake_path.is_file():
+        cmake = cmake_path.read_text(encoding="utf-8")
+        for marker in (
+            "set(CONFIG_WRAM_LENGTH 163840)",
+            "CONFIG_M61_CRC32_NIBBLE_TABLE",
+            "CONFIG_M61_USB_GAMEPAD_O2",
+        ):
+            if marker not in cmake:
+                failures.append(f"firmware CMake missing release marker: {marker}")
+    if opus_cmake_path.is_file():
+        opus_cmake = opus_cmake_path.read_text(encoding="utf-8")
+        for marker in (
+            "M61_OPUS_E907_FFT_COMPLEX_MAC=1",
+            "M61_OPUS_TCM_DECODE_MDCT=1",
+            "-flto",
+        ):
+            if marker not in opus_cmake:
+                failures.append(f"Opus CMake missing release marker: {marker}")
 
-    for path in ROOT.rglob("*.ino"):
-        failures.append(f"MCU firmware must not use Arduino .ino file: {path.relative_to(ROOT)}")
+    for pdf in ROOT.rglob("*.pdf"):
+        if ".git" not in pdf.parts and "vendor" not in pdf.parts:
+            failures.append(f"vendor PDF must not be in the public tree: {pdf.relative_to(ROOT)}")
+    for extension in ("*.bin", "*.elf", "*.a"):
+        for artifact in ROOT.rglob(extension):
+            if not any(
+                part in {"build", "build-win", ".cache", "artifacts"}
+                for part in artifact.parts
+            ):
+                failures.append(
+                    f"generated binary outside ignored build paths: {artifact.relative_to(ROOT)}"
+                )
 
     if failures:
         print("Project verification failed:")

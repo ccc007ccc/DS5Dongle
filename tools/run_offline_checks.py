@@ -57,9 +57,9 @@ def main(argv: list[str] | None = None) -> int:
 
     steps: list[tuple[str, list[str]]] = [
         ("project structure", [sys.executable, "tools/verify_project.py"]),
-        ("requirements audit", [sys.executable, "tools/audit_requirements.py", "--require-spec"]),
-        ("requirements audit self-test", [sys.executable, "tools/test_requirements_audit.py"]),
         ("DualSense parser vectors", [sys.executable, "tools/test_dualsense_protocol.py"]),
+        ("DualSense CRC vectors", [sys.executable, "tools/test_dualsense_crc32_nibble.py"]),
+        ("M61 Feature bridge", [sys.executable, "tools/test_m61_feature_bridge.py"]),
         ("M61 HIDP log checker self-test", [sys.executable, "tools/test_m61_hidp_log_checker.py"]),
         ("M61 USB Windows checker self-test", [sys.executable, "tools/check_m61_usb_windows.py", "--self-test"]),
         ("M61 USB hardware validator self-test", [sys.executable, "tools/validate_m61_usb_hardware.py", "--self-test"]),

@@ -5,13 +5,16 @@ param(
 
     [string]$Distro = 'Ubuntu',
 
-    [string]$WslBuildOut =
-        '/home/ccc007/m61-build/DS5Dongle_ref/m61/dualsense_hidp_probe/build/build_out',
+    [string]$WslBuildOut = $env:M61_WSL_BUILD_OUT,
 
     [string]$Destination = (Join-Path $PSScriptRoot 'build\build_out')
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($WslBuildOut)) {
+    throw 'Pass -WslBuildOut or set M61_WSL_BUILD_OUT to the absolute WSL build/build_out path.'
+}
 
 function Convert-WslPathToUnc {
     param(

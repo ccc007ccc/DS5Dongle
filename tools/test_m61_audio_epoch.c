@@ -168,7 +168,7 @@ static void test_capacity_drops_oldest(void)
     assert(m61_audio_epoch_take_adjacent_pair(&pair));
     assert(pair.first_epoch == 1);
     m61_audio_epoch_get_stats(&stats);
-    assert(stats.epochs_started == 5);
+    assert(stats.epochs_started == M61_AUDIO_EPOCH_SLOT_COUNT + 1U);
     assert(stats.epochs_dropped == 1);
     assert(stats.adjacent_pairs == 1);
 }

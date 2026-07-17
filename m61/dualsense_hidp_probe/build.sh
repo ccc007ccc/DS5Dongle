@@ -14,7 +14,7 @@ CPU_ID=""
 COMMAND="build"
 HPM_PROFILE="n"
 HPM_SAMPLE_SHIFT="${M61_HPM_SAMPLE_SHIFT:-4}"
-USB_GAMEPAD_O2="n"
+USB_GAMEPAD_O2="y"
 CODEC_PAIR_DELAY_MS="${M61_CODEC_PAIR_DELAY_MS:-1}"
 CRC32_NIBBLE_TABLE="${M61_CRC32_NIBBLE_TABLE:-1}"
 RUNTIME_PROFILE="n"
@@ -26,6 +26,7 @@ MIC_PROFILE="n"
 OPUS_LIBRARY="${M61_OPUS_LIBRARY:-}"
 OPUS_VARIANT="${M61_OPUS_VARIANT:-source-o2-lto}"
 OPUS_TCM_PROFILE="${M61_OPUS_TCM_PROFILE:-pvq-mdct-decode-mdct}"
+ALLOW_UNVERIFIED_DEPENDENCIES=0
 
 log() {
     printf '[m61-hidp-build] %s\n' "$*"
@@ -38,7 +39,7 @@ fail() {
 
 show_help() {
     cat <<'EOF'
-Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--hpm-sample-shift 0..8] [--usb-gamepad-o2] [--codec-pair-delay-ms 1|2] [--crc32-nibble-table 0|1] [--runtime-profile] [--cpu-overclock 0|384|400|420|460|480] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH]
+Usage: ./build.sh [build|clean|all] [--chip bl616] [--board bl616dk] [--cpu-id ap] [--hpm-profile] [--hpm-sample-shift 0..8] [--usb-gamepad-o2] [--codec-pair-delay-ms 1|2] [--crc32-nibble-table 0|1] [--runtime-profile] [--cpu-overclock 0|384|400|420|460|480] [--pipeline-profile] [--mic-profile] [--memory-bench] [--opus-stage-profile] [--opus-tcm-profile PROFILE] [--opus-sdk|--opus-source-o2|--opus-source-o2-lto|--opus-source-o3|--opus-library PATH] [--allow-unverified-dependencies]
 
 Builds the M61 DualSense Classic Bluetooth HIDP probe.
 
@@ -50,11 +51,12 @@ Environment:
   M61_OPUS_TCM_PROFILE  pvq-mdct-decode-mdct (default); other placements are experimental.
   M61_OPUS_STAGE_PROFILE  y enables test-only CELT stage markers.
   M61_HPM_SAMPLE_SHIFT    HPM sampling shift, 0=all frames, 4=about 1/16.
-  --usb-gamepad-o2        Compile only m61_usb_gamepad.c with -O2 (A/B).
+  --usb-gamepad-o2        Compile m61_usb_gamepad.c with -O2 (release default).
   M61_CODEC_PAIR_DELAY_MS Codec task paired encode+decode wait window, 1 or 2 ms (default 1).
   M61_CRC32_NIBBLE_TABLE  Flash-resident 16-entry CRC table, 0 or 1 (default 1).
   --runtime-profile       Enable diagnostic FreeRTOS task runtime/idle accounting.
   M61_CPU_OVERCLOCK_MHZ   CPU target: 0 (off), 384, 400, 420, 460, or 480 MHz.
+  --allow-unverified-dependencies  Bypass the pinned SDK/toolchain gate (custom builds only).
 
 Example:
   ./build.sh
@@ -73,7 +75,6 @@ find_toolchain_bin() {
 
     candidates+=(
         "$HOME/riscv-toolchain/toolchain_gcc_t-head_linux/bin"
-        "/home/ccc007/riscv-toolchain/toolchain_gcc_t-head_linux/bin"
         "/opt/toolchain_gcc_t-head_linux/bin"
     )
 
@@ -119,6 +120,11 @@ build_project() {
     local toolchain_bin
     local opus_stage_value=0
     toolchain_bin="$(find_toolchain_bin)" || fail "T-HEAD riscv64-unknown-elf-gcc not found"
+    if [[ "$ALLOW_UNVERIFIED_DEPENDENCIES" != "1" ]]; then
+        python3 "$PROJECT_DIR/../../tools/verify_m61_build_environment.py" \
+            --sdk "$SDK_PATH" --toolchain-bin "$toolchain_bin" ||
+            fail "M61 dependency verification failed"
+    fi
     if [[ "$OPUS_STAGE_PROFILE" == "y" ]]; then
         opus_stage_value=1
     fi
@@ -191,6 +197,41 @@ build_project() {
     bin_file="$(find "$PROJECT_DIR/build/build_out" -maxdepth 1 -name 'm61_dualsense_hidp_probe_*.bin' | head -1 || true)"
     if [[ -n "$bin_file" ]]; then
         log "Firmware: $bin_file"
+        local elf_file map_file manifest_file bool_usb bool_crc bool_hpm
+        local bool_runtime bool_pipeline bool_stage bool_mic opus_variant_name
+        elf_file="${bin_file%.bin}.elf"
+        map_file="${bin_file%.bin}.map"
+        manifest_file="${bin_file%.bin}.manifest.json"
+        [[ -f "$elf_file" && -f "$map_file" ]] ||
+            fail "ELF or map artifact is missing"
+        [[ "$USB_GAMEPAD_O2" == "y" ]] && bool_usb=true || bool_usb=false
+        [[ "$CRC32_NIBBLE_TABLE" == "1" ]] && bool_crc=true || bool_crc=false
+        [[ "$HPM_PROFILE" == "y" ]] && bool_hpm=true || bool_hpm=false
+        [[ "$RUNTIME_PROFILE" == "y" ]] && bool_runtime=true || bool_runtime=false
+        [[ "$PIPELINE_PROFILE" == "y" ]] && bool_pipeline=true || bool_pipeline=false
+        [[ "$OPUS_STAGE_PROFILE" == "y" ]] && bool_stage=true || bool_stage=false
+        [[ "$MIC_PROFILE" == "y" ]] && bool_mic=true || bool_mic=false
+        opus_variant_name="O2-LTO-e907-d4-fastpath"
+        [[ "$OPUS_VARIANT" == "source-o2-lto" ]] || opus_variant_name="$OPUS_VARIANT"
+        python3 "$PROJECT_DIR/../../tools/generate_m61_build_manifest.py" \
+            --firmware "$bin_file" --elf "$elf_file" --map "$map_file" \
+            --sdk "$SDK_PATH" --toolchain-bin "$toolchain_bin" \
+            --output "$manifest_file" \
+            --setting chip="$CHIP" --setting board="$BOARD" \
+            --setting wramLengthBytes=163840 \
+            --setting opusVariant="$opus_variant_name" \
+            --setting opusTcmProfile="$OPUS_TCM_PROFILE" \
+            --setting usbGamepadO2="$bool_usb" \
+            --setting codecPairDelayMs="$CODEC_PAIR_DELAY_MS" \
+            --setting crc32NibbleTable="$bool_crc" \
+            --setting hpmProfile="$bool_hpm" \
+            --setting runtimeProfile="$bool_runtime" \
+            --setting pipelineProfile="$bool_pipeline" \
+            --setting opusStageProfile="$bool_stage" \
+            --setting micDefaultEnabled="$bool_mic" \
+            --setting compileTimeCpuOverclockMhz="$CPU_OVERCLOCK_MHZ" \
+            --setting runtimeCpuGovernor=manual --setting runtimeCpuMhz=320 \
+            --setting speakerRoute=auto
     fi
 }
 
@@ -291,6 +332,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --opus-source-o3)
             OPUS_VARIANT="source-o3"
+            shift
+            ;;
+        --allow-unverified-dependencies)
+            ALLOW_UNVERIFIED_DEPENDENCIES=1
             shift
             ;;
         -h|--help|help)

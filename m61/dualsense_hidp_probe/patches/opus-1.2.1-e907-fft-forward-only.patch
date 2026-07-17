@@ -1,7 +1,7 @@
 diff --git a/celt/_kiss_fft_guts.h b/celt/_kiss_fft_guts.h
 --- a/celt/_kiss_fft_guts.h
 +++ b/celt/_kiss_fft_guts.h
-@@ -131,6 +131,13 @@
+@@ -119,6 +119,13 @@
            (m).i = SUB32_ovflw(S_MUL((a).i,(b).r) , S_MUL((a).r,(b).i)); }while(0)
  #endif
  
@@ -14,4 +14,4 @@ diff --git a/celt/_kiss_fft_guts.h b/celt/_kiss_fft_guts.h
 +
  #   define C_MULBYSCALAR( c, s ) \
        do{ (c).r =  S_MUL( (c).r , s ) ;\
-           (c).i =  S_MUL( (c).i , s ) ; }while (0)
+          (c).i =  S_MUL( (c).i , s ) ; }while(0)

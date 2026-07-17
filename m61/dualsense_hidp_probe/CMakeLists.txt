@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.15)
 
 find_package(bouffalo_sdk REQUIRED HINTS $ENV{BL_SDK_BASE})
 
+# Keep the measured 160 KiB WRAM partition used by the realtime firmware.
+# Pinning it in the project avoids a local SDK edit and preserves the exact
+# linker and bus-arbitration layout used for the published performance data.
+set(CONFIG_WRAM_LENGTH 163840)
+
 # Allow reproducible A/B tests against a source-built Opus without modifying
 # the shared Bouffalo SDK checkout.  The SDK registers its prebuilt archive
 # before this project is evaluated, so replace that one entry in SDK_LIBS.

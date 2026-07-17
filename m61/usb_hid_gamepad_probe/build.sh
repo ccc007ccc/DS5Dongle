@@ -16,7 +16,6 @@ find_toolchain_bin() {
     local candidates=(
         "${M61_TOOLCHAIN_BIN:-}"
         "$HOME/riscv-toolchain/toolchain_gcc_t-head_linux/bin"
-        "/home/ccc007/riscv-toolchain/toolchain_gcc_t-head_linux/bin"
         "/opt/toolchain_gcc_t-head_linux/bin"
     )
 

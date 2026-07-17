@@ -88,7 +88,6 @@ def size_commands(elf: Path, requested_tool: str | None) -> list[list[str]]:
             [
                 [
                     "wsl",
-                    "/home/ccc007/riscv-toolchain/toolchain_gcc_t-head_linux/bin/"
                     "riscv64-unknown-elf-size",
                     "-A",
                     wsl_elf,
