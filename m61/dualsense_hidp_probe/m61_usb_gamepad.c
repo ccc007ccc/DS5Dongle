@@ -1,5 +1,6 @@
 #include "m61_usb_gamepad.h"
 #include "m61_audio_epoch.h"
+#include "m61_dvfs.h"
 #include "m61_perf_profile.h"
 
 #include <stdbool.h>
@@ -60,11 +61,10 @@
 #define AUDIO_SPEAKER_CHANNELS 2
 #define AUDIO_SPEAKER_FRAME_SAMPLES 480
 #define AUDIO_SPEAKER_FRAME_SAMPLES_UPSTREAM 480
-#define AUDIO_SPEAKER_OPUS_CHANNELS 1
+#define AUDIO_SPEAKER_OPUS_CHANNELS 2
 #define AUDIO_SPEAKER_FRAME_BYTES (AUDIO_SPEAKER_FRAME_SAMPLES * AUDIO_SPEAKER_CHANNELS * AUDIO_BYTES_PER_SAMPLE)
 #define AUDIO_SPEAKER_QUEUE_DEPTH 2
 #define AUDIO_SPEAKER_OPUS_QUEUE_DEPTH 2
-#define AUDIO_SPEAKER_OPUS_FORCE_CHANNELS 1
 #define AUDIO_SPEAKER_OPUS_BANDWIDTH OPUS_BANDWIDTH_MEDIUMBAND
 #ifndef CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE
 #define CONFIG_M61_DS5_SPEAKER_OPUS_BITRATE 160000
@@ -410,6 +410,12 @@ static volatile bool decoder_benchmark_requested;
 static volatile bool decoder_benchmark_active;
 #endif
 static volatile uint32_t audio_generation = 1;
+static volatile bool audio_mic_runtime_enabled =
+    CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ? true : false;
+static volatile m61_speaker_route_t speaker_route = M61_SPEAKER_ROUTE_AUTO;
+static volatile bool speaker_headphones_connected;
+static volatile bool speaker_stereo_requested;
+static volatile bool speaker_stereo_active;
 static volatile bool pending_feature_request_valid;
 static volatile bool pending_host_report_valid;
 static volatile bool usb_initialized;
@@ -427,6 +433,15 @@ static volatile bool audio_speaker_mute;
 static volatile bool audio_mic_mute;
 static volatile int audio_speaker_volume_db;
 static volatile int audio_mic_volume_db;
+
+static void update_dvfs_audio_load(void)
+{
+    m61_dvfs_set_audio_enabled(audio_out_open && !audio_speaker_mute,
+                               audio_mic_runtime_enabled && audio_in_open &&
+                                   !audio_mic_mute,
+                               speaker_stereo_requested);
+}
+
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t usb_in_buffer[HID_INT_EP_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t usb_out_buffer[HID_INT_EP_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t usb_control_buffer[M61_DS5_USB_FEATURE_MAX_LEN];
@@ -666,6 +681,34 @@ static void reset_audio_pipeline(bool cancel_active_dma)
 #endif
     m61_audio_epoch_reset(audio_generation);
     usb_unlock(flags);
+}
+
+static bool speaker_route_wants_stereo(void)
+{
+    switch (speaker_route) {
+    case M61_SPEAKER_ROUTE_MONO:
+        return false;
+    case M61_SPEAKER_ROUTE_STEREO:
+        return true;
+    case M61_SPEAKER_ROUTE_AUTO:
+    default:
+        return speaker_headphones_connected;
+    }
+}
+
+static void apply_speaker_route_policy(void)
+{
+    bool stereo = speaker_route_wants_stereo();
+
+    if (speaker_stereo_requested != stereo) {
+        speaker_stereo_requested = stereo;
+
+        /* Do not relabel packets encoded for the previous physical output as
+         * speaker/headset packets.  A generation change drops queued work and
+         * lets Opus switch channels at the next epoch boundary. */
+        reset_audio_pipeline(false);
+    }
+    update_dvfs_audio_load();
 }
 
 static int find_free_audio_ingress_slot_locked(void)
@@ -1377,10 +1420,13 @@ audio_codec_task(void *pvParameters)
             opus_encoder_ctl(encoder, OPUS_SET_BITRATE(AUDIO_SPEAKER_OPUS_BITRATE));
             opus_encoder_ctl(encoder, OPUS_SET_VBR(0));
             opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(0));
-            opus_encoder_ctl(encoder, OPUS_SET_FORCE_CHANNELS(AUDIO_SPEAKER_OPUS_FORCE_CHANNELS));
+            opus_encoder_ctl(
+                encoder,
+                OPUS_SET_FORCE_CHANNELS(speaker_stereo_requested ? 2 : 1));
             opus_encoder_ctl(encoder, OPUS_SET_MAX_BANDWIDTH(AUDIO_SPEAKER_OPUS_BANDWIDTH));
             usb_diag.audio_speaker_opus_force_mono =
-                (AUDIO_SPEAKER_OPUS_FORCE_CHANNELS == 1) ? 1 : 0;
+                speaker_stereo_requested ? 0U : 1U;
+            speaker_stereo_active = speaker_stereo_requested;
             usb_diag.audio_speaker_opus_bandwidth = AUDIO_SPEAKER_OPUS_BANDWIDTH;
             usb_diag.audio_speaker_opus_bitrate = AUDIO_SPEAKER_OPUS_BITRATE;
             usb_diag.audio_codec_encoder_ready = 1;
@@ -1411,11 +1457,25 @@ audio_codec_task(void *pvParameters)
 
     while (1) {
         uint8_t speaker_budget = 1U;
+        bool speaker_work_ran = false;
+        bool mic_work_ran = false;
 #if CONFIG_M61_HPM_PROFILE
         bool speaker_encoded = false;
 #endif
         uint8_t codec_stages_ran = 0U;
         TickType_t now;
+
+        if (encoder && speaker_stereo_requested != speaker_stereo_active) {
+            int channels = speaker_stereo_requested ? 2 : 1;
+            int ctl_error = opus_encoder_ctl(
+                encoder, OPUS_SET_FORCE_CHANNELS(channels));
+
+            if (ctl_error == OPUS_OK) {
+                speaker_stereo_active = speaker_stereo_requested;
+                usb_diag.audio_speaker_opus_force_mono =
+                    speaker_stereo_active ? 0U : 1U;
+            }
+        }
 
 #if CONFIG_M61_HPM_PROFILE
         if (decoder && decoder_benchmark_requested != decoder_benchmark_active) {
@@ -1433,6 +1493,7 @@ audio_codec_task(void *pvParameters)
 
         while (speaker_budget > 0 && encoder &&
                m61_audio_epoch_take_encode_job(&speaker_job)) {
+            speaker_work_ran = true;
             codec_stages_ran++;
             uint64_t encode_start_us;
             uint64_t encode_elapsed_us;
@@ -1505,6 +1566,7 @@ audio_codec_task(void *pvParameters)
 
 #if CONFIG_M61_HPM_PROFILE
         if (decoder && decoder_benchmark_active && speaker_encoded) {
+            mic_work_ran = true;
             uint64_t decode_start_us;
             uint64_t decode_elapsed_us;
             m61_perf_counter_sample_t perf_start;
@@ -1532,7 +1594,9 @@ audio_codec_task(void *pvParameters)
         }
 #endif
 
-        if (decoder && take_mic_opus(mic_opus, &mic_created_us)) {
+        if (audio_mic_runtime_enabled && decoder &&
+            take_mic_opus(mic_opus, &mic_created_us)) {
+            mic_work_ran = true;
             codec_stages_ran++;
             uint64_t mic_queue_age_us = bflb_mtimer_get_time_us() - mic_created_us;
             usb_diag.audio_mic_queue_age_us_last =
@@ -1576,6 +1640,8 @@ audio_codec_task(void *pvParameters)
                 usb_diag.audio_mic_decode_errors++;
             }
         }
+
+        m61_dvfs_note_audio_activity(speaker_work_ran, mic_work_ran);
 
         usb_diag.audio_codec_stage = 5;
         now = xTaskGetTickCount();
@@ -1863,7 +1929,12 @@ static bool prepare_audio_in_locked(uint8_t *selected,
         *nonzero = audio_mic_packet_nonzero[*selected] != 0U;
     } else {
         audio_mic_packet_active_slot = AUDIO_MIC_PACKET_INVALID_SLOT;
-        usb_diag.audio_mic_underflow++;
+        /* A disabled runtime microphone intentionally serves silence while
+         * Windows keeps polling the USB IN endpoint. Do not report those
+         * expected zero packets as decoder starvation. */
+        if (audio_mic_runtime_enabled && !audio_mic_mute) {
+            usb_diag.audio_mic_underflow++;
+        }
     }
     audio_in_busy = true;
     return true;
@@ -1936,6 +2007,7 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             audio_in_busy = false;
             flush_mic_queues();
             reset_audio_pipeline(true);
+            update_dvfs_audio_load();
             break;
         case USBD_EVENT_CONFIGURED:
             usb_ready = true;
@@ -2299,20 +2371,21 @@ static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src)
        original remainder is always i*32. */
     for (uint32_t block = 0; block < 32U; block++) {
         const int16_t *block_src = src + block * 16U * 2U;
-        int16_t *block_dst = dst + block * 15U;
+        int16_t *block_dst = dst + block * 15U * 2U;
 
         for (uint32_t i = 0; i < 15U; i++) {
             const int16_t *sample = block_src + i * 2U;
-            int32_t a = ((int32_t)sample[0] + (int32_t)sample[1]) / 2;
-            int32_t b = ((int32_t)sample[2] + (int32_t)sample[3]) / 2;
-            int32_t delta = (b - a) * (int32_t)i;
+            for (uint32_t channel = 0; channel < 2U; channel++) {
+                uint32_t source_channel = channel ^ 1U;
+                int32_t a = sample[source_channel];
+                int32_t b = sample[source_channel + 2U];
+                int32_t delta = (b - a) * (int32_t)i;
 
-            if (delta >= 0) {
-                delta += 7;
-            } else {
-                delta -= 7;
+                if (delta >= 0) delta += 7;
+                else delta -= 7;
+                block_dst[i * 2U + channel] =
+                    clamp_i16(a + delta / 15);
             }
-            block_dst[i] = clamp_i16(a + delta / 15);
         }
     }
 #else
@@ -2326,18 +2399,17 @@ static void resample_epoch_speaker_mono(int16_t *dst, const int16_t *src)
         int32_t b;
         int32_t delta;
 
-        a = ((int32_t)src[src_frame * 2U] +
-             (int32_t)src[src_frame * 2U + 1U]) / 2;
-        b = ((int32_t)src[next_frame * 2U] +
-             (int32_t)src[next_frame * 2U + 1U]) / 2;
-        delta = (b - a) * (int32_t)frac;
-        if (delta >= 0) {
-            delta += AUDIO_SPEAKER_FRAME_SAMPLES / 2;
-        } else {
-            delta -= AUDIO_SPEAKER_FRAME_SAMPLES / 2;
+        for (uint32_t channel = 0; channel < 2U; channel++) {
+            uint32_t source_channel = channel ^ 1U;
+
+            a = src[src_frame * 2U + source_channel];
+            b = src[next_frame * 2U + source_channel];
+            delta = (b - a) * (int32_t)frac;
+            if (delta >= 0) delta += AUDIO_SPEAKER_FRAME_SAMPLES / 2;
+            else delta -= AUDIO_SPEAKER_FRAME_SAMPLES / 2;
+            dst[out_frame * 2U + channel] = clamp_i16(
+                a + delta / AUDIO_SPEAKER_FRAME_SAMPLES);
         }
-        dst[out_frame] = clamp_i16(
-            a + delta / AUDIO_SPEAKER_FRAME_SAMPLES);
 
         /* Exact recurrence for floor(out_frame * 512 / 480) and its
          * remainder.  frac+512 is in [512, 991], so the source advances by
@@ -2451,7 +2523,7 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len)
     bool nonzero;
     uint64_t created_us;
 
-    if (!CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ||
+    if (!audio_mic_runtime_enabled ||
         !data || len < M61_DS5_MIC_OPUS_LEN || !audio_in_open || audio_mic_mute) {
         return;
     }
@@ -2497,15 +2569,68 @@ bool m61_usb_gamepad_decoder_benchmark_enabled(void)
 
 bool m61_usb_gamepad_audio_mic_enabled(void)
 {
-    return CONFIG_M61_DS5_MIC_DEFAULT_ENABLED ? true : false;
+    return audio_mic_runtime_enabled;
+}
+
+void m61_usb_gamepad_set_audio_mic_enabled(bool enabled)
+{
+    if (audio_mic_runtime_enabled == enabled) {
+        return;
+    }
+
+    audio_mic_runtime_enabled = enabled;
+    flush_mic_queues();
+
+    /* Changing the full-duplex workload invalidates any epochs queued under
+     * the previous scheduling budget.  Drop them as one generation instead
+     * of letting stale encode/decode work delay the new mode for seconds. */
+    reset_audio_pipeline(false);
+    update_dvfs_audio_load();
+}
+
+bool m61_usb_gamepad_speaker_stereo_enabled(void)
+{
+    return speaker_stereo_active;
+}
+
+void m61_usb_gamepad_set_speaker_stereo_enabled(bool enabled)
+{
+    m61_usb_gamepad_set_speaker_route(
+        enabled ? M61_SPEAKER_ROUTE_STEREO : M61_SPEAKER_ROUTE_MONO);
+}
+
+void m61_usb_gamepad_set_speaker_route(m61_speaker_route_t route)
+{
+    if (route < M61_SPEAKER_ROUTE_AUTO || route > M61_SPEAKER_ROUTE_STEREO ||
+        speaker_route == route) {
+        return;
+    }
+    speaker_route = route;
+    apply_speaker_route_policy();
+}
+
+m61_speaker_route_t m61_usb_gamepad_speaker_route(void)
+{
+    return speaker_route;
+}
+
+void m61_usb_gamepad_set_headphones_connected(bool connected)
+{
+    if (speaker_headphones_connected == connected) {
+        return;
+    }
+    speaker_headphones_connected = connected;
+    apply_speaker_route_policy();
+}
+
+bool m61_usb_gamepad_headphones_connected(void)
+{
+    return speaker_headphones_connected;
 }
 
 bool m61_usb_gamepad_audio_in_active(void)
 {
-    if (!CONFIG_M61_DS5_MIC_DEFAULT_ENABLED) {
-        return false;
-    }
-    return audio_in_open && !audio_mic_mute;
+    return audio_mic_runtime_enabled && audio_in_open && !audio_mic_mute;
 }
 
 bool m61_usb_gamepad_audio_speaker_active(void)
@@ -2918,6 +3043,7 @@ void usbd_audio_open(uint8_t busid, uint8_t intf)
         flush_mic_queues();
         arm_audio_in(busid);
     }
+    update_dvfs_audio_load();
 }
 
 void usbd_audio_close(uint8_t busid, uint8_t intf)
@@ -2935,6 +3061,7 @@ void usbd_audio_close(uint8_t busid, uint8_t intf)
         audio_in_busy = false;
         flush_mic_queues();
     }
+    update_dvfs_audio_load();
 }
 
 void usbd_audio_set_volume(uint8_t busid, uint8_t ep, uint8_t ch, int volume_db)
@@ -2981,6 +3108,7 @@ void usbd_audio_set_mute(uint8_t busid, uint8_t ep, uint8_t ch, bool mute)
             flush_mic_queues();
         }
     }
+    update_dvfs_audio_load();
 }
 
 bool usbd_audio_get_mute(uint8_t busid, uint8_t ep, uint8_t ch)
@@ -3069,6 +3197,16 @@ int m61_usb_gamepad_set_decoder_benchmark(bool enabled)
 }
 bool m61_usb_gamepad_decoder_benchmark_enabled(void) { return false; }
 bool m61_usb_gamepad_audio_mic_enabled(void) { return false; }
+void m61_usb_gamepad_set_audio_mic_enabled(bool enabled) { (void)enabled; }
+bool m61_usb_gamepad_speaker_stereo_enabled(void) { return false; }
+void m61_usb_gamepad_set_speaker_stereo_enabled(bool enabled) { (void)enabled; }
+void m61_usb_gamepad_set_speaker_route(m61_speaker_route_t route) { (void)route; }
+m61_speaker_route_t m61_usb_gamepad_speaker_route(void)
+{
+    return M61_SPEAKER_ROUTE_AUTO;
+}
+void m61_usb_gamepad_set_headphones_connected(bool connected) { (void)connected; }
+bool m61_usb_gamepad_headphones_connected(void) { return false; }
 bool m61_usb_gamepad_audio_in_active(void) { return false; }
 bool m61_usb_gamepad_audio_speaker_active(void) { return false; }
 uint32_t m61_usb_gamepad_audio_generation(void) { return 0; }

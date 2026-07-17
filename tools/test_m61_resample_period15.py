@@ -27,6 +27,25 @@ def period15_delta(delta: int, index: int) -> int:
     return c_div(scaled, 15)
 
 
+def generic_sample(source: list[tuple[int, int]], output_frame: int, channel: int) -> int:
+    position = output_frame * 512
+    source_frame, fraction = divmod(position, 480)
+    next_frame = min(source_frame + 1, 511)
+    source_channel = channel ^ 1
+    a = source[source_frame][source_channel]
+    b = source[next_frame][source_channel]
+    return a + generic_delta(b - a, fraction)
+
+
+def period15_sample(source: list[tuple[int, int]], output_frame: int, channel: int) -> int:
+    block, index = divmod(output_frame, 15)
+    source_frame = block * 16 + index
+    source_channel = channel ^ 1
+    a = source[source_frame][source_channel]
+    b = source[source_frame + 1][source_channel]
+    return a + period15_delta(b - a, index)
+
+
 def main() -> int:
     source_frame = 0
     fraction = 0
@@ -49,7 +68,21 @@ def main() -> int:
         for index in range(15):
             assert generic_delta(delta, index * 32) == period15_delta(delta, index)
 
-    print("m61 512->480 period-15 resampler equivalence: PASS")
+    # The DualSense speaker transport's L/R order is opposite the Windows USB
+    # channel order. Verify that the optimized path both preserves the exact
+    # interpolation and swaps only the two speaker channels.
+    source = [
+        (((frame * 211 + 17) % 60001) - 30000,
+         ((frame * 307 + 101) % 62003) - 31000)
+        for frame in range(512)
+    ]
+    for output_frame in range(480):
+        for channel in range(2):
+            assert period15_sample(source, output_frame, channel) == generic_sample(
+                source, output_frame, channel
+            )
+
+    print("m61 512->480 period-15 stereo-swap equivalence: PASS")
     return 0
 
 

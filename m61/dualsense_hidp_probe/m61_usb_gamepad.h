@@ -25,6 +25,12 @@ typedef struct {
     uint8_t data[M61_DS5_USB_OUTPUT_MAX_LEN];
 } m61_usb_gamepad_host_report_t;
 
+typedef enum {
+    M61_SPEAKER_ROUTE_AUTO = 0,
+    M61_SPEAKER_ROUTE_MONO,
+    M61_SPEAKER_ROUTE_STEREO,
+} m61_speaker_route_t;
+
 void m61_usb_gamepad_init(void);
 void m61_usb_gamepad_deinit(void);
 int m61_usb_gamepad_reinit(void);
@@ -37,6 +43,13 @@ void m61_usb_gamepad_submit_mic_opus(const uint8_t *data, size_t len);
 int m61_usb_gamepad_set_decoder_benchmark(bool enabled);
 bool m61_usb_gamepad_decoder_benchmark_enabled(void);
 bool m61_usb_gamepad_audio_mic_enabled(void);
+void m61_usb_gamepad_set_audio_mic_enabled(bool enabled);
+bool m61_usb_gamepad_speaker_stereo_enabled(void);
+void m61_usb_gamepad_set_speaker_stereo_enabled(bool enabled);
+void m61_usb_gamepad_set_speaker_route(m61_speaker_route_t route);
+m61_speaker_route_t m61_usb_gamepad_speaker_route(void);
+void m61_usb_gamepad_set_headphones_connected(bool connected);
+bool m61_usb_gamepad_headphones_connected(void);
 bool m61_usb_gamepad_audio_in_active(void);
 bool m61_usb_gamepad_audio_speaker_active(void);
 uint32_t m61_usb_gamepad_audio_generation(void);

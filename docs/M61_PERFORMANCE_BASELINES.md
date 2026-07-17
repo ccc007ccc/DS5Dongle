@@ -725,3 +725,31 @@ Release证据：
 后两轮Encode P95稳定降至4.25 ms，Decode P95/P99保持3.75/4.00 ms，BT total平均与最大
 延迟显著下降，且连续三轮没有硬错误；因此Flash nibble CRC晋升为默认实现与当前BT/全链路
 尾延迟最优。
+
+## 25. 真实320 MHz双声道、mic关闭基线
+
+本轮验证不依赖编译期超频值：运行时DVFS工具锁定`manual/eco`，实测CPU/PBCLK为
+320/80 MHz。扬声器保持48 kHz、16-bit、双声道Opus、160 kbps、mediumband；四通道
+USB Audio OUT、HD haptics和20 ms HID负载均保持`baseline-v1`默认值。麦克风在测试前
+运行时关闭，未使用`--mic-input`，因此本轮只测speaker encode上限，不代表全双工性能。
+
+证据：
+
+- `artifacts/dvfs_320_stereo_micoff_before.log`
+- `artifacts/dvfs_320_stereo_micoff.log`
+
+| 指标 | 90秒区间 |
+| --- | ---: |
+| Encode平均/P50/P95/P99/max | 6.026/6.250/7.000/7.500/7.655 ms |
+| Encode cycles平均/max | 1,928,884/2,448,950 |
+| Encode instret平均 | 345,890 |
+| encode epoch/BT realtime | 8,438/4,219 |
+| Decode新增样本 | 0（mic decode已停止） |
+| qdrop/odrop/deadline/encode error | 0/0/0/0 |
+| BT error/stale/noconn | 0/0/0 |
+| USB测试帧/HID报告 | 4,320,000/4,502 |
+
+`usb_in`端点仍被Windows轮询，旧诊断把mic关闭后的静音包累计为93,374次underflow；
+这不是codec饥饿或丢包。后续实现已将运行时mic关闭产生的预期静音从underflow统计中
+排除。该基线证明真实320 MHz下双声道单向负载仍有约2.35 ms的P99帧预算，所有硬错误
+为0；但不能据此推断320 MHz全双工可用。

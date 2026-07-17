@@ -10,6 +10,7 @@
 #include "dualsense_parser.h"
 #include "m61_audio_epoch.h"
 #include "m61_bt_tx_scheduler.h"
+#include "m61_dvfs.h"
 #include "m61_perf_profile.h"
 #include "m61_runtime_profile.h"
 #include "m61_usb_gamepad.h"
@@ -88,8 +89,7 @@
 #include "bl618dg_sys.h"
 #endif
 
-static void m61_apply_cpu_overclock(void);
-static uint32_t m61_measure_cpu_clock_mhz(void);
+static void m61_start_dvfs(void);
 
 #define HIDP_PSM_CONTROL 0x0011
 #define HIDP_PSM_INTERRUPT 0x0013
@@ -478,6 +478,7 @@ static void auto_reset_link_state(void)
     hidp_audio_last_report_valid = false;
 #endif
     dualsense_headphones_connected = false;
+    m61_usb_gamepad_set_headphones_connected(false);
     auto_bringup_attempts = 0;
     auto_next_hidp_tick = 0;
     auto_next_bringup_tick = 0;
@@ -1412,6 +1413,7 @@ static int hidp_l2cap_recv(struct bt_l2cap_chan *chan, struct net_buf *buf)
         }
         if (state.is_full_report) {
             dualsense_headphones_connected = state.headphones;
+            m61_usb_gamepad_set_headphones_connected(state.headphones);
         }
         if (state.is_full_report && parse.payload_len >= M61_DS5_USB_INPUT_PAYLOAD_LEN) {
             m61_usb_gamepad_send_report01(buf->data + parse.payload_offset,
@@ -2748,10 +2750,9 @@ static void bt_enable_cb(int err)
     hidp_l2cap_servers_register();
     br_set_scan_mode(true, false, "bt-ready-passive");
 
-    /* The Bluetooth controller restores WIFIPLL-320 during initialization.
-     * Apply the optional CPU-only target after the controller is fully ready;
-     * USB startup waits for this callback, so no active stream is disturbed. */
-    m61_apply_cpu_overclock();
+    /* The controller restores WIFIPLL-320 during initialization. Start DVFS
+     * only after that reset; USB startup waits for this callback. */
+    m61_start_dvfs();
 
     printf("M61 DualSense HIDP probe ready. Use 'ds5 scan'.\r\n");
     status_led_finish_boot();
@@ -2926,6 +2927,8 @@ static void print_help(void)
     printf("  ds5 disconnect\r\n");
     printf("  ds5 usb-reinit\r\n");
     printf("  ds5 usb-cycle\r\n");
+    printf("  ds5 mic [on|off]\r\n");
+    printf("  ds5 speaker [auto|mono|stereo]\r\n");
     printf("  ds5 decoder-bench [on|off]\r\n");
 #if CONFIG_M61_RUNTIME_PROFILE
     printf("  ds5 runtime [status|reset]\r\n");
@@ -3526,6 +3529,46 @@ int cmd_ds5(int argc, char **argv)
         return m61_usb_cycle_command();
     }
 
+    if (strcmp(argv[1], "mic") == 0) {
+        if (argc >= 3 &&
+            (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
+            m61_usb_gamepad_set_audio_mic_enabled(
+                strcmp(argv[2], "on") == 0);
+        }
+        printf("mic runtime=%s\r\n",
+               m61_usb_gamepad_audio_mic_enabled() ? "on" : "off");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "speaker") == 0) {
+        m61_speaker_route_t route = m61_usb_gamepad_speaker_route();
+        const char *route_name;
+
+        if (argc >= 3) {
+            if (strcmp(argv[2], "auto") == 0) {
+                route = M61_SPEAKER_ROUTE_AUTO;
+            } else if (strcmp(argv[2], "mono") == 0) {
+                route = M61_SPEAKER_ROUTE_MONO;
+            } else if (strcmp(argv[2], "stereo") == 0) {
+                route = M61_SPEAKER_ROUTE_STEREO;
+            } else {
+                printf("usage: ds5 speaker [auto|mono|stereo]\r\n");
+                return -EINVAL;
+            }
+            m61_usb_gamepad_set_speaker_route(route);
+        }
+        route = m61_usb_gamepad_speaker_route();
+        route_name = route == M61_SPEAKER_ROUTE_MONO
+                         ? "mono"
+                         : (route == M61_SPEAKER_ROUTE_STEREO ? "stereo"
+                                                              : "auto");
+        printf("speaker route=%s jack=%s channels=%s\r\n",
+               route_name,
+               m61_usb_gamepad_headphones_connected() ? "headset" : "internal",
+               m61_usb_gamepad_speaker_stereo_enabled() ? "stereo" : "mono");
+        return 0;
+    }
+
     if (strcmp(argv[1], "decoder-bench") == 0) {
         if (argc < 3) {
             printf("decoder benchmark=%s\r\n",
@@ -3742,11 +3785,177 @@ static void print_m61_help(void)
 {
     printf("Usage:\r\n");
     printf("  m61 reboot-isp\r\n");
-    printf("  m61 clock\r\n");
+    printf("  m61 clock [status]\r\n");
+    printf("  m61 clock profile [eco|balanced|performance]\r\n");
+    printf("  m61 clock lock <profile|320..400>\r\n");
+    printf("  m61 clock lock <401..480> experimental\r\n");
+    printf("  m61 clock governor [manual|realtime]\r\n");
+    printf("  m61 clock boost <320..400> <hold-ms>\r\n");
+    printf("  m61 clock save | clear-saved\r\n");
     printf("  m61 led [status|test|auto|off|red|green|blue|connecting|connected]\r\n");
 #if CONFIG_M61_MEMORY_BENCH
     printf("  m61 membench [all|4k|40k]\r\n");
 #endif
+}
+
+static bool m61_parse_u32(const char *text, uint32_t *value)
+{
+    char *end;
+    unsigned long parsed;
+
+    if (text == NULL || *text == '\0' || value == NULL) return false;
+    errno = 0;
+    parsed = strtoul(text, &end, 10);
+    if (errno != 0 || *end != '\0' || parsed > UINT32_MAX) return false;
+    *value = (uint32_t)parsed;
+    return true;
+}
+
+static bool m61_parse_dvfs_profile(const char *text,
+                                   m61_dvfs_profile_t *profile)
+{
+    if (text == NULL || profile == NULL) return false;
+    if (strcmp(text, "default") == 0 || strcmp(text, "eco") == 0) {
+        *profile = M61_DVFS_PROFILE_ECO;
+    } else if (strcmp(text, "balanced") == 0) {
+        *profile = M61_DVFS_PROFILE_BALANCED;
+    } else if (strcmp(text, "performance") == 0 ||
+               strcmp(text, "perf") == 0) {
+        *profile = M61_DVFS_PROFILE_PERFORMANCE;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static void m61_print_dvfs_status(void)
+{
+    m61_dvfs_status_t status;
+    const char *profile;
+    uint32_t measured_mhz;
+
+    m61_dvfs_get_status(&status);
+    measured_mhz = m61_dvfs_measure_cpu_mhz();
+    profile = status.manual_profile < M61_DVFS_PROFILE_COUNT
+                  ? m61_dvfs_profile_name(status.manual_profile)
+                  : "custom";
+    printf("cpu_clock governor=%s lock=%luMHz profile=%s requested=%luMHz "
+           "current=%luMHz actual=%luMHz pbclk=%luMHz saved=%u "
+           "experimental=%u\r\n",
+           m61_dvfs_governor_name(status.governor),
+           (unsigned long)status.manual_mhz,
+           profile,
+           (unsigned long)status.requested_mhz,
+           (unsigned long)status.current_mhz,
+           (unsigned long)measured_mhz,
+           (unsigned long)(measured_mhz / 4U),
+           status.persistent_config_loaded ? 1U : 0U,
+           status.experimental_requested ? 1U : 0U);
+    printf("dvfs floor=%luMHz audio=%s/%s/%s transitions=%lu failures=%lu "
+           "last_error=%ld\r\n",
+           (unsigned long)status.realtime_floor_mhz,
+           status.speaker_active ? "speaker" : "no-speaker",
+           status.mic_active ? "mic" : "no-mic",
+           status.speaker_stereo ? "stereo" : "mono",
+           (unsigned long)status.transitions,
+           (unsigned long)status.transition_failures,
+           (long)status.last_error);
+}
+
+static int m61_clock_command(int argc, char **argv)
+{
+    int err = 0;
+    bool changed = false;
+
+    if (argc < 3 || strcmp(argv[2], "status") == 0) {
+        m61_print_dvfs_status();
+        return 0;
+    }
+
+    if (strcmp(argv[2], "profile") == 0) {
+        m61_dvfs_profile_t profile;
+
+        if (argc < 4 || !m61_parse_dvfs_profile(argv[3], &profile)) {
+            err = -EINVAL;
+        } else {
+            err = m61_dvfs_set_profile(profile);
+            changed = err == 0;
+        }
+    } else if (strcmp(argv[2], "lock") == 0 ||
+               strcmp(argv[2], "set") == 0) {
+        m61_dvfs_profile_t profile;
+        uint32_t mhz;
+
+        if (argc < 4) {
+            err = -EINVAL;
+        } else if (m61_parse_dvfs_profile(argv[3], &profile)) {
+            err = m61_dvfs_set_profile(profile);
+            changed = err == 0;
+        } else if (m61_parse_u32(argv[3], &mhz)) {
+            bool experimental = argc >= 5 &&
+                                strcmp(argv[4], "experimental") == 0;
+
+            err = m61_dvfs_set_custom_frequency(mhz, experimental);
+            changed = err == 0;
+        } else {
+            err = -EINVAL;
+        }
+    } else if (strcmp(argv[2], "governor") == 0) {
+        if (argc < 4) {
+            err = -EINVAL;
+        } else if (strcmp(argv[3], "manual") == 0 ||
+                   strcmp(argv[3], "locked") == 0) {
+            err = m61_dvfs_set_governor(M61_DVFS_GOVERNOR_MANUAL);
+            changed = err == 0;
+        } else if (strcmp(argv[3], "realtime") == 0 ||
+                   strcmp(argv[3], "auto") == 0) {
+            err = m61_dvfs_set_governor(M61_DVFS_GOVERNOR_REALTIME);
+            changed = err == 0;
+        } else {
+            err = -EINVAL;
+        }
+    } else if (strcmp(argv[2], "boost") == 0) {
+        uint32_t mhz;
+        uint32_t hold_ms;
+
+        if (argc < 5 || !m61_parse_u32(argv[3], &mhz) ||
+            !m61_parse_u32(argv[4], &hold_ms)) {
+            err = -EINVAL;
+        } else {
+            err = m61_dvfs_request_boost(M61_DVFS_CLIENT_APPLICATION,
+                                         mhz,
+                                         hold_ms);
+            changed = err == 0;
+        }
+    } else if (strcmp(argv[2], "save") == 0) {
+        err = m61_dvfs_save_persistent_config();
+    } else if (strcmp(argv[2], "clear-saved") == 0 ||
+               strcmp(argv[2], "forget") == 0) {
+        err = m61_dvfs_clear_persistent_config();
+    } else {
+        m61_dvfs_profile_t profile;
+        uint32_t mhz;
+
+        /* Backward-compatible short forms are resident manual locks. */
+        if (m61_parse_dvfs_profile(argv[2], &profile)) {
+            err = m61_dvfs_set_profile(profile);
+            changed = err == 0;
+        } else if (m61_parse_u32(argv[2], &mhz)) {
+            err = m61_dvfs_set_custom_frequency(mhz, false);
+            changed = err == 0;
+        } else {
+            err = -EINVAL;
+        }
+    }
+
+    if (err != 0) {
+        printf("clock command failed: %d\r\n", err);
+        print_m61_help();
+        return err;
+    }
+    if (changed) vTaskDelay(pdMS_TO_TICKS(5));
+    m61_print_dvfs_status();
+    return 0;
 }
 
 int cmd_m61(int argc, char **argv)
@@ -3757,28 +3966,7 @@ int cmd_m61(int argc, char **argv)
     }
 
     if (argc >= 2 && strcmp(argv[1], "clock") == 0) {
-        uint32_t pds_cfg = BL_RD_REG(PDS_BASE, PDS_CPU_CORE_CFG1);
-        uint32_t actual_mhz = m61_measure_cpu_clock_mhz();
-#if CONFIG_M61_CPU_OVERCLOCK_MHZ == 420 || \
-    CONFIG_M61_CPU_OVERCLOCK_MHZ == 460 || \
-    CONFIG_M61_CPU_OVERCLOCK_MHZ == 480
-        uint32_t root_mhz = actual_mhz;
-        uint32_t pbclk_mhz = actual_mhz / 4U;
-#else
-        uint32_t root_mhz =
-            bflb_clk_get_system_clock(BFLB_SYSTEM_ROOT_CLOCK) / 1000000U;
-        uint32_t pbclk_mhz =
-            bflb_clk_get_system_clock(BFLB_SYSTEM_PBCLK) / 1000000U;
-#endif
-        printf("cpu_clock target=%u actual=%luMHz root=%luMHz pbclk=%luMHz pds_pll=%lu root_sel=%u xclk_sel=%u\r\n",
-               (unsigned int)CONFIG_M61_CPU_OVERCLOCK_MHZ,
-               (unsigned long)actual_mhz,
-               (unsigned long)root_mhz,
-               (unsigned long)pbclk_mhz,
-               (unsigned long)BL_GET_REG_BITS_VAL(pds_cfg, PDS_REG_PLL_SEL),
-               (unsigned int)HBN_Get_MCU_Root_CLK_Sel(),
-               (unsigned int)HBN_Get_MCU_XCLK_Sel());
-        return 0;
+        return m61_clock_command(argc, argv);
     }
 
     if (argc >= 2 && strcmp(argv[1], "led") == 0) {
@@ -3811,85 +3999,17 @@ int cmd_m61(int argc, char **argv)
 
 SHELL_CMD_EXPORT_ALIAS(cmd_m61, m61, M61 board commands);
 
-static uint32_t m61_measure_cpu_clock_mhz(void)
+static void m61_start_dvfs(void)
 {
-    uint64_t start_us;
-    uint64_t elapsed_us;
-    uint32_t start_cycles;
-    uint32_t end_cycles;
+    uint32_t target_mhz = CONFIG_M61_CPU_OVERCLOCK_MHZ != 0
+                              ? CONFIG_M61_CPU_OVERCLOCK_MHZ
+                              : M61_DVFS_DEFAULT_MHZ;
+    int err = m61_dvfs_init(target_mhz);
 
-    start_us = bflb_mtimer_get_time_us();
-    __asm volatile("csrr %0, mcycle" : "=r"(start_cycles));
-    do {
-        elapsed_us = bflb_mtimer_get_time_us() - start_us;
-    } while (elapsed_us < 2000U);
-    __asm volatile("csrr %0, mcycle" : "=r"(end_cycles));
-
-    return (uint32_t)(((uint64_t)(uint32_t)(end_cycles - start_cycles) +
-                       elapsed_us / 2U) /
-                      elapsed_us);
-}
-
-static void m61_apply_cpu_overclock(void)
-{
-#if defined(BL616) && CONFIG_M61_CPU_OVERCLOCK_MHZ != 0
-    BL_Err_Type err = SUCCESS;
-    uint32_t pds_cfg;
-    uint8_t mcu_xclk_sel = HBN_Get_MCU_XCLK_Sel();
-
-#if CONFIG_M61_CPU_OVERCLOCK_MHZ == 384
-    err = GLB_Config_AUDIO_PLL_To_384M();
-#elif CONFIG_M61_CPU_OVERCLOCK_MHZ == 400
-    err = GLB_Config_AUDIO_PLL_To_400M();
-#else
-    uint8_t xtal_type = GLB_XTAL_NONE;
-
-    if (HBN_Get_Xtal_Type(&xtal_type) != SUCCESS ||
-        xtal_type != GLB_XTAL_40M) {
-        err = ERROR;
-    } else {
-        err = GLB_Config_AUDIO_PLL_To_400M();
-        if (err == SUCCESS) {
-            /* 40 MHz XTAL, refdiv=4: each 0x1000 step is 20 MHz. */
-#if CONFIG_M61_CPU_OVERCLOCK_MHZ == 420
-            GLB_AUDIO_PLL_fine_tuning_sdmin(0x15000U);
-#elif CONFIG_M61_CPU_OVERCLOCK_MHZ == 460
-            GLB_AUDIO_PLL_fine_tuning_sdmin(0x17000U);
-#else
-            GLB_AUDIO_PLL_fine_tuning_sdmin(0x18000U);
-#endif
-            bflb_mtimer_delay_us(200U);
-        }
-    }
-#endif
-    if (err == SUCCESS) {
-        /* The SDK ROM wrapper hard-codes the BL616 root mux to WIFIPLL.
-         * Select AUPLL directly, following the silicon driver's full path. */
-        HBN_Set_MCU_XCLK_Sel(HBN_MCU_XCLK_RC32M);
-        HBN_Set_MCU_Root_CLK_Sel(HBN_MCU_ROOT_CLK_XCLK);
-        err = GLB_Set_MCU_System_CLK_Div(0, 0);
-    }
-    if (err == SUCCESS) {
-        pds_cfg = BL_RD_REG(PDS_BASE, PDS_CPU_CORE_CFG1);
-        pds_cfg = BL_SET_REG_BITS_VAL(pds_cfg, PDS_REG_PLL_SEL, 1);
-        BL_WR_REG(PDS_BASE, PDS_CPU_CORE_CFG1, pds_cfg);
-        GLB_PLL_CGEN_Clock_UnGate(GLB_PLL_CGEN_TOP_AUPLL_DIV1);
-        /* Keep HCLK=/1 and PBCLK=/4, matching the SDK/forum AUPLL path. */
-        err = GLB_Set_MCU_System_CLK_Div(0, 3);
-    }
-    if (err == SUCCESS) {
-        HBN_Set_MCU_Root_CLK_Sel(HBN_MCU_ROOT_CLK_PLL);
-        HBN_Set_MCU_XCLK_Sel(mcu_xclk_sel);
-    }
-    printf("M61 CPU overclock target=%uMHz actual=%luMHz result=%d\r\n",
-           (unsigned int)CONFIG_M61_CPU_OVERCLOCK_MHZ,
-           (unsigned long)m61_measure_cpu_clock_mhz(),
-           (int)err);
-#else
-    printf("M61 CPU clock=%luMHz overclock=off\r\n",
-           (unsigned long)(bflb_clk_get_system_clock(BFLB_SYSTEM_CPU_CLK) /
-                           1000000U));
-#endif
+    printf("M61 DVFS boot=%luMHz actual=%luMHz result=%d\r\n",
+           (unsigned long)target_mhz,
+           (unsigned long)m61_dvfs_measure_cpu_mhz(),
+           err);
 }
 
 int main(void)
