@@ -29,6 +29,10 @@ git diff --check
 修改C/CMake、补丁、内存、工具链flag或构建脚本时必须运行锁定release构建。确认生成清单
 为`\"profile\": \"release\"`，并对ELF执行RAM/TCM门禁。
 
+GitHub Actions会在Ubuntu重复离线门禁，并从锁定SDK/工具链提交执行干净Windows release
+构建。成功任务会保留BIN、hash镜像、ELF、MAP和来源清单14天。CI可证明构建可复现，
+但不能替代真机门禁。
+
 ## 真机门禁
 
 功能修改要求：

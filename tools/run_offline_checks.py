@@ -63,7 +63,6 @@ def main(argv: list[str] | None = None) -> int:
         ("M61 HIDP log checker self-test", [sys.executable, "tools/test_m61_hidp_log_checker.py"]),
         ("M61 USB Windows checker self-test", [sys.executable, "tools/check_m61_usb_windows.py", "--self-test"]),
         ("M61 USB hardware validator self-test", [sys.executable, "tools/validate_m61_usb_hardware.py", "--self-test"]),
-        ("DS5 Windows desktop tester smoke", [sys.executable, "tools/ds5_windows_test_app.py", "--smoke-test"]),
         ("M61 realtime memory gate self-test", [sys.executable, "tools/test_m61_realtime_memory.py"]),
         ("M61 realtime scheduler host tests", [sys.executable, "tools/test_m61_realtime_scheduler.py"]),
         ("M61 Web config protocol host tests", [sys.executable, "tools/test_m61_web_config.py"]),
@@ -71,15 +70,29 @@ def main(argv: list[str] | None = None) -> int:
         ("M61 idle activity host tests", [sys.executable, "tools/test_dualsense_activity.py"]),
     ]
 
+    if os.name == "nt":
+        steps.insert(
+            7,
+            (
+                "DS5 Windows desktop tester smoke",
+                [sys.executable, "tools/ds5_windows_test_app.py", "--smoke-test"],
+            ),
+        )
+
     if not args.skip_pycompile:
         steps.append(("Python syntax", py_compile_command()))
 
     if args.include_m61_build:
-        m61_hidp_build = wsl_path(ROOT / "m61" / "dualsense_hidp_probe" / "build.sh")
+        build_script = ROOT / "m61" / "dualsense_hidp_probe" / "build.sh"
+        build_command = (
+            ["wsl", "bash", wsl_path(build_script)]
+            if os.name == "nt"
+            else ["bash", str(build_script)]
+        )
         steps.extend([
             (
                 "M61 DualSense HIDP probe build",
-                ["wsl", "bash", m61_hidp_build],
+                build_command,
             ),
             (
                 "M61 DualSense HIDP RAM gate",

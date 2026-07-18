@@ -31,6 +31,11 @@ Run a locked release build for changes touching C/CMake, patches, memory,
 toolchain flags, or build scripts. Check the generated manifest has
 `\"profile\": \"release\"` and run the RAM/TCM gate against the ELF.
 
+GitHub Actions repeats the offline gate on Ubuntu and performs a clean Windows
+release build from the locked SDK/toolchain commits. Successful runs retain
+the BIN, hash image, ELF, MAP, and provenance manifest for 14 days. This CI is
+evidence of build reproducibility; it does not replace the hardware gate.
+
 ## Hardware gate
 
 Functional changes require:
