@@ -76,6 +76,7 @@ def check_source_wiring() -> None:
         "feature_id == M61_WEB_COMMAND_REPORT_ID",
         "M61_WEB_CONFIG_KEY",
         "load_m61_web_config()",
+        "bt_check_if_ef_ready() == EF_NO_ERR",
         "save_m61_web_config()",
         "migrate_legacy_dvfs_record(unified_config_applied)",
         "err = save_m61_web_config();",
@@ -94,6 +95,7 @@ def check_source_wiring() -> None:
         assert snippet in gamepad, f"missing gamepad bridge logic: {snippet}"
     for snippet in required_main:
         assert snippet in main, f"missing HIDP bridge logic: {snippet}"
+    assert "if (easyflash_init() == EF_NO_ERR)" not in main
 
     clock_command = main[main.index("static int m61_clock_command"):]
     assert "err = m61_dvfs_save_persistent_config();" not in clock_command

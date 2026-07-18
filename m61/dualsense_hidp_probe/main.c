@@ -61,6 +61,13 @@
 #include "bflb_mtd.h"
 #include "bflb_pwm_v2.h"
 #include "easyflash.h"
+
+#if defined(CONFIG_BT_SETTINGS)
+/* The locked Bouffalo Bluetooth settings backend owns the EasyFlash-ready
+ * flag. Use its initializer so main and the BT host cannot initialize the
+ * global LittleFS/EasyFlash context and mutex twice. */
+extern int bt_check_if_ef_ready(void);
+#endif
 #include "rfparam_adapter.h"
 
 #include "bluetooth.h"
@@ -4499,7 +4506,7 @@ int main(void)
 
 #if defined(CONFIG_BT_SETTINGS)
     bflb_mtd_init();
-    if (easyflash_init() == EF_NO_ERR) {
+    if (bt_check_if_ef_ready() == EF_NO_ERR) {
         storage_ready = true;
         load_last_dualsense_addr();
         load_m61_web_config();
