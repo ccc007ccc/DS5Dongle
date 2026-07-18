@@ -178,6 +178,7 @@ $PipelineBool = if ($PipelineValue -eq 'y') { 'true' } else { 'false' }
 $OpusStageBool = if ($OpusStageValue -eq 'y') { 'true' } else { 'false' }
 $MicBool = if ($MicValue -eq 'y') { 'true' } else { 'false' }
 $MakeArgs = @(
+    "SHELL=cmd.exe",
     "CHIP=bl616",
     "BOARD=bl616dk",
     "BUILD_DIR=$BuildDirName",
