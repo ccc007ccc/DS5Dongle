@@ -46,6 +46,12 @@ int main(void)
         0x03, 0x14, 0x4d, 0x00, 0x0e, 0x02, 0x01, 0x02, 0x90, 0x01,
         0x80, 0x01, 0x1e, 0x01, 0x08, 0x0c, 0xdc, 0xfb, 0xe0, 0x60,
     };
+    static const uint8_t persistent_v4_retired_rate[31] = {
+        0x4d, 0x36, 0x31, 0x57, 0x04, 0x15, 0x4d, 0x36, 0x31, 0x43,
+        0x04, 0x15, 0x4d, 0x00, 0x0e, 0x02, 0x01, 0x02, 0x90, 0x01,
+        0x80, 0x01, 0x1e, 0x01, 0x08, 0x0c, 0x03, 0x87, 0xd1, 0x65,
+        0x2b,
+    };
     m61_web_config_t input = fixture();
     m61_web_config_t decoded;
     m61_web_telemetry_t telemetry = {0};
@@ -68,6 +74,12 @@ int main(void)
     assert(m61_web_config_decode(body, sizeof(body), &decoded) ==
            M61_WEB_CONFIG_BODY_SIZE);
     assert(memcmp(&input, &decoded, sizeof(input)) == 0);
+
+    body[20] = 3U;
+    assert(m61_web_config_decode(body, sizeof(body), &decoded) ==
+           M61_WEB_CONFIG_BODY_SIZE);
+    assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_500_HZ);
+    body[20] = M61_WEB_USB_POLL_500_HZ;
 
     body[0] = 5U;
     assert(m61_web_config_decode(body, sizeof(body), &decoded) == -2);
@@ -147,6 +159,15 @@ int main(void)
     assert(decoded.left_stick_deadzone_percent == 0U);
     assert(decoded.right_stick_deadzone_percent == 0U);
     assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_REALTIME);
+
+    memset(&decoded, 0, sizeof(decoded));
+    assert(m61_web_persistent_decode(persistent_v4_retired_rate,
+                                     sizeof(persistent_v4_retired_rate),
+                                     &decoded) ==
+           (int)sizeof(persistent_v4_retired_rate));
+    assert(decoded.left_stick_deadzone_percent == 8U);
+    assert(decoded.right_stick_deadzone_percent == 12U);
+    assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_500_HZ);
 
     memset(&decoded, 0, sizeof(decoded));
     assert(m61_web_persistent_decode(persistent_v2,
