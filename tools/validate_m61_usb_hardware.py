@@ -8,7 +8,6 @@ from pathlib import Path
 import re
 import tempfile
 
-import capture_m61_hidp_log
 import check_m61_usb_windows
 
 
@@ -62,6 +61,9 @@ def classify_windows(sample_json: Path | None) -> tuple[bool, str]:
 
 
 def capture_usb_status(port: str, baud: int, output: Path, duration: int) -> int:
+    # Keep pyserial optional for fixture-only/offline validation.
+    import capture_m61_hidp_log
+
     return capture_m61_hidp_log.main([
         "-p",
         port,

@@ -61,7 +61,7 @@
       },
       {
         "path": "m61/dualsense_hidp_probe/patches/opus-1.2.1-m61-stage-profile.patch",
-        "sha256": "62d4f06765ad6a17606841f3860eeaba8b8acc4c633f56ca24322033a6ac3a4c"
+        "sha256": "dbbd73727c216248d3c756d85fcc8f450233749bd2783e332f234a75efd8dff6"
       },
       {
         "path": "m61/dualsense_hidp_probe/patches/opus-1.2.1-m61-dualsense-d4-fastpath.patch",

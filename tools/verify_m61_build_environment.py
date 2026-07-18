@@ -24,6 +24,12 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_text_lf(path: Path) -> str:
+    """Hash tracked text canonically so checkout line endings do not matter."""
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def run(*args: str, cwd: Path | None = None) -> str:
     result = subprocess.run(
         args,
@@ -127,7 +133,7 @@ def main() -> int:
         if not path.is_file():
             errors.append(f"Opus patch not found: {entry['path']}")
             continue
-        actual_hash = sha256(path)
+        actual_hash = sha256_text_lf(path)
         patch_results.append({"path": entry["path"], "sha256": actual_hash})
         if actual_hash != entry["sha256"]:
             errors.append(
