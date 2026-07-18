@@ -45,10 +45,6 @@ BUTTON_R3 = 1 << 11
 BUTTON_PS = 1 << 12
 BUTTON_TOUCHPAD = 1 << 13
 BUTTON_MUTE = 1 << 14
-BUTTON_EDGE_FN_L = 1 << 15
-BUTTON_EDGE_FN_R = 1 << 16
-BUTTON_EDGE_PADDLE_L = 1 << 17
-BUTTON_EDGE_PADDLE_R = 1 << 18
 
 DEFAULT_SET_STATE = bytes(
     [
@@ -315,10 +311,6 @@ def parse_reference(data: bytes) -> Parsed | str:
             (payload[9], 0x01, BUTTON_PS),
             (payload[9], 0x02, BUTTON_TOUCHPAD),
             (payload[9], 0x04, BUTTON_MUTE),
-            (payload[9], 0x10, BUTTON_EDGE_FN_L),
-            (payload[9], 0x20, BUTTON_EDGE_FN_R),
-            (payload[9], 0x40, BUTTON_EDGE_PADDLE_L),
-            (payload[9], 0x80, BUTTON_EDGE_PADDLE_R),
         ]:
             if value & bit:
                 buttons |= mask
@@ -370,8 +362,6 @@ def assert_vector(parsed: Parsed, offset: int, sequence: int) -> None:
         | BUTTON_PS
         | BUTTON_TOUCHPAD
         | BUTTON_MUTE
-        | BUTTON_EDGE_FN_L
-        | BUTTON_EDGE_PADDLE_L
     )
     assert parsed.report_id == DS5_BT_INPUT_REPORT_ID
     assert parsed.sequence == sequence

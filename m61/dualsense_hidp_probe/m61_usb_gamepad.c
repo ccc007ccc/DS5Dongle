@@ -2396,10 +2396,6 @@ static void make_payload_from_state(const dualsense_state_t *state, uint8_t *pay
     set_button_bit(&payload[9], 0x01, state->buttons, DS5_BUTTON_PS);
     set_button_bit(&payload[9], 0x02, state->buttons, DS5_BUTTON_TOUCHPAD);
     set_button_bit(&payload[9], 0x04, state->buttons, DS5_BUTTON_MUTE);
-    set_button_bit(&payload[9], 0x10, state->buttons, DS5_BUTTON_EDGE_FN_L);
-    set_button_bit(&payload[9], 0x20, state->buttons, DS5_BUTTON_EDGE_FN_R);
-    set_button_bit(&payload[9], 0x40, state->buttons, DS5_BUTTON_EDGE_PADDLE_L);
-    set_button_bit(&payload[9], 0x80, state->buttons, DS5_BUTTON_EDGE_PADDLE_R);
 }
 
 static void register_usb_dualsense_device(void)

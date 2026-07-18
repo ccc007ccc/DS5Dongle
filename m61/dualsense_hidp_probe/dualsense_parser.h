@@ -30,10 +30,6 @@ typedef enum {
     DS5_BUTTON_PS           = 1u << 12,
     DS5_BUTTON_TOUCHPAD     = 1u << 13,
     DS5_BUTTON_MUTE         = 1u << 14,
-    DS5_BUTTON_EDGE_FN_L    = 1u << 15,
-    DS5_BUTTON_EDGE_FN_R    = 1u << 16,
-    DS5_BUTTON_EDGE_PADDLE_L = 1u << 17,
-    DS5_BUTTON_EDGE_PADDLE_R = 1u << 18,
 } dualsense_button_mask_t;
 
 typedef struct {

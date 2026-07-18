@@ -265,7 +265,6 @@ _Static_assert(CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE <= 1000U,
 #endif
 
 #define DS5_AUTO_TASK_PERIOD_MS 250
-#define DS5_RSSI_SAMPLE_PERIOD_MS 2000
 #define DS5_DISCONNECT_CLEANUP_DELAY_MS 750
 
 struct hidp_channel {
@@ -304,9 +303,6 @@ static bool web_config_loaded;
 static TickType_t controller_last_activity_tick;
 static TickType_t usb_suspend_started_tick;
 static bool controller_poweroff_requested;
-static bool controller_rssi_valid;
-static int8_t controller_rssi;
-static TickType_t controller_rssi_next_sample_tick;
 static uint8_t web_last_management_command;
 static int16_t web_last_management_error;
 static uint32_t web_management_sequence;
@@ -432,41 +428,6 @@ static void print_addr(const char *prefix, const bt_addr_t *addr)
 static bool tick_due(TickType_t now, TickType_t due)
 {
     return (int32_t)(now - due) >= 0;
-}
-
-static int read_controller_rssi(struct bt_conn *conn, int8_t *rssi)
-{
-    struct bt_hci_cp_read_rssi *command;
-    struct bt_hci_rp_read_rssi *response;
-    struct net_buf *command_buffer;
-    struct net_buf *response_buffer = NULL;
-    int err;
-
-    if (!conn || !rssi) return -EINVAL;
-
-    command_buffer = bt_hci_cmd_create(BT_HCI_OP_READ_RSSI, sizeof(*command));
-    if (!command_buffer) return -ENOBUFS;
-
-    command = net_buf_add(command_buffer, sizeof(*command));
-    command->handle = conn->handle;
-    err = bt_hci_cmd_send_sync(BT_HCI_OP_READ_RSSI,
-                               command_buffer,
-                               &response_buffer);
-    if (err) return err;
-    if (!response_buffer || response_buffer->len < sizeof(*response)) {
-        if (response_buffer) net_buf_unref(response_buffer);
-        return -EMSGSIZE;
-    }
-
-    response = (struct bt_hci_rp_read_rssi *)response_buffer->data;
-    if (response->status != 0U) {
-        err = -EIO;
-    } else {
-        *rssi = response->rssi;
-        err = 0;
-    }
-    net_buf_unref(response_buffer);
-    return err;
 }
 
 #if CONFIG_M61_PIPELINE_PROFILE
@@ -2888,8 +2849,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
         default_conn = conn;
     }
     auto_sequence_started = true;
-    controller_rssi_valid = false;
-    controller_rssi_next_sample_tick = xTaskGetTickCount();
     m61_usb_gamepad_set_bluetooth_connected(true);
     hidp_active_open_allowed = outgoing_conn;
     auto_reset_link_state();
@@ -2914,7 +2873,6 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     bt_conn_get_info(conn, &info);
     bt_addr_to_str(info.br.dst, addr_str, sizeof(addr_str));
     printf("BR/EDR disconnected: %s reason=%u\r\n", addr_str, reason);
-    controller_rssi_valid = false;
     usb_controller_detach_pending = usb_controller_attached;
 
     if (default_conn == conn) {
@@ -3122,16 +3080,33 @@ static void app_start_task(void *pvParameters)
     }
 
     printf("USB DualSense registration waits for controller full report\r\n");
-    while (!full_report_seen) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+    while (1) {
+        while (!full_report_seen) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
+        if (full_report_seen && default_conn &&
+            hid_control.connected && hid_interrupt.connected) {
+            break;
+        }
+        printf("Controller changed during USB start delay; waiting for a fresh full report\r\n");
     }
 
     printf("DualSense full report seen; starting USB composite device\r\n");
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
     m61_usb_bus_detach_pulse(350);
     m61_usb_gamepad_init();
     usb_start_after_dualsense_done = true;
-    usb_controller_attached = true;
+    usb_controller_attached = (m61_usb_gamepad_init_result() == 0);
+    if (!usb_controller_attached) {
+        printf("USB DualSense initial attach failed; background retry remains enabled\r\n");
+    } else if (!full_report_seen || !default_conn ||
+               !hid_control.connected || !hid_interrupt.connected) {
+        /* A disconnect can race the detach pulse/USB initialization before
+         * usb_controller_attached becomes true, so the callback cannot queue
+         * cleanup. Recheck after initialization and defer teardown here. */
+        usb_controller_detach_pending = true;
+    }
 
     vTaskDelete(NULL);
 }
@@ -3198,29 +3173,13 @@ static void auto_connect_task(void *pvParameters)
             }
         }
 
-        if (default_conn && tick_due(now, controller_rssi_next_sample_tick)) {
-            struct bt_conn *rssi_conn = bt_conn_ref(default_conn);
-            int8_t sampled_rssi = 0;
-            int rssi_err = read_controller_rssi(rssi_conn, &sampled_rssi);
-
-            bt_conn_unref(rssi_conn);
-            controller_rssi_next_sample_tick =
-                now + pdMS_TO_TICKS(DS5_RSSI_SAMPLE_PERIOD_MS);
-            if (rssi_err == 0) {
-                controller_rssi = sampled_rssi;
-                /* The BL616 BR/EDR controller returns zero when link RSSI
-                 * is unavailable.  Do not expose that placeholder as a
-                 * physically implausible 0 dBm measurement. */
-                controller_rssi_valid = (sampled_rssi != 0);
-            } else {
-                controller_rssi_valid = false;
-            }
-        }
-
         {
             m61_web_management_status_t management = {
-                .rssi_valid = controller_rssi_valid,
-                .rssi = controller_rssi,
+                /* Active BR/EDR RSSI reads disturbed HIDP on BL616 during
+                 * hardware testing. Keep telemetry explicitly unavailable
+                 * instead of risking controller input stability. */
+                .rssi_valid = false,
+                .rssi = 0,
                 .pairing_active = pairing_mode_active,
                 .discovery_active = br_discovery_active,
                 .saved_controller = have_last_dualsense_addr,

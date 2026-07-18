@@ -141,10 +141,6 @@ bool dualsense_parse_report(const uint8_t *data, size_t len,
         set_button(&buttons, p[9], 0x01, DS5_BUTTON_PS);
         set_button(&buttons, p[9], 0x02, DS5_BUTTON_TOUCHPAD);
         set_button(&buttons, p[9], 0x04, DS5_BUTTON_MUTE);
-        set_button(&buttons, p[9], 0x10, DS5_BUTTON_EDGE_FN_L);
-        set_button(&buttons, p[9], 0x20, DS5_BUTTON_EDGE_FN_R);
-        set_button(&buttons, p[9], 0x40, DS5_BUTTON_EDGE_PADDLE_L);
-        set_button(&buttons, p[9], 0x80, DS5_BUTTON_EDGE_PADDLE_R);
     }
     state->buttons = buttons;
 
@@ -248,10 +244,6 @@ void dualsense_format_buttons(uint32_t buttons, char *out, size_t out_len)
         {DS5_BUTTON_PS, "PS"},
         {DS5_BUTTON_TOUCHPAD, "touchpad"},
         {DS5_BUTTON_MUTE, "mute"},
-        {DS5_BUTTON_EDGE_FN_L, "FnL"},
-        {DS5_BUTTON_EDGE_FN_R, "FnR"},
-        {DS5_BUTTON_EDGE_PADDLE_L, "PaddleL"},
-        {DS5_BUTTON_EDGE_PADDLE_R, "PaddleR"},
     };
 
     if (out == NULL || out_len == 0) {
