@@ -37,6 +37,8 @@ by source/offline tests but still needs broader hardware regression, and
 | Power | Controller shutdown after host suspend | Implemented | Requires final PC sleep/resume qualification |
 | Input | Independent scaled radial stick deadzones | Verified | Left/right 0–30%; schema v3 and Flash persistence |
 | Input | Selectable USB report rate | Verified | Realtime fresh Bluetooth reports or hardware-measured fixed 250/500 Hz latest-sample repeat; schema v4 migrates the retired experimental value to 500 Hz |
+| Board UI | Persistent status-LED brightness | Build verified | 1–100%, 12% default; updates BL616 hardware PWM without a periodic software dimming task |
+| Audio | Persistent DualSense buffer hint | Build verified | 16–127, 48 default; changes the controller audio-report hint without allocating additional MCU buffers |
 | Recovery | Bilingual Windows GUI flasher | Verified without board | Online/local verified firmware ZIPs, CH340 detection/driver repair, 460800/115200 baud, selectable logs; manual BOOT/RESET remains the reliable ISP path |
 | Board UI | RGB connection status LED | Verified | Green idle, blue connecting/connected policy |
 
@@ -48,6 +50,9 @@ by source/offline tests but still needs broader hardware regression, and
 | Compile-time overclock | Off |
 | Microphone processing | Off |
 | Speaker route | Auto: mono without a 3.5 mm headset, stereo with a headset |
+| DualSense audio-buffer hint | 48 |
+| M61 status-LED brightness | 12%, hardware PWM |
+| Stick deadzones | Left 0%, right 0% |
 | USB Audio OUT | Four-channel 48 kHz/16-bit |
 | Profiling | Off |
 | Console report logging | Quiet; `normal` is diagnostic-only |

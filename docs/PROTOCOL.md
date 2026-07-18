@@ -103,16 +103,19 @@ versioned M61 protocol and do not expose private firmware memory layouts:
 
 - `0xF6`: apply/save configuration, reconnect USB, controller power-off,
   pair, disconnect, and forget commands;
-- `0xF7`: schema-v4 configuration and capability bits, including independent
-  left/right scaled radial stick deadzones and the USB report-rate mode;
+- `0xF7`: schema-v5 configuration and capability bits, including independent
+  left/right scaled radial stick deadzones, the USB report-rate mode,
+  hardware-PWM status-LED brightness, and the DualSense audio-buffer hint;
 - `0xF8`: firmware and product identity;
 - `0xF9`: telemetry-v2 connection, runtime, management and bounded health
   counters. Its first eight payload bytes remain compatible with telemetry v1.
 
-The 21-byte configuration body is stored as a CRC32-protected EasyFlash
+The 23-byte configuration body is stored as a CRC32-protected EasyFlash
 record. Invalid records fall back to release defaults: microphone and
 overclocking off, manual 320 MHz, speaker enabled with automatic routing,
 automatic reconnect and the status LED enabled, 1.0x haptics gain, idle and
-host-suspend shutdown disabled, and both stick deadzones at 0%. USB reports
-default to realtime forwarding of fresh Bluetooth samples. Version-1 through
-version-3 records migrate to that realtime mode.
+host-suspend shutdown disabled, both stick deadzones at 0%, status LED at 12%,
+and audio-buffer hint 48. USB reports default to realtime forwarding of fresh
+Bluetooth samples. Version-1 through version-4 records migrate with the new
+fields set to those release defaults; the retired schema-v4 experimental rate
+still migrates to fixed 500 Hz.

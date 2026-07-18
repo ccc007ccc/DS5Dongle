@@ -10,12 +10,16 @@ static const uint8_t m61_web_persistent_magic[4] = {'M', '6', '1', 'W'};
 #define M61_WEB_CONFIG_BODY_SIZE_V2 18U
 #define M61_WEB_CONFIG_SCHEMA_V3 3U
 #define M61_WEB_CONFIG_BODY_SIZE_V3 20U
+#define M61_WEB_CONFIG_SCHEMA_V4 4U
+#define M61_WEB_CONFIG_BODY_SIZE_V4 21U
 #define M61_WEB_PERSISTENT_RECORD_V1 1U
 #define M61_WEB_PERSISTENT_RECORD_SIZE_V1 26U
 #define M61_WEB_PERSISTENT_RECORD_V2 2U
 #define M61_WEB_PERSISTENT_RECORD_SIZE_V2 28U
 #define M61_WEB_PERSISTENT_RECORD_V3 3U
 #define M61_WEB_PERSISTENT_RECORD_SIZE_V3 30U
+#define M61_WEB_PERSISTENT_RECORD_V4 4U
+#define M61_WEB_PERSISTENT_RECORD_SIZE_V4 31U
 static m61_web_config_t m61_web_runtime_config;
 static bool m61_web_runtime_initialized;
 static volatile uint32_t m61_web_runtime_sequence;
@@ -78,12 +82,17 @@ void m61_web_config_defaults(m61_web_config_t *config)
                            M61_WEB_CAP_CONTROLLER_POWEROFF |
                            M61_WEB_CAP_SUSPEND_POWEROFF |
                            M61_WEB_CAP_STICK_DEADZONE |
-                           M61_WEB_CAP_USB_POLLING_RATE;
+                           M61_WEB_CAP_USB_POLLING_RATE |
+                           M61_WEB_CAP_STATUS_LED_BRIGHTNESS |
+                           M61_WEB_CAP_AUDIO_BUFFER_LENGTH;
     config->speaker_enabled = true;
     config->auto_reconnect_enabled = true;
     config->status_led_enabled = true;
     config->manual_cpu_mhz = 320U;
     config->haptics_gain_q8 = 0x0100U;
+    config->status_led_brightness_percent =
+        M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT;
+    config->audio_buffer_length = M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT;
 }
 
 bool m61_web_config_valid(const m61_web_config_t *config)
@@ -103,6 +112,10 @@ bool m61_web_config_valid(const m61_web_config_t *config)
     if (config->left_stick_deadzone_percent > 30U ||
         config->right_stick_deadzone_percent > 30U) return false;
     if (config->usb_polling_rate_mode > M61_WEB_USB_POLL_500_HZ) return false;
+    if (config->status_led_brightness_percent < 1U ||
+        config->status_led_brightness_percent > 100U) return false;
+    if (config->audio_buffer_length < 16U ||
+        config->audio_buffer_length > 127U) return false;
     return true;
 }
 
@@ -136,6 +149,8 @@ int m61_web_config_encode(const m61_web_config_t *config,
     output[18] = config->left_stick_deadzone_percent;
     output[19] = config->right_stick_deadzone_percent;
     output[20] = config->usb_polling_rate_mode;
+    output[21] = config->status_led_brightness_percent;
+    output[22] = config->audio_buffer_length;
     return M61_WEB_CONFIG_BODY_SIZE;
 }
 
@@ -157,13 +172,18 @@ int m61_web_config_decode(const uint8_t *input,
     if (version != M61_WEB_CONFIG_SCHEMA_V1 &&
         version != M61_WEB_CONFIG_SCHEMA_V2 &&
         version != M61_WEB_CONFIG_SCHEMA_V3 &&
+        version != M61_WEB_CONFIG_SCHEMA_V4 &&
         version != M61_WEB_CONFIG_SCHEMA_VERSION) return -3;
     if ((version == M61_WEB_CONFIG_SCHEMA_V1 && body_size != M61_WEB_CONFIG_BODY_SIZE_V1) ||
         (version == M61_WEB_CONFIG_SCHEMA_V2 && body_size != M61_WEB_CONFIG_BODY_SIZE_V2) ||
         (version == M61_WEB_CONFIG_SCHEMA_V3 && body_size != M61_WEB_CONFIG_BODY_SIZE_V3) ||
+        (version == M61_WEB_CONFIG_SCHEMA_V4 && body_size != M61_WEB_CONFIG_BODY_SIZE_V4) ||
         (version == M61_WEB_CONFIG_SCHEMA_VERSION && body_size != M61_WEB_CONFIG_BODY_SIZE) ||
         input_size < body_size) return -1;
     memset(config, 0, sizeof(*config));
+    config->status_led_brightness_percent =
+        M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT;
+    config->audio_buffer_length = M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT;
     config->capabilities = get_u16_le(&input[6]);
     flags = input[8];
     config->microphone_enabled = (flags & 0x01U) != 0U;
@@ -183,13 +203,17 @@ int m61_web_config_decode(const uint8_t *input,
         config->left_stick_deadzone_percent = input[18];
         config->right_stick_deadzone_percent = input[19];
     }
-    if (version >= M61_WEB_CONFIG_SCHEMA_VERSION) {
+    if (version >= M61_WEB_CONFIG_SCHEMA_V4) {
         config->usb_polling_rate_mode = input[20];
         /* Schema v4 originally exposed an experimental 1000 Hz value (3).
          * Migrate it to the highest validated stable rate. */
         if (config->usb_polling_rate_mode == 3U) {
             config->usb_polling_rate_mode = M61_WEB_USB_POLL_500_HZ;
         }
+    }
+    if (version >= M61_WEB_CONFIG_SCHEMA_VERSION) {
+        config->status_led_brightness_percent = input[21];
+        config->audio_buffer_length = input[22];
     }
     return m61_web_config_valid(config) ? (int)body_size : -4;
 }
@@ -300,6 +324,7 @@ int m61_web_persistent_decode(const uint8_t *input,
     if (input == NULL || config == NULL ||
         (input_size != M61_WEB_PERSISTENT_RECORD_SIZE &&
          input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V3 &&
+         input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V4 &&
          input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V2 &&
          input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V1)) {
         return -1;
@@ -320,6 +345,9 @@ int m61_web_persistent_decode(const uint8_t *input,
     } else if (record_version == M61_WEB_PERSISTENT_RECORD_V3 &&
                body_size == M61_WEB_CONFIG_BODY_SIZE_V3) {
         expected_size = M61_WEB_PERSISTENT_RECORD_SIZE_V3;
+    } else if (record_version == M61_WEB_PERSISTENT_RECORD_V4 &&
+               body_size == M61_WEB_CONFIG_BODY_SIZE_V4) {
+        expected_size = M61_WEB_PERSISTENT_RECORD_SIZE_V4;
     } else if (record_version == M61_WEB_PERSISTENT_RECORD_VERSION &&
                body_size == M61_WEB_CONFIG_BODY_SIZE) {
         expected_size = M61_WEB_PERSISTENT_RECORD_SIZE;

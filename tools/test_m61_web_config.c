@@ -26,6 +26,8 @@ static m61_web_config_t fixture(void)
     config.left_stick_deadzone_percent = 8U;
     config.right_stick_deadzone_percent = 12U;
     config.usb_polling_rate_mode = M61_WEB_USB_POLL_500_HZ;
+    config.status_led_brightness_percent = 35U;
+    config.audio_buffer_length = 64U;
     return config;
 }
 
@@ -71,9 +73,21 @@ int main(void)
     assert(body[16] == 30U && body[17] == 1U);
     assert(body[18] == 8U && body[19] == 12U);
     assert(body[20] == M61_WEB_USB_POLL_500_HZ);
+    assert(body[21] == 35U && body[22] == 64U);
     assert(m61_web_config_decode(body, sizeof(body), &decoded) ==
            M61_WEB_CONFIG_BODY_SIZE);
     assert(memcmp(&input, &decoded, sizeof(input)) == 0);
+
+    decoded = input;
+    decoded.status_led_brightness_percent = 0U;
+    assert(!m61_web_config_valid(&decoded));
+    decoded.status_led_brightness_percent = 101U;
+    assert(!m61_web_config_valid(&decoded));
+    decoded = input;
+    decoded.audio_buffer_length = 15U;
+    assert(!m61_web_config_valid(&decoded));
+    decoded.audio_buffer_length = 128U;
+    assert(!m61_web_config_valid(&decoded));
 
     body[20] = 3U;
     assert(m61_web_config_decode(body, sizeof(body), &decoded) ==
@@ -159,6 +173,9 @@ int main(void)
     assert(decoded.left_stick_deadzone_percent == 0U);
     assert(decoded.right_stick_deadzone_percent == 0U);
     assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_REALTIME);
+    assert(decoded.status_led_brightness_percent ==
+           M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT);
+    assert(decoded.audio_buffer_length == M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT);
 
     memset(&decoded, 0, sizeof(decoded));
     assert(m61_web_persistent_decode(persistent_v4_retired_rate,
@@ -168,6 +185,9 @@ int main(void)
     assert(decoded.left_stick_deadzone_percent == 8U);
     assert(decoded.right_stick_deadzone_percent == 12U);
     assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_500_HZ);
+    assert(decoded.status_led_brightness_percent ==
+           M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT);
+    assert(decoded.audio_buffer_length == M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT);
 
     memset(&decoded, 0, sizeof(decoded));
     assert(m61_web_persistent_decode(persistent_v2,
@@ -178,6 +198,9 @@ int main(void)
     assert(decoded.left_stick_deadzone_percent == 0U);
     assert(decoded.right_stick_deadzone_percent == 0U);
     assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_REALTIME);
+    assert(decoded.status_led_brightness_percent ==
+           M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT);
+    assert(decoded.audio_buffer_length == M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT);
 
     memset(&decoded, 0, sizeof(decoded));
     assert(m61_web_persistent_decode(persistent_v3,
@@ -186,6 +209,9 @@ int main(void)
     assert(decoded.left_stick_deadzone_percent == 8U);
     assert(decoded.right_stick_deadzone_percent == 12U);
     assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_REALTIME);
+    assert(decoded.status_led_brightness_percent ==
+           M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT);
+    assert(decoded.audio_buffer_length == M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT);
 
     assert(m61_web_command_encode(M61_WEB_COMMAND_POWER_OFF_CONTROLLER,
                                   NULL,

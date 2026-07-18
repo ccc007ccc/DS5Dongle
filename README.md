@@ -24,13 +24,14 @@ its respective owner.
 | Controller output | Light bar/player LEDs, mute LED, standard rumble, adaptive triggers |
 | Audio and haptics | 48 kHz/16-bit four-channel USB OUT, speaker/headset routing, HD haptics, Opus transport |
 | Microphone | DualSense Opus decode to 48 kHz/16-bit stereo USB IN (duplicated controller mono) |
-| Runtime controls | Persistent audio routing, 320/384/400 MHz DVFS, stick deadzones, idle power-off, and 250/500 Hz USB report modes |
+| Runtime controls | Persistent audio routing/buffer hint, hardware-PWM LED brightness, 320/384/400 MHz DVFS, stick deadzones, idle power-off, and 250/500 Hz USB report modes |
 | WebUI | Versioned WebHID configuration, Flash persistence, controller management, and bounded telemetry |
 | Diagnostics | Serial status/bring-up commands, compile-gated HPM/pipeline/runtime profiling, host validation tools |
 
 The production defaults are conservative and deterministic: 320 MHz manual
 CPU mode, microphone disabled, automatic speaker route, no overclock, no stick
-deadzone, no inactivity power-off, and realtime Bluetooth report forwarding.
+deadzone, 12% status-LED brightness, audio buffer length 48, no inactivity
+power-off, and realtime Bluetooth report forwarding.
 See [Features and limitations](docs/FEATURES.md) for validation status and
 known constraints.
 

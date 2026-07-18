@@ -51,6 +51,7 @@ ISP只属于尽力而为，物理BOOT+RESET才是可靠恢复路径。
 - `m61_dvfs.c`：运行时频率策略和持久化；
 - `m61_web_config.c`：WebHID配置和Flash记录；
 - `m61_stick_deadzone.c`：缩放径向摇杆死区；
+- schema v5持久化硬件PWM状态灯亮度和DualSense音频缓冲提示，并迁移schema v1到v4记录；
 - `dualsense_parser.c` / `dualsense_output.c`：手柄协议；
 - `patches/`：可审查Opus 1.2.1性能补丁栈。
 

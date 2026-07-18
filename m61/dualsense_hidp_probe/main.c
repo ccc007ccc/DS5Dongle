@@ -113,7 +113,6 @@ static void m61_start_dvfs(void);
 _Static_assert(CONFIG_BT_L2CAP_TX_MTU >= HIDP_TX_MAX_LEN,
                "Bluetooth L2CAP TX pool is too small for DualSense audio");
 #define DS5_LAST_ADDR_KEY "ds5_last_bda"
-#define DS5_AUDIO_BUFFER_LENGTH_DEFAULT 48
 #define DS5_STATE_FLAGS0 0
 #define DS5_STATE_FLAGS1 1
 #define DS5_STATE_RUMBLE_RIGHT 2
@@ -245,13 +244,6 @@ _Static_assert(CONFIG_BT_CTLR_RX_PRIO > M61_BT_BRIDGE_TASK_PRIORITY,
 #define CONFIG_M61_STATUS_LED_PWM_PERIOD 1000U
 #endif
 
-#ifndef CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE
-#define CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE 120U
-#endif
-
-_Static_assert(CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE <= 1000U,
-               "status LED brightness must be 0..1000 permille");
-
 #ifndef CONFIG_M61_PAIR_BUTTON_ENABLE
 #define CONFIG_M61_PAIR_BUTTON_ENABLE 1
 #endif
@@ -370,6 +362,10 @@ static bool status_led_green_on;
 static bool status_led_blue_on;
 static bool status_led_booting = true;
 static bool status_led_runtime_enabled = true;
+static uint8_t status_led_brightness_percent =
+    M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT;
+static volatile uint8_t ds5_audio_buffer_length =
+    M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT;
 static struct bflb_device_s *pair_button_gpio;
 static uint16_t pair_button_hold_ms;
 static bool pair_button_hold_fired;
@@ -1148,8 +1144,8 @@ static void status_led_init(void)
     };
     uint16_t high_threshold =
         (uint16_t)(((uint32_t)CONFIG_M61_STATUS_LED_PWM_PERIOD *
-                    CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE) /
-                   1000U);
+                    status_led_brightness_percent) /
+                   100U);
 
     status_led_gpio = bflb_device_get_by_name("gpio");
     if (!status_led_gpio) {
@@ -1195,8 +1191,8 @@ static void status_led_init(void)
                                           high_threshold);
         bflb_pwm_v2_start(status_led_pwm);
         status_led_pwm_ready = true;
-        printf("status LED hardware PWM brightness=%u/1000\r\n",
-               (unsigned int)CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE);
+        printf("status LED hardware PWM brightness=%u%%\r\n",
+               (unsigned int)status_led_brightness_percent);
     } else {
         bflb_gpio_init(status_led_gpio,
                        CONFIG_M61_STATUS_LED_RED_PIN,
@@ -1237,11 +1233,11 @@ static void status_led_print(void)
     enum status_led_mode mode =
         status_led_override ? status_led_override_mode : status_led_auto_mode();
 
-    printf("led enabled=%d active_high=%d pwm=%d brightness=%u/1000 red=%u green=%u blue=%u override=%d mode=%s\r\n",
+    printf("led enabled=%d active_high=%d pwm=%d brightness=%u%% red=%u green=%u blue=%u override=%d mode=%s\r\n",
            status_led_runtime_enabled ? 1 : 0,
            CONFIG_M61_STATUS_LED_ACTIVE_HIGH ? 1 : 0,
            status_led_pwm_ready ? 1 : 0,
-           (unsigned int)CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE,
+           (unsigned int)status_led_brightness_percent,
            (unsigned int)CONFIG_M61_STATUS_LED_RED_PIN,
            (unsigned int)CONFIG_M61_STATUS_LED_GREEN_PIN,
            (unsigned int)CONFIG_M61_STATUS_LED_BLUE_PIN,
@@ -1257,6 +1253,26 @@ static void status_led_set_runtime_enabled(bool enabled)
     } else if (!status_led_override) {
         status_led_apply_mode(status_led_auto_mode(), true);
     }
+}
+
+static void status_led_set_runtime_brightness(uint8_t percent)
+{
+    uint16_t high_threshold;
+
+    if (percent < 1U || percent > 100U) return;
+    status_led_brightness_percent = percent;
+    if (!status_led_pwm_ready || status_led_pwm == NULL) return;
+    high_threshold =
+        (uint16_t)(((uint32_t)CONFIG_M61_STATUS_LED_PWM_PERIOD * percent) /
+                   100U);
+    bflb_pwm_v2_channel_set_threshold(status_led_pwm,
+                                      PWM_CH2,
+                                      0,
+                                      high_threshold);
+    bflb_pwm_v2_channel_set_threshold(status_led_pwm,
+                                      PWM_CH3,
+                                      0,
+                                      high_threshold);
 }
 
 static int status_led_set_override_from_name(const char *name)
@@ -1334,6 +1350,11 @@ static void status_led_print(void)
 static void status_led_set_runtime_enabled(bool enabled)
 {
     (void)enabled;
+}
+
+static void status_led_set_runtime_brightness(uint8_t percent)
+{
+    (void)percent;
 }
 
 static int status_led_set_override_from_name(const char *name)
@@ -1961,7 +1982,7 @@ static int hidp_send_audio_status_report(bool mic_active)
     }
     if (!dualsense_output_make_report32_audio_status(&output_ctx,
                                                      mic_active,
-                                                     DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                                     ds5_audio_buffer_length,
                                                      report32,
                                                      DS5_OUTPUT_REPORT32_BT_LEN)) {
         net_buf_unref(buf);
@@ -2019,7 +2040,7 @@ static int __attribute__((unused)) hidp_send_audio_report(const uint8_t *haptics
                                               has_speaker ? M61_DS5_SPEAKER_OPUS_LEN : 0,
                                               speaker_block,
                                               mic_active,
-                                              DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+                                              ds5_audio_buffer_length,
                                               report36,
                                               sizeof(report36))) {
         if (has_haptics) {
@@ -2133,7 +2154,7 @@ static int hidp_send_audio_pair(const m61_audio_epoch_pair_t *pair,
             headset ? DS5_OUTPUT_HEADSET_BLOCK_ID
                     : DS5_OUTPUT_SPEAKER_BLOCK_ID,
             mic_active,
-            DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+            ds5_audio_buffer_length,
             packet + 1U,
             DS5_OUTPUT_AUDIO_RT_BT_LEN)) {
 #if CONFIG_M61_PIPELINE_PROFILE
@@ -2240,12 +2261,17 @@ static void refresh_m61_web_config_from_runtime(void)
     m61_web_config_defaults(&defaults);
     web_config.capabilities = defaults.capabilities;
 #if !CONFIG_M61_STATUS_LED_ENABLE
-    web_config.capabilities &= (uint16_t)~M61_WEB_CAP_STATUS_LED;
+    web_config.capabilities &=
+        (uint16_t)~(M61_WEB_CAP_STATUS_LED |
+                    M61_WEB_CAP_STATUS_LED_BRIGHTNESS);
 #endif
     web_config.microphone_enabled = m61_usb_gamepad_audio_mic_enabled();
     web_config.speaker_enabled = m61_usb_gamepad_audio_speaker_enabled();
     web_config.auto_reconnect_enabled = auto_start_enabled;
     web_config.status_led_enabled = status_led_runtime_enabled;
+    web_config.status_led_brightness_percent =
+        status_led_brightness_percent;
+    web_config.audio_buffer_length = ds5_audio_buffer_length;
     web_config.speaker_route = (uint8_t)m61_usb_gamepad_speaker_route();
     web_config.haptics_gain_q8 = m61_usb_gamepad_haptics_gain_q8();
     web_config.usb_polling_rate_mode =
@@ -2276,7 +2302,9 @@ static int apply_m61_web_config(const m61_web_config_t *requested,
     m61_web_config_defaults(&defaults);
     next.capabilities = defaults.capabilities;
 #if !CONFIG_M61_STATUS_LED_ENABLE
-    next.capabilities &= (uint16_t)~M61_WEB_CAP_STATUS_LED;
+    next.capabilities &=
+        (uint16_t)~(M61_WEB_CAP_STATUS_LED |
+                    M61_WEB_CAP_STATUS_LED_BRIGHTNESS);
 #endif
     if (apply_dvfs) {
         if (next.cpu_profile < M61_DVFS_PROFILE_COUNT) {
@@ -2299,7 +2327,9 @@ static int apply_m61_web_config(const m61_web_config_t *requested,
         (m61_usb_polling_rate_mode_t)next.usb_polling_rate_mode);
     if (err != 0) return -EINVAL;
     auto_start_enabled = next.auto_reconnect_enabled;
+    status_led_set_runtime_brightness(next.status_led_brightness_percent);
     status_led_set_runtime_enabled(next.status_led_enabled);
+    ds5_audio_buffer_length = next.audio_buffer_length;
     web_config = next;
     if (reset_idle_timer) {
         controller_last_activity_tick = xTaskGetTickCount();
@@ -3845,7 +3875,7 @@ int cmd_ds5(int argc, char **argv)
                m61_usb_gamepad_audio_in_active() ? 1U : 0U,
                hidp_last_mic_active ? 1U : 0U,
                dualsense_headphones_connected ? 1U : 0U,
-               (unsigned int)DS5_AUDIO_BUFFER_LENGTH_DEFAULT,
+               (unsigned int)ds5_audio_buffer_length,
                (unsigned int)CONFIG_M61_DS5_MIC_STATUS_REFRESH_MS,
                (unsigned int)CONFIG_M61_DS5_AUDIO_REPORT_INTERVAL_MS,
                (unsigned int)CONFIG_M61_DS5_USB_BRIDGE_TASK_DELAY_MS,

@@ -54,6 +54,8 @@ while physical BOOT+RESET is the reliable recovery path.
 - `m61_dvfs.c`: runtime frequency policy and persistence;
 - `m61_web_config.c`: WebHID configuration and Flash record;
 - `m61_stick_deadzone.c`: scaled radial stick deadzones;
+- schema-v5 settings persist hardware-PWM LED brightness and the DualSense
+  audio-buffer hint while migrating schema-v1 through schema-v4 records;
 - `dualsense_parser.c` / `dualsense_output.c`: controller protocol;
 - `patches/`: reviewable Opus 1.2.1 performance patch stack.
 

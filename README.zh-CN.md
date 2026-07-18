@@ -22,12 +22,13 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 | 手柄输出 | 灯带/玩家灯、静音灯、普通震动、自适应扳机 |
 | 音频与触觉 | 48 kHz/16-bit四通道USB OUT、扬声器/耳机路由、HD haptics、Opus传输 |
 | 麦克风 | DualSense Opus解码为48 kHz/16-bit双声道USB IN（复制手柄单声道） |
-| 运行时控制 | 可持久化音频路由、320/384/400 MHz DVFS、摇杆死区、空闲关机及250/500 Hz USB回报模式 |
+| 运行时控制 | 可持久化音频路由/缓冲提示、硬件PWM状态灯亮度、320/384/400 MHz DVFS、摇杆死区、空闲关机及250/500 Hz USB回报模式 |
 | WebUI | 版本化WebHID配置、Flash持久化、手柄管理及有界遥测 |
 | 诊断 | 串口状态/bring-up命令、编译期开关控制的HPM/pipeline/runtime profile、主机验证工具 |
 
 正式固件默认值保守且确定：CPU为320 MHz manual模式、麦克风关闭、扬声器自动路由、
-不开启超频、摇杆死区为0%、不自动关闭空闲手柄，并实时跟随蓝牙新报告。
+不开启超频、摇杆死区为0%、状态灯亮度12%、音频缓冲长度48、不自动关闭空闲手柄，
+并实时跟随蓝牙新报告。
 完整限制和实测状态见[功能与限制](docs/FEATURES.zh-CN.md)。
 
 可通过M61专用WebHID配置器修改并持久化这些设置：

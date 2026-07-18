@@ -10,11 +10,13 @@
 #define M61_WEB_FIRMWARE_REPORT_ID 0xF8U
 #define M61_WEB_TELEMETRY_REPORT_ID 0xF9U
 #define M61_WEB_FEATURE_PAYLOAD_SIZE 63U
-#define M61_WEB_CONFIG_SCHEMA_VERSION 4U
-#define M61_WEB_CONFIG_BODY_SIZE 21U
+#define M61_WEB_CONFIG_SCHEMA_VERSION 5U
+#define M61_WEB_CONFIG_BODY_SIZE 23U
 #define M61_WEB_TELEMETRY_VERSION 2U
-#define M61_WEB_PERSISTENT_RECORD_VERSION 4U
-#define M61_WEB_PERSISTENT_RECORD_SIZE 31U
+#define M61_WEB_PERSISTENT_RECORD_VERSION 5U
+#define M61_WEB_PERSISTENT_RECORD_SIZE 33U
+#define M61_WEB_STATUS_LED_BRIGHTNESS_DEFAULT 12U
+#define M61_WEB_AUDIO_BUFFER_LENGTH_DEFAULT 48U
 
 enum {
     M61_WEB_COMMAND_APPLY_CONFIG = 0x01U,
@@ -40,6 +42,8 @@ enum {
     M61_WEB_CAP_SUSPEND_POWEROFF = 1U << 10,
     M61_WEB_CAP_STICK_DEADZONE = 1U << 11,
     M61_WEB_CAP_USB_POLLING_RATE = 1U << 12,
+    M61_WEB_CAP_STATUS_LED_BRIGHTNESS = 1U << 13,
+    M61_WEB_CAP_AUDIO_BUFFER_LENGTH = 1U << 14,
 };
 
 enum {
@@ -64,6 +68,8 @@ typedef struct {
     uint8_t left_stick_deadzone_percent;
     uint8_t right_stick_deadzone_percent;
     uint8_t usb_polling_rate_mode;
+    uint8_t status_led_brightness_percent;
+    uint8_t audio_buffer_length;
 } m61_web_config_t;
 
 typedef struct {
