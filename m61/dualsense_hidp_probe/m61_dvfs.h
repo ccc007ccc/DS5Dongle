@@ -67,8 +67,8 @@ int m61_dvfs_set_profile(m61_dvfs_profile_t profile);
 int m61_dvfs_set_custom_frequency(uint32_t mhz, bool allow_experimental);
 int m61_dvfs_set_governor(m61_dvfs_governor_t governor);
 
-/* Flash persistence is explicit to avoid wear from interactive/Web sliders.
- * Experimental (>400 MHz) settings are deliberately never persisted. */
+/* Legacy standalone DVFS persistence. New saves use the unified M61 Web
+ * configuration record; these APIs remain for one-time migration/cleanup. */
 int m61_dvfs_save_persistent_config(void);
 int m61_dvfs_clear_persistent_config(void);
 

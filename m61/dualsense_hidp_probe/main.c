@@ -2345,6 +2345,56 @@ static int save_m61_web_config(void)
     return 0;
 }
 
+static int save_release_default_dvfs_policy(void)
+{
+    m61_web_config_t saved;
+    uint8_t record[M61_WEB_PERSISTENT_RECORD_SIZE];
+    EfErrCode flash_err;
+
+    if (!storage_ready) return -ENOTSUP;
+    refresh_m61_web_config_from_runtime();
+    saved = web_config;
+    saved.cpu_governor = M61_DVFS_GOVERNOR_MANUAL;
+    saved.cpu_profile = M61_DVFS_PROFILE_ECO;
+    saved.manual_cpu_mhz = M61_DVFS_DEFAULT_MHZ;
+    if (m61_web_persistent_encode(&saved, record, sizeof(record)) < 0) {
+        return -EINVAL;
+    }
+    flash_err = ef_set_env_blob(M61_WEB_CONFIG_KEY, record, sizeof(record));
+    if (flash_err == EF_NO_ERR) flash_err = ef_save_env();
+    if (flash_err != EF_NO_ERR) return -EIO;
+    web_config_loaded = true;
+    return 0;
+}
+
+static int clear_legacy_dvfs_if_loaded(void)
+{
+    m61_dvfs_status_t status;
+
+    m61_dvfs_get_status(&status);
+    return status.persistent_config_loaded
+               ? m61_dvfs_clear_persistent_config()
+               : 0;
+}
+
+static void migrate_legacy_dvfs_record(bool unified_config_applied)
+{
+    m61_dvfs_status_t status;
+    int err;
+
+    m61_dvfs_get_status(&status);
+    if (!status.persistent_config_loaded) return;
+
+    if (web_config_loaded) {
+        if (!unified_config_applied) return;
+        err = clear_legacy_dvfs_if_loaded();
+    } else {
+        err = save_m61_web_config();
+        if (err == 0) err = clear_legacy_dvfs_if_loaded();
+    }
+    printf("legacy DVFS persistence migration result=%d\r\n", err);
+}
+
 static int finish_m61_web_command(uint8_t command, int err)
 {
     web_last_management_command = command;
@@ -3024,6 +3074,7 @@ static void bt_br_discv_cb(struct bt_br_discovery_result *results, size_t count)
 
 static void bt_enable_cb(int err)
 {
+    bool unified_config_applied = !web_config_loaded;
     if (err) {
         printf("Bluetooth enable failed: %d\r\n", err);
         return;
@@ -3054,9 +3105,12 @@ static void bt_enable_cb(int err)
 
         if (config_err != 0) {
             printf("M61 Web config apply failed: %d\r\n", config_err);
+        } else {
+            unified_config_applied = true;
         }
     }
     refresh_m61_web_config_from_runtime();
+    migrate_legacy_dvfs_record(unified_config_applied);
 
     printf("M61 DualSense HIDP probe ready. Use 'ds5 scan'.\r\n");
     status_led_finish_boot();
@@ -4329,10 +4383,12 @@ static int m61_clock_command(int argc, char **argv)
             changed = err == 0;
         }
     } else if (strcmp(argv[2], "save") == 0) {
-        err = m61_dvfs_save_persistent_config();
+        err = save_m61_web_config();
+        if (err == 0) err = clear_legacy_dvfs_if_loaded();
     } else if (strcmp(argv[2], "clear-saved") == 0 ||
                strcmp(argv[2], "forget") == 0) {
-        err = m61_dvfs_clear_persistent_config();
+        err = save_release_default_dvfs_policy();
+        if (err == 0) err = clear_legacy_dvfs_if_loaded();
     } else {
         m61_dvfs_profile_t profile;
         uint32_t mhz;

@@ -26,7 +26,7 @@
 | DVFS | 固定档位和自定义320–400 MHz | 已验证 | Eco 320、balanced 384、performance 400 |
 | DVFS | 实验401–480 MHz | 已实现 | 必须显式允许；不同板子稳定性不同 |
 | DVFS | Realtime governor、floor和定时boost | 已实现 | 事件驱动worker，热路径不直接改时钟 |
-| DVFS | 常驻频率策略保存/清除 | 已验证 | EasyFlash记录；实验频率不能保存 |
+| DVFS | 常驻频率策略保存/清除 | 已验证 | 与Web设置共用统一EasyFlash记录；实验频率不能保存；旧独立记录启动时迁移 |
 | 诊断 | `ds5 status`完整计数 | 已验证 | 队列、codec、USB、BT、Feature代理、haptics |
 | 诊断 | 编译期开关HPM/pipeline/runtime profile | 已验证 | release关闭 |
 | 诊断 | 手柄RSSI | 缺失 | 活跃HID链路上的HCI RSSI读取会干扰输入，正式固件不轮询；WebUI明确显示不可用 |
@@ -81,3 +81,6 @@ Web迁移计划以及固件/Web职责划分将写在独立config-web仓库的重
 - `ds5 reboot-isp` / `m61 reboot-isp`。
 
 Raw send和benchmark命令属于开发工具，不应直接变成浏览器公共API。
+
+`m61 clock save`会把当前频率策略连同其余运行时设置写入统一配置记录；
+`clear-saved`只把下次启动使用的频率策略恢复为manual 320 MHz，不改变当前会话频率。

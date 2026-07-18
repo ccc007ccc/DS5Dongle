@@ -27,7 +27,7 @@ by source/offline tests but still needs broader hardware regression, and
 | DVFS | Manual profiles and custom 320–400 MHz | Verified | Eco 320, balanced 384, performance 400 |
 | DVFS | Experimental 401–480 MHz | Implemented | Explicit opt-in; known board stability varies |
 | DVFS | Realtime governor, floors and timed boosts | Implemented | Event-driven worker, no hot-path clock writes |
-| DVFS | Persist/clear resident frequency policy | Verified | EasyFlash record; experimental clocks cannot be saved |
+| DVFS | Persist/clear resident frequency policy | Verified | Unified EasyFlash record shared with Web settings; experimental clocks cannot be saved; legacy standalone records migrate at boot |
 | Diagnostics | `ds5 status` full transport/audio counters | Verified | Queue, codec, USB, BT, Feature proxy and haptics counters |
 | Diagnostics | Compile-gated HPM/pipeline/runtime profiling | Verified | Disabled in release |
 | Diagnostics | Controller RSSI | Missing | HCI RSSI reads on the active HID link disturb input, so production firmware does not poll it; WebUI explicitly reports it unavailable |
@@ -88,3 +88,8 @@ Use `ds5 help` and `m61 help` as the runtime authority. Major groups are:
 
 Raw send and benchmark commands are development tools and must not become a
 browser-facing public API.
+
+`m61 clock save` writes the current frequency policy together with the other
+runtime settings into the unified record. `clear-saved` resets only the
+frequency policy used on the next boot to manual 320 MHz; it does not change
+the current session's clock.

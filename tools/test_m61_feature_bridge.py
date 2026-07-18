@@ -77,6 +77,9 @@ def check_source_wiring() -> None:
         "M61_WEB_CONFIG_KEY",
         "load_m61_web_config()",
         "save_m61_web_config()",
+        "migrate_legacy_dvfs_record(unified_config_applied)",
+        "err = save_m61_web_config();",
+        "err = save_release_default_dvfs_policy();",
         "apply_m61_web_config(&config, true)",
         "m61_usb_gamepad_set_audio_speaker_enabled",
         "m61_usb_gamepad_set_haptics_gain_q8",
@@ -91,6 +94,9 @@ def check_source_wiring() -> None:
         assert snippet in gamepad, f"missing gamepad bridge logic: {snippet}"
     for snippet in required_main:
         assert snippet in main, f"missing HIDP bridge logic: {snippet}"
+
+    clock_command = main[main.index("static int m61_clock_command"):]
+    assert "err = m61_dvfs_save_persistent_config();" not in clock_command
 
     set_position = main.index("Factory/system queries use SET 0x80")
     get_position = main.index(
