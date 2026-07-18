@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 const SUPPORT_ASSETS: &[(&str, &str, &str)] = &[
     (
-        "chips/bl616/eflash_loader/eflash_loader_cfg.ini",
+        "chips/bl616/eflash_loader/eflash_loader_cfg.conf",
         "M61_EFLASH_LOADER_INI_EMBED",
         "eflash_loader_cfg.ini",
     ),

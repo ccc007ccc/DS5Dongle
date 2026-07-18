@@ -37,5 +37,8 @@ a COM port or starting a flash operation.
 `--tool-preflight` additionally proves that the embedded `chips/bl616` support
 files reach BL616 loader initialization while using a deliberately nonexistent
 COM port.
+The generated `eflash_loader_cfg.ini` starts from the SDK's tracked `.conf`
+template, so clean CI checkouts do not depend on ignored state from a previous
+flash run.
 Use the debug build for these developer CLI checks. The Release build uses the
 Windows GUI subsystem and opens no command-prompt window when double-clicked.
