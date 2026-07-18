@@ -97,12 +97,13 @@ working sets can increase I-cache conflict and tail latency.
 
 The release memory gate limits boot-critical TCM and static physical RAM.
 
-The BL616 HID IN endpoint uses a project-local completion shim.  The stock
-USB v2 driver reports a transfer complete when VDMA has filled FIFO3, before
-the host has consumed the interrupt packet.  M61 enables the hardware FIFO3
-IN event and completes EP4 only after that event, allowing the next report to
-be armed for the following USB poll without changing the shared SDK, FIFO
-layout, audio endpoints, or 64-byte DualSense report size.
+The BL616 HID IN endpoint uses the locked SDK's stock Full-Speed PHY/VDMA
+completion path. The project does not replace the shared SDK USB interrupt
+handler, FIFO layout, audio endpoints, or 64-byte DualSense report size.
+Descriptor intervals and latest-sample scheduling are selected by the M61
+configuration; the published 250 Hz and 500 Hz values are host-observed rates
+measured on hardware, not a claim that the Bluetooth controller samples at a
+higher rate.
 Diagnostic buffers are compiled only into their corresponding profile.
 
 ## Main source modules
