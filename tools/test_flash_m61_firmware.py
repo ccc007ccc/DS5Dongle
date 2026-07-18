@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from flash_m61_firmware import FirmwareApp, flash_artifact_errors
+from flash_m61_firmware import flash_artifact_errors
 
 
 def touch(path: Path) -> None:
@@ -17,10 +17,9 @@ def touch(path: Path) -> None:
 def main() -> int:
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
-        app = FirmwareApp(root, "application_bl616.bin", "build command")
         output = root / "build-win" / "build_out"
 
-        errors = flash_artifact_errors(app, "build-win", "bl616")
+        errors = flash_artifact_errors(root, "application_bl616.bin", "build-win", "bl616")
         assert len(errors) == 3
         assert any("firmware" in error for error in errors)
         assert any("partition" in error for error in errors)
@@ -29,15 +28,15 @@ def main() -> int:
         touch(output / "application_bl616.bin")
         touch(output / "partition.bin")
         touch(output / "boot2_bl616_release.bin")
-        assert flash_artifact_errors(app, "build-win", "bl616") == []
+        assert flash_artifact_errors(root, "application_bl616.bin", "build-win", "bl616") == []
 
         touch(output / "boot2_bl616_second.bin")
-        errors = flash_artifact_errors(app, "build-win", "bl616")
+        errors = flash_artifact_errors(root, "application_bl616.bin", "build-win", "bl616")
         assert len(errors) == 1 and "multiple boot2" in errors[0]
 
         (output / "boot2_bl616_second.bin").unlink()
         (output / "partition.bin").unlink()
-        errors = flash_artifact_errors(app, "build-win", "bl616")
+        errors = flash_artifact_errors(root, "application_bl616.bin", "build-win", "bl616")
         assert len(errors) == 1 and "partition" in errors[0]
 
     print("M61 flash artifact preflight tests passed.")

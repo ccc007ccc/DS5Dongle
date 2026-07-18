@@ -24,13 +24,15 @@ its respective owner.
 | Controller output | Light bar/player LEDs, mute LED, standard rumble, adaptive triggers |
 | Audio and haptics | 48 kHz/16-bit four-channel USB OUT, speaker/headset routing, HD haptics, Opus transport |
 | Microphone | DualSense Opus decode to 48 kHz/16-bit stereo USB IN (duplicated controller mono) |
-| Runtime controls | Microphone enable, mono/stereo/automatic speaker route, persistent manual/realtime DVFS |
+| Runtime controls | Persistent audio routing, 320/384/400 MHz DVFS, stick deadzones, idle power-off, and 250/500 Hz USB report modes |
+| WebUI | Versioned WebHID configuration, Flash persistence, controller management, and bounded telemetry |
 | Diagnostics | Serial status/bring-up commands, compile-gated HPM/pipeline/runtime profiling, host validation tools |
 
 The production defaults are conservative and deterministic: 320 MHz manual
-CPU mode, microphone disabled, automatic speaker route, and no compile-time
-overclock. See [the full feature matrix](docs/FEATURES.md) for limitations and
-validation status.
+CPU mode, microphone disabled, automatic speaker route, no overclock, no stick
+deadzone, no inactivity power-off, and realtime Bluetooth report forwarding.
+See [Features and limitations](docs/FEATURES.md) for validation status and
+known constraints.
 
 Configure these persistent settings from the M61-specific WebHID application:
 <https://ds5.766677.xyz/>. Use a Chromium-based
@@ -39,6 +41,11 @@ the complete configuration to Flash. The USB report choices are realtime
 fresh-report forwarding and hardware-validated fixed 250 Hz or 500 Hz modes;
 fixed modes may repeat the latest Bluetooth sample and do not raise the
 controller's native sampling rate.
+
+The supported controller target is the standard DualSense. DualSense Edge is
+not supported or hardware-qualified. During long wireless speaker playback,
+the sound can occasionally become temporarily muffled and later recover; this
+known limitation does not affect USB enumeration or controller input.
 
 ## Using a prebuilt Release
 
@@ -121,7 +128,7 @@ data lines with the SoC native USB pins.
 Enter UART download mode, then run from the repository root:
 
 ```powershell
-python tools\flash_m61_firmware.py --app hidp-probe -p COM5 --windows-build
+python tools\flash_m61_firmware.py -p COM5 --windows-build
 python tools\check_m61_usb_windows.py
 python tools\validate_m61_usb_hardware.py -p COM5
 ```
@@ -130,12 +137,13 @@ The normal flasher default is 460800 baud. Select the board's CH340 UART
 (`1A86:7523`, typically COM5), not another transient USB serial port. Add
 `-b 115200` only as a conservative fallback for an unstable cable or hub.
 
-If the running firmware accepts `ds5 reboot-isp`, the flasher can request ISP
-mode with `--reboot-isp`. Otherwise hold BOOT, tap RESET, then release BOOT.
+`--reboot-isp` is a best-effort development convenience: some BL616 boards
+warm-reset into BootROM but then fail its eFuse read. Holding BOOT, tapping
+RESET, and releasing BOOT is the reliable recovery and flashing procedure.
 
 ## Documentation
 
-- [Features and current gaps](docs/FEATURES.md)
+- [Features and limitations](docs/FEATURES.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Building and flashing](docs/BUILDING.md)
 - [Hardware and wiring](docs/HARDWARE.md)

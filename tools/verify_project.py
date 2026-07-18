@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 
 
 def main() -> int:
@@ -54,6 +56,8 @@ def main() -> int:
         "docs/WAKEUP_RUNBOOK.md",
         "tools/audit_requirements.py",
         "tools/test_requirements_audit.py",
+        "m61/usb_hid_gamepad_probe",
+        "m61/usb_ram_disk_probe",
     ]
 
     for path in required_files:
@@ -62,6 +66,40 @@ def main() -> int:
     for path in forbidden_paths:
         if (ROOT / path).exists():
             failures.append(f"obsolete or non-M61 path must not exist: {path}")
+
+    markdown_files = [
+        *ROOT.glob("*.md"),
+        *(ROOT / "docs").glob("*.md"),
+        *(ROOT / "benchmarks").glob("*.md"),
+        *(ROOT / "m61" / "dualsense_hidp_probe").glob("*.md"),
+    ]
+    bilingual_files = [
+        ROOT / "README.md",
+        ROOT / "CONTRIBUTING.md",
+        *(ROOT / "docs").glob("*.md"),
+        *(ROOT / "benchmarks").glob("*.md"),
+        ROOT / "m61" / "dualsense_hidp_probe" / "README.md",
+    ]
+    for english in bilingual_files:
+        if english.name.endswith(".zh-CN.md"):
+            continue
+        chinese = english.with_name(f"{english.stem}.zh-CN.md")
+        if not chinese.is_file():
+            failures.append(
+                f"missing Simplified Chinese document for {english.relative_to(ROOT)}"
+            )
+
+    for markdown in markdown_files:
+        content = markdown.read_text(encoding="utf-8")
+        for match in MARKDOWN_LINK.finditer(content):
+            target = match.group(1).strip().strip("<>").split("#", 1)[0]
+            if not target or target.startswith(("http://", "https://", "mailto:")):
+                continue
+            target = target.split(" ", 1)[0]
+            if not (markdown.parent / target).resolve().exists():
+                failures.append(
+                    f"broken Markdown link in {markdown.relative_to(ROOT)}: {match.group(1)}"
+                )
 
     lock_path = ROOT / "m61/dualsense_hidp_probe/reproducible-build.lock.json"
     if lock_path.is_file():

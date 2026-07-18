@@ -1,4 +1,4 @@
-# Features and current gaps
+# Features and limitations
 
 [简体中文](FEATURES.zh-CN.md)
 
@@ -36,9 +36,9 @@ by source/offline tests but still needs broader hardware regression, and
 | Persistence | Unified M61 runtime configuration | Verified | Versioned EasyFlash record with CRC32 and v1 migration |
 | Power | Configurable controller idle shutdown | Verified | Fixed 25% stick activity threshold excludes drift and IMU noise; disabled by default |
 | Power | Controller shutdown after host suspend | Implemented | Requires final PC sleep/resume qualification |
-| Input | Independent scaled radial stick deadzones | Implemented | Left/right 0–30%; schema v3 and Flash persistence |
-| Input | Selectable USB report rate | Implemented | Realtime fresh Bluetooth reports or validated fixed 250/500 Hz latest-sample repeat; schema v4 migrates the retired experimental value to 500 Hz |
-| Recovery | UART ISP software reboot and flashing tool | Verified | Manual BOOT/RESET remains the recovery path |
+| Input | Independent scaled radial stick deadzones | Verified | Left/right 0–30%; schema v3 and Flash persistence |
+| Input | Selectable USB report rate | Verified | Realtime fresh Bluetooth reports or hardware-measured fixed 250/500 Hz latest-sample repeat; schema v4 migrates the retired experimental value to 500 Hz |
+| Recovery | UART ISP software reboot and flashing tool | Implemented | Warm reboot can fail BootROM eFuse reads; manual BOOT/RESET is the reliable path |
 | Board UI | RGB connection status LED | Verified | Green idle, blue connecting/connected policy |
 
 ## Production defaults
@@ -51,7 +51,7 @@ by source/offline tests but still needs broader hardware regression, and
 | Speaker route | Auto: mono without a 3.5 mm headset, stereo with a headset |
 | USB Audio OUT | Four-channel 48 kHz/16-bit |
 | Profiling | Off |
-| Console report logging | Quiet/normal selectable |
+| Console report logging | Quiet; `normal` is diagnostic-only |
 
 The default favors a smooth speaker/haptics path. Enabling microphone decode
 adds a second Opus workload. Full-duplex operation is functional, but 320 MHz
@@ -59,20 +59,24 @@ does not yet have the same subjective stutter margin as speaker-only mode.
 No sample rate, bit depth, bitrate, channel, frame-length, or frequency-band
 reduction is accepted as a performance fix.
 
-## Remaining product work
+## Known limitations
 
-These are real product gaps, not hidden build options:
-
-- browser-triggered firmware update/USB DFU (M61 currently uses UART ISP);
-- Windows wake/Game Bar shortcut emulation;
-- adaptive-trigger reduction settings;
-- USB remote wake qualification;
-- real PC suspend/resume power-policy qualification;
-- long-duration full-duplex qualification with zero audible stutter at the
-  default 320 MHz profile.
-
-The Web migration plan and firmware/Web ownership decisions live in the
-separate configuration-web repository specification.
+- The supported controller target is the standard DualSense. DualSense Edge
+  is not supported or hardware-qualified.
+- Controller RSSI is intentionally unavailable because active BL616 BR/EDR
+  RSSI queries disturbed HID input during hardware testing.
+- Microphone decode adds substantial realtime load. It is disabled by default,
+  and 320 MHz full-duplex operation has less stutter margin than speaker-only.
+- During long wireless speaker playback, the sound can occasionally become
+  temporarily muffled and later recover. USB enumeration and controller input
+  remain available.
+- Host-suspend controller power-off is implemented but still needs broader PC
+  sleep/resume qualification.
+- Firmware updates use UART ISP. Software warm reboot is best effort; physical
+  BOOT+RESET is the reliable entry and recovery method.
+- `ds5 log normal` prints every HIDP input report and can materially reduce
+  controller throughput. Normal operation and performance tests must use
+  `ds5 log quiet` or a fresh reset.
 
 ## Serial command surface
 

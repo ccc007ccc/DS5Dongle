@@ -116,13 +116,16 @@ Diagnostic buffers are compiled only into their corresponding profile.
 | `m61_bt_tx_scheduler.c` | Central Bluetooth TX selection and admission |
 | `m61_realtime_scheduler.c` | Deadline/readiness policy |
 | `m61_dvfs.c` | Runtime clock profiles, governor, persistence and worker |
+| `m61_web_config.c` | Versioned WebHID configuration, migration and CRC record |
+| `m61_stick_deadzone.c` | Independent scaled radial stick correction |
 | `dualsense_parser.c` | Bluetooth/USB input parsing |
 | `dualsense_output.c` | Bluetooth output/Feature packets and CRC |
 | `m61_perf_profile.c` | Compile-gated HPM aggregation |
 
 ## Configuration boundary
 
-Shell commands are currently the M61 management plane. A stable WebHID
-management protocol is intentionally not bolted onto raw shell strings. The
-web refactor will introduce a versioned binary capability/config protocol,
-with firmware as the authority for validation and persistence.
+The public management plane is the versioned binary WebHID protocol on Feature
+reports `0xF6` through `0xF9`. Firmware advertises capabilities, validates all
+ranges, applies commands asynchronously, and owns the CRC-protected Flash
+record. Shell commands remain development and recovery tools; the browser does
+not forward or interpret shell text.

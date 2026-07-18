@@ -6,7 +6,6 @@
 
 ```text
 m61/dualsense_hidp_probe/   production firmware and build system
-m61/usb_*_probe/            native-USB hardware bring-up probes
 tools/                      host tests, flashing, capture and analysis
 benchmarks/                 promoted machine-readable performance results
 docs/                       maintained bilingual documentation
@@ -59,6 +58,9 @@ entry in `benchmarks/PERFORMANCE_BEST.csv` only when promoted.
 - Preserve generation/deadline metadata across queues.
 - Do not allocate, log, read HPM counters, or switch clocks in release hot
   paths unless the cost is measured and required.
+- Keep per-report serial logging off during normal operation and performance
+  tests. `ds5 log normal` is a short diagnostic mode and can materially reduce
+  HID throughput; restore `ds5 log quiet` or reset before validation.
 - Place code/data in SRAM selectively; every placement change needs release,
   not only stage-profile, measurements.
 - Preserve bit-exact Opus/PCM results and all quality invariants.

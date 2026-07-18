@@ -22,17 +22,22 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 | 手柄输出 | 灯带/玩家灯、静音灯、普通震动、自适应扳机 |
 | 音频与触觉 | 48 kHz/16-bit四通道USB OUT、扬声器/耳机路由、HD haptics、Opus传输 |
 | 麦克风 | DualSense Opus解码为48 kHz/16-bit双声道USB IN（复制手柄单声道） |
-| 运行时控制 | 麦克风开关、单/双声道/自动扬声器路由、可持久化manual/realtime DVFS |
+| 运行时控制 | 可持久化音频路由、320/384/400 MHz DVFS、摇杆死区、空闲关机及250/500 Hz USB回报模式 |
+| WebUI | 版本化WebHID配置、Flash持久化、手柄管理及有界遥测 |
 | 诊断 | 串口状态/bring-up命令、编译期开关控制的HPM/pipeline/runtime profile、主机验证工具 |
 
 正式固件默认值保守且确定：CPU为320 MHz manual模式、麦克风关闭、扬声器自动路由、
-不启用编译期超频。完整限制和实测状态见[功能矩阵](docs/FEATURES.zh-CN.md)。
+不开启超频、摇杆死区为0%、不自动关闭空闲手柄，并实时跟随蓝牙新报告。
+完整限制和实测状态见[功能与限制](docs/FEATURES.zh-CN.md)。
 
 可通过M61专用WebHID配置器修改并持久化这些设置：
 <https://ds5.766677.xyz/>。请用Chromium内核浏览器通过HTTPS
 打开，连接M61，先读取当前配置，再把完整配置保存到Flash。USB回报模式包括实时转发
 新报告，以及硬件实测通过的固定250 Hz和500 Hz；固定模式可能重复最近的蓝牙样本，
 不会提高手柄本身的原始采样率。
+
+当前支持目标是普通DualSense；DualSense Edge未支持、也没有进行真机验收。无线扬声器
+长时间播放时，音色可能偶尔短暂变闷后自行恢复；该已知限制不影响USB枚举和手柄输入。
 
 ## 使用Release预编译固件
 
@@ -105,17 +110,17 @@ CH340串口，不能让固件枚举成手柄。请按[硬件与接线](docs/HARD
 进入UART下载模式后，在仓库根目录运行：
 
 ```powershell
-python tools\flash_m61_firmware.py --app hidp-probe -p COM5 --windows-build
+python tools\flash_m61_firmware.py -p COM5 --windows-build
 python tools\check_m61_usb_windows.py
 python tools\validate_m61_usb_hardware.py -p COM5
 ```
 
-如果运行中的固件支持`ds5 reboot-isp`，刷写工具可加`--reboot-isp`自动请求ISP；
-否则按住BOOT、点按RESET，再松开BOOT。
+`--reboot-isp`只属于尽力而为的开发便利功能：部分BL616板在热复位进入BootROM后会
+读取eFuse失败。可靠的刷写和恢复方式始终是按住BOOT、点按RESET，再松开BOOT。
 
 ## 文档
 
-- [功能与当前缺口](docs/FEATURES.zh-CN.md)
+- [功能与限制](docs/FEATURES.zh-CN.md)
 - [架构](docs/ARCHITECTURE.zh-CN.md)
 - [构建与刷写](docs/BUILDING.zh-CN.md)
 - [硬件与接线](docs/HARDWARE.zh-CN.md)

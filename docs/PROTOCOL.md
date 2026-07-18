@@ -111,6 +111,8 @@ versioned M61 protocol and do not expose private firmware memory layouts:
 
 The 21-byte configuration body is stored as a CRC32-protected EasyFlash
 record. Invalid records fall back to release defaults: microphone and
-overclocking off, manual 320 MHz, idle shutdown disabled, and both stick
-deadzones at 0%. USB reports default to realtime forwarding of fresh Bluetooth
-samples. Version-1 through version-3 records migrate to that realtime mode.
+overclocking off, manual 320 MHz, speaker enabled with automatic routing,
+automatic reconnect and the status LED enabled, 1.0x haptics gain, idle and
+host-suspend shutdown disabled, and both stick deadzones at 0%. USB reports
+default to realtime forwarding of fresh Bluetooth samples. Version-1 through
+version-3 records migrate to that realtime mode.

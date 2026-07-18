@@ -25,14 +25,14 @@ intrinsics, exact 512:480 resampling, D4 decode parser fast path, decode-MDCT
 SRAM placement, a 16-entry Flash CRC table, and a 1 ms paired codec window.
 All profiling is off.
 
-The release memory result is:
+The official v0.8.1 Release ELF passes the memory gate with:
 
-| Region | Used | Capacity |
+| Metric | v0.8.1 | Gate |
 | --- | ---: | ---: |
-| Application RAM | 215,584 B | 319 KiB |
-| Non-cache alias usage | 10,888 B | 319 KiB alias |
-| WRAM application section | 16 B | 128 KiB after controller reserve |
-| ROM/XIP | 873,432 B | 4 MiB |
+| Static physical RAM | 215,952 B | 424,960 B capacity |
+| Static RAM plus 8 KiB contingency | 224,144 B | 318,720 B (75%) |
+| ITCM | 28,380 B | 40,960 B boot-safe limit |
+| Release firmware BIN | 890,384 B | Published asset |
 
 ## Fixed hardware loads
 
@@ -55,8 +55,9 @@ For each run report:
 
 The authoritative table is
 [`benchmarks/PERFORMANCE_BEST.csv`](../benchmarks/PERFORMANCE_BEST.csv).
-The current Bluetooth/tail default is commit `6bf8714` on top of
-`4f8dfea` and `992111b`. Its three 400 MHz full-duplex runs had:
+The best promoted full-duplex benchmark series is commit `6bf8714` on top of
+`4f8dfea` and `992111b`. These are 400 MHz microphone-enabled diagnostic runs,
+not the v0.8.1 runtime default. Their retained optimization had:
 
 | Metric | Run 1 | Run 2 | Run 3 |
 | --- | ---: | ---: | ---: |
@@ -71,6 +72,11 @@ The same CRC change reduced profiled Bluetooth total average from 5.450 to
 
 The 320 MHz stereo/mic-off baseline is valid only for speaker capacity:
 encode avg/P95/P99/max was 6.026/7.000/7.500/7.655 ms with zero hard errors.
+
+The final v0.8.1 acceptance run used the release default 320 MHz with the
+microphone disabled. A 90-second speaker + HD-haptics + HID-output load sent
+4,320,000 audio frames and 4,502 HID reports without early termination. This
+does not erase the documented intermittent wireless-speaker timbre limitation.
 
 ## Promotion rule
 

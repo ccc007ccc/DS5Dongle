@@ -21,14 +21,14 @@
 `-O2 -flto`、E907位精确指令、精确512:480重采样、D4 decode parser快路、
 decode-MDCT SRAM放置、Flash 16项CRC表和1 ms codec成对窗口。全部profiling关闭。
 
-release内存结果：
+正式v0.8.1 Release ELF的内存门禁结果：
 
-| 区域 | 已用 | 容量 |
+| 指标 | v0.8.1 | 门禁 |
 | --- | ---: | ---: |
-| Application RAM | 215,584 B | 319 KiB |
-| Non-cache alias使用 | 10,888 B | 319 KiB alias |
-| WRAM应用section | 16 B | controller预留后128 KiB |
-| ROM/XIP | 873,432 B | 4 MiB |
+| 静态物理RAM | 215,952 B | 总容量424,960 B |
+| 静态RAM加8 KiB预留 | 224,144 B | 318,720 B（75%） |
+| ITCM | 28,380 B | 启动安全上限40,960 B |
+| Release固件BIN | 890,384 B | 已发布资产 |
 
 ## 固定真机负载
 
@@ -48,8 +48,8 @@ release内存结果：
 ## 当前晋升结果
 
 权威表为[`benchmarks/PERFORMANCE_BEST.csv`](../benchmarks/PERFORMANCE_BEST.csv)。
-当前Bluetooth/尾延迟默认是`4f8dfea`、`992111b`之上的`6bf8714`。三轮400 MHz
-full-duplex结果：
+当前最优晋升全双工基准系列是`4f8dfea`、`992111b`之上的`6bf8714`。这些是开启麦克风的
+400 MHz诊断测试，不是v0.8.1运行时默认值；其保留优化的三轮结果为：
 
 | 指标 | 第1轮 | 第2轮 | 第3轮 |
 | --- | ---: | ---: | ---: |
@@ -64,6 +64,10 @@ full-duplex结果：
 
 320 MHz stereo/mic-off只代表speaker容量：encode avg/P95/P99/max为
 6.026/7.000/7.500/7.655 ms，硬错误为0。
+
+最终v0.8.1验收使用release默认320 MHz并关闭麦克风。90秒speaker + HD haptics + HID
+output负载完整发送4,320,000音频帧和4,502份HID报告，没有提前停止。该结果不代表已消除
+文档中记录的无线扬声器偶发音色变闷限制。
 
 ## 晋升规则
 

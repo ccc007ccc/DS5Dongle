@@ -39,6 +39,8 @@ m61 clock save | clear-saved
 
 Raw Feature/send、decoder benchmark、memory benchmark和profile命令只供开发。精确命令
 以`ds5 help`为权威。
+`ds5 log normal`会打印每份输入报告并明显降低HID吞吐；release默认是quiet。软件重启
+ISP只属于尽力而为，物理BOOT+RESET才是可靠恢复路径。
 
 ## 源码索引
 
@@ -47,6 +49,8 @@ Raw Feature/send、decoder benchmark、memory benchmark和profile命令只供开
 - `m61_audio_epoch.c`：speaker/haptics epoch所有权；
 - `m61_bt_tx_scheduler.c`：Bluetooth TX策略；
 - `m61_dvfs.c`：运行时频率策略和持久化；
+- `m61_web_config.c`：WebHID配置和Flash记录；
+- `m61_stick_deadzone.c`：缩放径向摇杆死区；
 - `dualsense_parser.c` / `dualsense_output.c`：手柄协议；
 - `patches/`：可审查Opus 1.2.1性能补丁栈。
 

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Flash one of the DS5Dongle M61 firmware images with Bouffalo tools."""
+"""Flash the production DS5Dongle M61 firmware with Bouffalo tools."""
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
@@ -22,39 +21,21 @@ REBOOT_ISP_COMMANDS = (
 REBOOT_ISP_BAUDS = (115200, 2000000, 460800)
 M61_CH340_VID = 0x1A86
 M61_CH340_PID = 0x7523
+FIRMWARE_DIRECTORY = ROOT / "m61" / "dualsense_hidp_probe"
+FIRMWARE_BIN = "m61_dualsense_hidp_probe_bl616.bin"
+BUILD_COMMAND = "wsl bash /mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh"
 
 
-@dataclass(frozen=True)
-class FirmwareApp:
-    directory: Path
-    bl616_bin: str
-    build_command: str
-
-
-FIRMWARE_APPS = {
-    "hidp-probe": FirmwareApp(
-        directory=ROOT / "m61" / "dualsense_hidp_probe",
-        bl616_bin="m61_dualsense_hidp_probe_bl616.bin",
-        build_command="wsl bash /mnt/c/code/MCU/DS5Dongle/m61/dualsense_hidp_probe/build.sh",
-    ),
-    "usb-ram-disk-probe": FirmwareApp(
-        directory=ROOT / "m61" / "usb_ram_disk_probe",
-        bl616_bin="m61_usb_ram_disk_probe_bl616.bin",
-        build_command="wsl bash /mnt/c/code/MCU/DS5Dongle/m61/usb_ram_disk_probe/build.sh",
-    ),
-    "usb-hid-gamepad-probe": FirmwareApp(
-        directory=ROOT / "m61" / "usb_hid_gamepad_probe",
-        bl616_bin="m61_usb_hid_gamepad_probe_bl616.bin",
-        build_command="wsl bash /mnt/c/code/MCU/DS5Dongle/m61/usb_hid_gamepad_probe/build.sh",
-    ),
-}
-
-
-def flash_artifact_errors(app: FirmwareApp, build_dir: str, chip: str) -> list[str]:
+def flash_artifact_errors(
+    firmware_directory: Path,
+    firmware_name: str,
+    build_dir: str,
+    chip: str,
+) -> list[str]:
     """Return actionable preflight errors for one BL616 flash directory."""
-    output_dir = app.directory / build_dir / "build_out"
+    output_dir = firmware_directory / build_dir / "build_out"
     errors: list[str] = []
-    firmware = output_dir / app.bl616_bin
+    firmware = output_dir / firmware_name
     partition = output_dir / "partition.bin"
     boot2_matches = sorted(output_dir.glob(f"boot2_{chip}_*.bin"))
 
@@ -151,7 +132,6 @@ def describe_flash_port(port: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--app", choices=sorted(FIRMWARE_APPS), default="hidp-probe", help="M61 firmware app")
     parser.add_argument("-p", "--port", required=True, help="M61 UART COM port, for example COM5")
     parser.add_argument("-b", "--baud", type=int, default=460800, help="download baudrate")
     parser.add_argument("--chip", choices=("bl616",), default="bl616", help="Bouffalo chip name")
@@ -191,10 +171,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    app = FIRMWARE_APPS[args.app]
     build_dir = "build-win" if args.windows_build else "build"
     config_name = "flash_prog_cfg_windows.ini" if args.windows_build else "flash_prog_cfg.ini"
-    flash_config = app.directory / config_name
+    flash_config = FIRMWARE_DIRECTORY / config_name
 
     if not FLASH_TOOL.is_file():
         print(f"missing BLFlashCommand.exe: {FLASH_TOOL}", file=sys.stderr)
@@ -203,11 +182,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"missing flash config: {flash_config}", file=sys.stderr)
         return 1
 
-    artifact_errors = flash_artifact_errors(app, build_dir, args.chip)
+    artifact_errors = flash_artifact_errors(
+        FIRMWARE_DIRECTORY,
+        FIRMWARE_BIN,
+        build_dir,
+        args.chip,
+    )
     if artifact_errors:
         for error in artifact_errors:
             print(error, file=sys.stderr)
-        print(f"run: {app.build_command}", file=sys.stderr)
+        print(f"run: {BUILD_COMMAND}", file=sys.stderr)
         print(
             "or download boot2, partition.bin, and the application BIN from "
             "the same complete Release",
@@ -249,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd.append("--reset")
 
     print("running:", " ".join(cmd))
-    return subprocess.call(cmd, cwd=app.directory)
+    return subprocess.call(cmd, cwd=FIRMWARE_DIRECTORY)
 
 
 if __name__ == "__main__":

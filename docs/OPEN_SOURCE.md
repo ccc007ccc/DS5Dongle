@@ -51,7 +51,8 @@ vendor.
 Publish:
 
 - source commit/tag;
-- BIN, ELF, and MAP when appropriate;
+- matching boot2, partition table, application BIN, and checksum list;
+- ELF and MAP when appropriate;
 - generated `.manifest.json`;
 - MIT license and `THIRD_PARTY_NOTICES.md`;
 - bilingual release notes describing the exact hardware and profile.

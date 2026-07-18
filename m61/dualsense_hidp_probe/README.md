@@ -41,6 +41,9 @@ m61 clock save | clear-saved
 
 Raw Feature/send, decoder-benchmark, memory-benchmark, and profile commands
 are for development. Use `ds5 help` as the exact command authority.
+`ds5 log normal` prints every input report and can materially reduce HID
+throughput; the release default is quiet. Software ISP reboot is best effort,
+while physical BOOT+RESET is the reliable recovery path.
 
 ## Source map
 
@@ -49,6 +52,8 @@ are for development. Use `ds5 help` as the exact command authority.
 - `m61_audio_epoch.c`: speaker/haptics epoch ownership;
 - `m61_bt_tx_scheduler.c`: Bluetooth TX policy;
 - `m61_dvfs.c`: runtime frequency policy and persistence;
+- `m61_web_config.c`: WebHID configuration and Flash record;
+- `m61_stick_deadzone.c`: scaled radial stick deadzones;
 - `dualsense_parser.c` / `dualsense_output.c`: controller protocol;
 - `patches/`: reviewable Opus 1.2.1 performance patch stack.
 

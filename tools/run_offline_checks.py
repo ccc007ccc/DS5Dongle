@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--include-m61-build",
         action="store_true",
-        help="also build both M61 firmware probes through WSL",
+        help="also build the production M61 firmware through WSL",
     )
     parser.add_argument(
         "--check-artifacts",
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         steps.extend([
             (
-                "M61 DualSense HIDP probe build",
+                "M61 production firmware build",
                 build_command,
             ),
             (
