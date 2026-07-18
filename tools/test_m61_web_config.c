@@ -25,6 +25,7 @@ static m61_web_config_t fixture(void)
     config.power_off_on_usb_suspend = true;
     config.left_stick_deadzone_percent = 8U;
     config.right_stick_deadzone_percent = 12U;
+    config.usb_polling_rate_mode = M61_WEB_USB_POLL_500_HZ;
     return config;
 }
 
@@ -39,6 +40,11 @@ int main(void)
         0x4d, 0x36, 0x31, 0x57, 0x02, 0x12, 0x4d, 0x36, 0x31, 0x43,
         0x02, 0x12, 0xff, 0x07, 0x0e, 0x00, 0x00, 0x00, 0x40, 0x01,
         0x00, 0x01, 0x00, 0x00, 0x7d, 0x8d, 0xc6, 0x48,
+    };
+    static const uint8_t persistent_v3[30] = {
+        0x4d, 0x36, 0x31, 0x57, 0x03, 0x14, 0x4d, 0x36, 0x31, 0x43,
+        0x03, 0x14, 0x4d, 0x00, 0x0e, 0x02, 0x01, 0x02, 0x90, 0x01,
+        0x80, 0x01, 0x1e, 0x01, 0x08, 0x0c, 0xdc, 0xfb, 0xe0, 0x60,
     };
     m61_web_config_t input = fixture();
     m61_web_config_t decoded;
@@ -58,6 +64,7 @@ int main(void)
     assert(body[14] == 0x80U && body[15] == 0x01U);
     assert(body[16] == 30U && body[17] == 1U);
     assert(body[18] == 8U && body[19] == 12U);
+    assert(body[20] == M61_WEB_USB_POLL_500_HZ);
     assert(m61_web_config_decode(body, sizeof(body), &decoded) ==
            M61_WEB_CONFIG_BODY_SIZE);
     assert(memcmp(&input, &decoded, sizeof(input)) == 0);
@@ -139,6 +146,7 @@ int main(void)
     assert(decoded.power_off_on_usb_suspend == false);
     assert(decoded.left_stick_deadzone_percent == 0U);
     assert(decoded.right_stick_deadzone_percent == 0U);
+    assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_REALTIME);
 
     memset(&decoded, 0, sizeof(decoded));
     assert(m61_web_persistent_decode(persistent_v2,
@@ -148,6 +156,15 @@ int main(void)
     assert(decoded.power_off_on_usb_suspend == false);
     assert(decoded.left_stick_deadzone_percent == 0U);
     assert(decoded.right_stick_deadzone_percent == 0U);
+    assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_REALTIME);
+
+    memset(&decoded, 0, sizeof(decoded));
+    assert(m61_web_persistent_decode(persistent_v3,
+                                     sizeof(persistent_v3),
+                                     &decoded) == (int)sizeof(persistent_v3));
+    assert(decoded.left_stick_deadzone_percent == 8U);
+    assert(decoded.right_stick_deadzone_percent == 12U);
+    assert(decoded.usb_polling_rate_mode == M61_WEB_USB_POLL_REALTIME);
 
     assert(m61_web_command_encode(M61_WEB_COMMAND_POWER_OFF_CONTROLLER,
                                   NULL,

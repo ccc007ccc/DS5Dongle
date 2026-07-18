@@ -36,6 +36,7 @@ by source/offline tests but still needs broader hardware regression, and
 | Power | Configurable controller idle shutdown | Verified | Fixed 25% stick activity threshold excludes drift and IMU noise; disabled by default |
 | Power | Controller shutdown after host suspend | Implemented | Requires final PC sleep/resume qualification |
 | Input | Independent scaled radial stick deadzones | Implemented | Left/right 0–30%; schema v3 and Flash persistence |
+| Input | Selectable USB report rate | Implemented | Realtime fresh Bluetooth reports or validated fixed 250/500 Hz latest-sample repeat; schema v4 migrates the retired experimental value to 500 Hz |
 | Recovery | UART ISP software reboot and flashing tool | Verified | Manual BOOT/RESET remains the recovery path |
 | Board UI | RGB connection status LED | Verified | Green idle, blue connecting/connected policy |
 
@@ -62,7 +63,6 @@ reduction is accepted as a performance fix.
 These are real product gaps, not hidden build options:
 
 - browser-triggered firmware update/USB DFU (M61 currently uses UART ISP);
-- selectable USB HID polling rate;
 - Windows wake/Game Bar shortcut emulation;
 - adaptive-trigger reduction settings;
 - USB remote wake qualification;

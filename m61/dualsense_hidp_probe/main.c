@@ -265,6 +265,7 @@ _Static_assert(CONFIG_M61_STATUS_LED_BRIGHTNESS_PERMILLE <= 1000U,
 #endif
 
 #define DS5_AUTO_TASK_PERIOD_MS 250
+#define DS5_RSSI_SAMPLE_PERIOD_MS 2000
 #define DS5_DISCONNECT_CLEANUP_DELAY_MS 750
 
 struct hidp_channel {
@@ -305,6 +306,7 @@ static TickType_t usb_suspend_started_tick;
 static bool controller_poweroff_requested;
 static bool controller_rssi_valid;
 static int8_t controller_rssi;
+static TickType_t controller_rssi_next_sample_tick;
 static uint8_t web_last_management_command;
 static int16_t web_last_management_error;
 static uint32_t web_management_sequence;
@@ -347,6 +349,8 @@ static bool hidp_last_mic_active;
 static TickType_t hidp_next_mic_status_tick;
 static TickType_t hidp_next_audio_report_tick;
 static bool usb_start_after_dualsense_done;
+static bool usb_controller_attached;
+static bool usb_controller_detach_pending;
 static bool dualsense_headphones_connected;
 static uint8_t auto_bringup_attempts;
 static uint8_t auto_saved_addr_attempts;
@@ -428,6 +432,41 @@ static void print_addr(const char *prefix, const bt_addr_t *addr)
 static bool tick_due(TickType_t now, TickType_t due)
 {
     return (int32_t)(now - due) >= 0;
+}
+
+static int read_controller_rssi(struct bt_conn *conn, int8_t *rssi)
+{
+    struct bt_hci_cp_read_rssi *command;
+    struct bt_hci_rp_read_rssi *response;
+    struct net_buf *command_buffer;
+    struct net_buf *response_buffer = NULL;
+    int err;
+
+    if (!conn || !rssi) return -EINVAL;
+
+    command_buffer = bt_hci_cmd_create(BT_HCI_OP_READ_RSSI, sizeof(*command));
+    if (!command_buffer) return -ENOBUFS;
+
+    command = net_buf_add(command_buffer, sizeof(*command));
+    command->handle = conn->handle;
+    err = bt_hci_cmd_send_sync(BT_HCI_OP_READ_RSSI,
+                               command_buffer,
+                               &response_buffer);
+    if (err) return err;
+    if (!response_buffer || response_buffer->len < sizeof(*response)) {
+        if (response_buffer) net_buf_unref(response_buffer);
+        return -EMSGSIZE;
+    }
+
+    response = (struct bt_hci_rp_read_rssi *)response_buffer->data;
+    if (response->status != 0U) {
+        err = -EIO;
+    } else {
+        *rssi = response->rssi;
+        err = 0;
+    }
+    net_buf_unref(response_buffer);
+    return err;
 }
 
 #if CONFIG_M61_PIPELINE_PROFILE
@@ -931,9 +970,14 @@ static void m61_usb_bus_detach_pulse(uint32_t delay_ms)
 
 static int m61_usb_cycle_command(void)
 {
+    int err;
+
     m61_usb_gamepad_deinit();
+    usb_controller_attached = false;
     m61_usb_bus_detach_pulse(350);
-    return m61_usb_gamepad_reinit();
+    err = m61_usb_gamepad_reinit();
+    usb_controller_attached = (err == 0);
+    return err;
 }
 
 static void pair_button_init(void)
@@ -2236,6 +2280,8 @@ static void refresh_m61_web_config_from_runtime(void)
     web_config.status_led_enabled = status_led_runtime_enabled;
     web_config.speaker_route = (uint8_t)m61_usb_gamepad_speaker_route();
     web_config.haptics_gain_q8 = m61_usb_gamepad_haptics_gain_q8();
+    web_config.usb_polling_rate_mode =
+        (uint8_t)m61_usb_gamepad_polling_rate_mode();
     m61_dvfs_get_status(&dvfs);
     web_config.cpu_governor = (uint8_t)dvfs.governor;
     web_config.cpu_profile =
@@ -2281,6 +2327,9 @@ static int apply_m61_web_config(const m61_web_config_t *requested,
     if (err != 0) return -EINVAL;
     m61_usb_gamepad_set_stick_deadzones(next.left_stick_deadzone_percent,
                                         next.right_stick_deadzone_percent);
+    err = m61_usb_gamepad_set_polling_rate_mode(
+        (m61_usb_polling_rate_mode_t)next.usb_polling_rate_mode);
+    if (err != 0) return -EINVAL;
     auto_start_enabled = next.auto_reconnect_enabled;
     status_led_set_runtime_enabled(next.status_led_enabled);
     web_config = next;
@@ -2839,6 +2888,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
         default_conn = conn;
     }
     auto_sequence_started = true;
+    controller_rssi_valid = false;
+    controller_rssi_next_sample_tick = xTaskGetTickCount();
     m61_usb_gamepad_set_bluetooth_connected(true);
     hidp_active_open_allowed = outgoing_conn;
     auto_reset_link_state();
@@ -2864,6 +2915,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     bt_addr_to_str(info.br.dst, addr_str, sizeof(addr_str));
     printf("BR/EDR disconnected: %s reason=%u\r\n", addr_str, reason);
     controller_rssi_valid = false;
+    usb_controller_detach_pending = usb_controller_attached;
 
     if (default_conn == conn) {
         default_conn = NULL;
@@ -3079,6 +3131,7 @@ static void app_start_task(void *pvParameters)
     m61_usb_bus_detach_pulse(350);
     m61_usb_gamepad_init();
     usb_start_after_dualsense_done = true;
+    usb_controller_attached = true;
 
     vTaskDelete(NULL);
 }
@@ -3095,6 +3148,24 @@ static void auto_connect_task(void *pvParameters)
 
         pair_button_poll();
         process_deferred_disconnect_cleanup(now);
+
+        if (usb_controller_detach_pending) {
+            usb_controller_detach_pending = false;
+            m61_usb_gamepad_deinit();
+            usb_controller_attached = false;
+            printf("USB DualSense composite detached after controller disconnect\r\n");
+        }
+
+        if (!usb_controller_attached && default_conn &&
+            hid_control.connected && hid_interrupt.connected && full_report_seen) {
+            int usb_err;
+
+            m61_usb_bus_detach_pulse(350);
+            usb_err = m61_usb_gamepad_reinit();
+            usb_controller_attached = (usb_err == 0);
+            printf("USB DualSense composite attach after controller report result=%d\r\n",
+                   usb_err);
+        }
 
         if (m61_usb_gamepad_usb_suspended()) {
             if (usb_suspend_started_tick == 0U) usb_suspend_started_tick = now;
@@ -3124,6 +3195,25 @@ static void auto_connect_task(void *pvParameters)
                        idle_expired ? "idle" : "usb-suspend",
                        err);
                 if (err == 0) controller_poweroff_requested = true;
+            }
+        }
+
+        if (default_conn && tick_due(now, controller_rssi_next_sample_tick)) {
+            struct bt_conn *rssi_conn = bt_conn_ref(default_conn);
+            int8_t sampled_rssi = 0;
+            int rssi_err = read_controller_rssi(rssi_conn, &sampled_rssi);
+
+            bt_conn_unref(rssi_conn);
+            controller_rssi_next_sample_tick =
+                now + pdMS_TO_TICKS(DS5_RSSI_SAMPLE_PERIOD_MS);
+            if (rssi_err == 0) {
+                controller_rssi = sampled_rssi;
+                /* The BL616 BR/EDR controller returns zero when link RSSI
+                 * is unavailable.  Do not expose that placeholder as a
+                 * physically implausible 0 dBm measurement. */
+                controller_rssi_valid = (sampled_rssi != 0);
+            } else {
+                controller_rssi_valid = false;
             }
         }
 
@@ -3694,6 +3784,12 @@ int cmd_ds5(int argc, char **argv)
                (unsigned long)usb_diag.reg_otg_csr,
                (unsigned long)usb_diag.reg_glb_isr,
                (unsigned long)usb_diag.reg_dev_igr);
+        printf("usb_pds ctl=%08lx phy0=%08lx phy1=%08lx phy2=%08lx phy3=%08lx\r\n",
+               (unsigned long)(*(volatile const uint32_t *)0x2000E500UL),
+               (unsigned long)(*(volatile const uint32_t *)0x2000E504UL),
+               (unsigned long)(*(volatile const uint32_t *)0x2000E508UL),
+               (unsigned long)(*(volatile const uint32_t *)0x2000E50CUL),
+               (unsigned long)(*(volatile const uint32_t *)0x2000E510UL));
         printf("usb_bmx cfg0=%08lx cfg1=%08lx arb=%lu qos_cpu=%lu qos_sdu=%lu qos_dma=%lu qos_blem=%lu\r\n",
                (unsigned long)(*(volatile const uint32_t *)0x20000320UL),
                (unsigned long)(*(volatile const uint32_t *)0x20000324UL),

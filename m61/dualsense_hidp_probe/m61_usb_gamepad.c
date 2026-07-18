@@ -195,7 +195,7 @@ static const uint8_t dualsense_report_desc[HID_DUALSENSE_REPORT_DESC_SIZE] = {
     0xC0,
 };
 
-static const uint8_t config_descriptor[] = {
+static uint8_t config_descriptor[] = {
     USB_CONFIG_DESCRIPTOR_INIT(USB_DUALSENSE_CONFIG_DESC_SIZE,
                                ITF_NUM_TOTAL,
                                0x01,
@@ -218,7 +218,7 @@ static const uint8_t config_descriptor[] = {
     0x01,
     0x01, 0x01,
     0x06,
-    0x04,
+    0x01,
     0x33, 0x00,
     0x00,
     0x00,
@@ -233,7 +233,7 @@ static const uint8_t config_descriptor[] = {
     0x09, 0x24, 0x03,
     0x03,
     0x01, 0x03,
-    0x04,
+    0x01,
     AUDIO_SPEAKER_FU_ID,
     0x00,
 
@@ -288,7 +288,7 @@ static const uint8_t config_descriptor[] = {
     0x09,
     AUDIO_OUT_PACKET_SIZE & 0xFF,
     (AUDIO_OUT_PACKET_SIZE >> 8) & 0xFF,
-    0x01,
+    0x04,
     0x00,
     0x00,
 
@@ -324,7 +324,7 @@ static const uint8_t config_descriptor[] = {
     0x05,
     AUDIO_IN_PACKET_SIZE & 0xFF,
     (AUDIO_IN_PACKET_SIZE >> 8) & 0xFF,
-    0x01,
+    0x04,
     0x00,
     0x00,
 
@@ -424,6 +424,10 @@ static volatile bool audio_speaker_runtime_enabled = true;
 static volatile uint16_t haptics_gain_q8 = HAPTICS_GAIN_Q8;
 static volatile uint8_t left_stick_deadzone_percent;
 static volatile uint8_t right_stick_deadzone_percent;
+static volatile m61_usb_polling_rate_mode_t polling_rate_mode_desired =
+    M61_USB_POLL_REALTIME;
+static volatile m61_usb_polling_rate_mode_t polling_rate_mode_effective =
+    M61_USB_POLL_REALTIME;
 static volatile m61_speaker_route_t speaker_route = M61_SPEAKER_ROUTE_AUTO;
 static volatile bool speaker_headphones_connected;
 static volatile bool web_bluetooth_connected;
@@ -826,6 +830,41 @@ static void usb_input_pump(void)
         usb_drop_count++;
     }
     usb_unlock(flags);
+}
+
+static bool polling_rate_repeats_latest(void)
+{
+    return polling_rate_mode_effective != M61_USB_POLL_REALTIME;
+}
+
+static uint8_t polling_rate_interval(void)
+{
+    switch (polling_rate_mode_desired) {
+    case M61_USB_POLL_250_HZ: return 2U;
+    case M61_USB_POLL_500_HZ: return 1U;
+    case M61_USB_POLL_REALTIME:
+    default: return 1U;
+    }
+}
+
+static void configure_hid_polling_interval(void)
+{
+    size_t offset = 0U;
+    uint8_t interval = polling_rate_interval();
+
+    while (offset + 1U < sizeof(config_descriptor)) {
+        uint8_t length = config_descriptor[offset];
+        uint8_t type = config_descriptor[offset + 1U];
+
+        if (length == 0U || offset + length > sizeof(config_descriptor)) break;
+        if (type == USB_DESCRIPTOR_TYPE_ENDPOINT && length >= 7U &&
+            (config_descriptor[offset + 2U] == HID_IN_EP ||
+             config_descriptor[offset + 2U] == HID_OUT_EP)) {
+            config_descriptor[offset + 6U] = interval;
+        }
+        offset += length;
+    }
+    polling_rate_mode_effective = polling_rate_mode_desired;
 }
 
 static int16_t read_i16_le(const uint8_t *data)
@@ -2114,6 +2153,8 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             arm_hid_out(0);
             arm_audio_out(busid);
             arm_audio_in(busid);
+            if (polling_rate_repeats_latest()) usb_input_pending = true;
+            usb_input_pump();
             break;
         case USBD_EVENT_RESUME:
             usb_suspended = false;
@@ -2139,6 +2180,7 @@ static void usbd_hid_in_callback(uint8_t busid, uint8_t ep, uint32_t nbytes)
     (void)nbytes;
     uintptr_t flags = usb_lock();
     usb_busy = false;
+    if (polling_rate_repeats_latest()) usb_input_pending = true;
     usb_unlock(flags);
     usb_input_pump();
 }
@@ -2362,6 +2404,7 @@ static void make_payload_from_state(const dualsense_state_t *state, uint8_t *pay
 
 static void register_usb_dualsense_device(void)
 {
+    configure_hid_polling_interval();
     usbd_desc_register(0, &dualsense_descriptor);
 
     usbd_add_interface(0, usbd_audio_init_intf(0,
@@ -2802,6 +2845,25 @@ void m61_usb_gamepad_set_stick_deadzones(uint8_t left_percent,
 {
     left_stick_deadzone_percent = left_percent <= 30U ? left_percent : 30U;
     right_stick_deadzone_percent = right_percent <= 30U ? right_percent : 30U;
+}
+
+int m61_usb_gamepad_set_polling_rate_mode(m61_usb_polling_rate_mode_t mode)
+{
+    if (mode > M61_USB_POLL_500_HZ) {
+        return -1;
+    }
+    polling_rate_mode_desired = mode;
+    return 0;
+}
+
+m61_usb_polling_rate_mode_t m61_usb_gamepad_polling_rate_mode(void)
+{
+    return polling_rate_mode_desired;
+}
+
+m61_usb_polling_rate_mode_t m61_usb_gamepad_effective_polling_rate_mode(void)
+{
+    return polling_rate_mode_effective;
 }
 
 void m61_usb_gamepad_set_bluetooth_connected(bool connected)
@@ -3526,6 +3588,19 @@ void m61_usb_gamepad_set_stick_deadzones(uint8_t left_percent,
 {
     (void)left_percent;
     (void)right_percent;
+}
+int m61_usb_gamepad_set_polling_rate_mode(m61_usb_polling_rate_mode_t mode)
+{
+    (void)mode;
+    return -1;
+}
+m61_usb_polling_rate_mode_t m61_usb_gamepad_polling_rate_mode(void)
+{
+    return M61_USB_POLL_REALTIME;
+}
+m61_usb_polling_rate_mode_t m61_usb_gamepad_effective_polling_rate_mode(void)
+{
+    return M61_USB_POLL_REALTIME;
 }
 void m61_usb_gamepad_set_bluetooth_connected(bool connected) { (void)connected; }
 void m61_usb_gamepad_set_web_management_status(

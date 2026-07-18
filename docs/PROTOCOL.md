@@ -103,13 +103,14 @@ versioned M61 protocol and do not expose private firmware memory layouts:
 
 - `0xF6`: apply/save configuration, reconnect USB, controller power-off,
   pair, disconnect, and forget commands;
-- `0xF7`: schema-v3 configuration and capability bits, including independent
-  left/right scaled radial stick deadzones;
+- `0xF7`: schema-v4 configuration and capability bits, including independent
+  left/right scaled radial stick deadzones and the USB report-rate mode;
 - `0xF8`: firmware and product identity;
 - `0xF9`: telemetry-v2 connection, runtime, management and bounded health
   counters. Its first eight payload bytes remain compatible with telemetry v1.
 
-The 20-byte configuration body is stored as a CRC32-protected EasyFlash
+The 21-byte configuration body is stored as a CRC32-protected EasyFlash
 record. Invalid records fall back to release defaults: microphone and
 overclocking off, manual 320 MHz, idle shutdown disabled, and both stick
-deadzones at 0%. Version-1 and version-2 records migrate with deadzones off.
+deadzones at 0%. USB reports default to realtime forwarding of fresh Bluetooth
+samples. Version-1 through version-3 records migrate to that realtime mode.

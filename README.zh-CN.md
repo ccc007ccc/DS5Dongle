@@ -28,6 +28,12 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 正式固件默认值保守且确定：CPU为320 MHz manual模式、麦克风关闭、扬声器自动路由、
 不启用编译期超频。完整限制和实测状态见[功能矩阵](docs/FEATURES.zh-CN.md)。
 
+可通过M61专用WebHID配置器修改并持久化这些设置：
+<https://ccc007ccc.github.io/ds5dongle-config-web/>。请用Chromium内核浏览器通过HTTPS
+打开，连接M61，先读取当前配置，再把完整配置保存到Flash。USB回报模式包括实时转发
+新报告，以及硬件实测通过的固定250 Hz和500 Hz；固定模式可能重复最近的蓝牙样本，
+不会提高手柄本身的原始采样率。
+
 ## 性能可复现构建
 
 默认构建就是经过实测的release性能配置，不会静默回退到SDK低性能实现：

@@ -45,7 +45,7 @@
 
 #define CONFIG_USB_MUSB_EP_NUM 8
 #define CONFIG_USB_MUSB_PIPE_NUM 8
-/* Full-speed is much more tolerant of hand-wired D+/D- leads than HS. */
+/* Use the stable full-speed PHY/VDMA path; fixed modes expose 250/500 Hz. */
 /* #define CONFIG_USB_HS */
 
 #endif

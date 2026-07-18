@@ -8,10 +8,14 @@ static const uint8_t m61_web_persistent_magic[4] = {'M', '6', '1', 'W'};
 #define M61_WEB_CONFIG_BODY_SIZE_V1 16U
 #define M61_WEB_CONFIG_SCHEMA_V2 2U
 #define M61_WEB_CONFIG_BODY_SIZE_V2 18U
+#define M61_WEB_CONFIG_SCHEMA_V3 3U
+#define M61_WEB_CONFIG_BODY_SIZE_V3 20U
 #define M61_WEB_PERSISTENT_RECORD_V1 1U
 #define M61_WEB_PERSISTENT_RECORD_SIZE_V1 26U
 #define M61_WEB_PERSISTENT_RECORD_V2 2U
 #define M61_WEB_PERSISTENT_RECORD_SIZE_V2 28U
+#define M61_WEB_PERSISTENT_RECORD_V3 3U
+#define M61_WEB_PERSISTENT_RECORD_SIZE_V3 30U
 static m61_web_config_t m61_web_runtime_config;
 static bool m61_web_runtime_initialized;
 static volatile uint32_t m61_web_runtime_sequence;
@@ -73,7 +77,8 @@ void m61_web_config_defaults(m61_web_config_t *config)
                            M61_WEB_CAP_IDLE_POWEROFF |
                            M61_WEB_CAP_CONTROLLER_POWEROFF |
                            M61_WEB_CAP_SUSPEND_POWEROFF |
-                           M61_WEB_CAP_STICK_DEADZONE;
+                           M61_WEB_CAP_STICK_DEADZONE |
+                           M61_WEB_CAP_USB_POLLING_RATE;
     config->speaker_enabled = true;
     config->auto_reconnect_enabled = true;
     config->status_led_enabled = true;
@@ -97,6 +102,7 @@ bool m61_web_config_valid(const m61_web_config_t *config)
     if (config->idle_timeout_minutes > 60U) return false;
     if (config->left_stick_deadzone_percent > 30U ||
         config->right_stick_deadzone_percent > 30U) return false;
+    if (config->usb_polling_rate_mode > M61_WEB_USB_POLL_500_HZ) return false;
     return true;
 }
 
@@ -129,6 +135,7 @@ int m61_web_config_encode(const m61_web_config_t *config,
     if (config->power_off_on_usb_suspend) output[17] = 0x01U;
     output[18] = config->left_stick_deadzone_percent;
     output[19] = config->right_stick_deadzone_percent;
+    output[20] = config->usb_polling_rate_mode;
     return M61_WEB_CONFIG_BODY_SIZE;
 }
 
@@ -149,9 +156,11 @@ int m61_web_config_decode(const uint8_t *input,
     body_size = input[5];
     if (version != M61_WEB_CONFIG_SCHEMA_V1 &&
         version != M61_WEB_CONFIG_SCHEMA_V2 &&
+        version != M61_WEB_CONFIG_SCHEMA_V3 &&
         version != M61_WEB_CONFIG_SCHEMA_VERSION) return -3;
     if ((version == M61_WEB_CONFIG_SCHEMA_V1 && body_size != M61_WEB_CONFIG_BODY_SIZE_V1) ||
         (version == M61_WEB_CONFIG_SCHEMA_V2 && body_size != M61_WEB_CONFIG_BODY_SIZE_V2) ||
+        (version == M61_WEB_CONFIG_SCHEMA_V3 && body_size != M61_WEB_CONFIG_BODY_SIZE_V3) ||
         (version == M61_WEB_CONFIG_SCHEMA_VERSION && body_size != M61_WEB_CONFIG_BODY_SIZE) ||
         input_size < body_size) return -1;
     memset(config, 0, sizeof(*config));
@@ -170,9 +179,17 @@ int m61_web_config_decode(const uint8_t *input,
         config->idle_timeout_minutes = input[16];
         config->power_off_on_usb_suspend = (input[17] & 0x01U) != 0U;
     }
-    if (version >= M61_WEB_CONFIG_SCHEMA_VERSION) {
+    if (version >= M61_WEB_CONFIG_SCHEMA_V3) {
         config->left_stick_deadzone_percent = input[18];
         config->right_stick_deadzone_percent = input[19];
+    }
+    if (version >= M61_WEB_CONFIG_SCHEMA_VERSION) {
+        config->usb_polling_rate_mode = input[20];
+        /* Schema v4 originally exposed an experimental 1000 Hz value (3).
+         * Migrate it to the highest validated stable rate. */
+        if (config->usb_polling_rate_mode == 3U) {
+            config->usb_polling_rate_mode = M61_WEB_USB_POLL_500_HZ;
+        }
     }
     return m61_web_config_valid(config) ? (int)body_size : -4;
 }
@@ -282,6 +299,7 @@ int m61_web_persistent_decode(const uint8_t *input,
 
     if (input == NULL || config == NULL ||
         (input_size != M61_WEB_PERSISTENT_RECORD_SIZE &&
+         input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V3 &&
          input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V2 &&
          input_size != M61_WEB_PERSISTENT_RECORD_SIZE_V1)) {
         return -1;
@@ -299,6 +317,9 @@ int m61_web_persistent_decode(const uint8_t *input,
     } else if (record_version == M61_WEB_PERSISTENT_RECORD_V2 &&
                body_size == M61_WEB_CONFIG_BODY_SIZE_V2) {
         expected_size = M61_WEB_PERSISTENT_RECORD_SIZE_V2;
+    } else if (record_version == M61_WEB_PERSISTENT_RECORD_V3 &&
+               body_size == M61_WEB_CONFIG_BODY_SIZE_V3) {
+        expected_size = M61_WEB_PERSISTENT_RECORD_SIZE_V3;
     } else if (record_version == M61_WEB_PERSISTENT_RECORD_VERSION &&
                body_size == M61_WEB_CONFIG_BODY_SIZE) {
         expected_size = M61_WEB_PERSISTENT_RECORD_SIZE;

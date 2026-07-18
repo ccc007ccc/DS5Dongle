@@ -96,6 +96,13 @@ moving code into SRAM is forbidden: hardware tests showed that larger code
 working sets can increase I-cache conflict and tail latency.
 
 The release memory gate limits boot-critical TCM and static physical RAM.
+
+The BL616 HID IN endpoint uses a project-local completion shim.  The stock
+USB v2 driver reports a transfer complete when VDMA has filled FIFO3, before
+the host has consumed the interrupt packet.  M61 enables the hardware FIFO3
+IN event and completes EP4 only after that event, allowing the next report to
+be armed for the following USB poll without changing the shared SDK, FIFO
+layout, audio endpoints, or 64-byte DualSense report size.
 Diagnostic buffers are compiled only into their corresponding profile.
 
 ## Main source modules

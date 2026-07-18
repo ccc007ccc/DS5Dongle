@@ -31,6 +31,12 @@ typedef enum {
     M61_SPEAKER_ROUTE_STEREO,
 } m61_speaker_route_t;
 
+typedef enum {
+    M61_USB_POLL_REALTIME = 0,
+    M61_USB_POLL_250_HZ,
+    M61_USB_POLL_500_HZ,
+} m61_usb_polling_rate_mode_t;
+
 typedef struct {
     bool rssi_valid;
     int8_t rssi;
@@ -73,6 +79,9 @@ uint16_t m61_usb_gamepad_haptics_gain_q8(void);
 int m61_usb_gamepad_set_haptics_gain_q8(uint16_t gain_q8);
 void m61_usb_gamepad_set_stick_deadzones(uint8_t left_percent,
                                          uint8_t right_percent);
+int m61_usb_gamepad_set_polling_rate_mode(m61_usb_polling_rate_mode_t mode);
+m61_usb_polling_rate_mode_t m61_usb_gamepad_polling_rate_mode(void);
+m61_usb_polling_rate_mode_t m61_usb_gamepad_effective_polling_rate_mode(void);
 void m61_usb_gamepad_set_bluetooth_connected(bool connected);
 void m61_usb_gamepad_set_web_management_status(
     const m61_web_management_status_t *status);

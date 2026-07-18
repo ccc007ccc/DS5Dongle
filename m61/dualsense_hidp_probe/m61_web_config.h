@@ -10,11 +10,11 @@
 #define M61_WEB_FIRMWARE_REPORT_ID 0xF8U
 #define M61_WEB_TELEMETRY_REPORT_ID 0xF9U
 #define M61_WEB_FEATURE_PAYLOAD_SIZE 63U
-#define M61_WEB_CONFIG_SCHEMA_VERSION 3U
-#define M61_WEB_CONFIG_BODY_SIZE 20U
+#define M61_WEB_CONFIG_SCHEMA_VERSION 4U
+#define M61_WEB_CONFIG_BODY_SIZE 21U
 #define M61_WEB_TELEMETRY_VERSION 2U
-#define M61_WEB_PERSISTENT_RECORD_VERSION 3U
-#define M61_WEB_PERSISTENT_RECORD_SIZE 30U
+#define M61_WEB_PERSISTENT_RECORD_VERSION 4U
+#define M61_WEB_PERSISTENT_RECORD_SIZE 31U
 
 enum {
     M61_WEB_COMMAND_APPLY_CONFIG = 0x01U,
@@ -39,6 +39,13 @@ enum {
     M61_WEB_CAP_CONTROLLER_POWEROFF = 1U << 9,
     M61_WEB_CAP_SUSPEND_POWEROFF = 1U << 10,
     M61_WEB_CAP_STICK_DEADZONE = 1U << 11,
+    M61_WEB_CAP_USB_POLLING_RATE = 1U << 12,
+};
+
+enum {
+    M61_WEB_USB_POLL_REALTIME = 0U,
+    M61_WEB_USB_POLL_250_HZ = 1U,
+    M61_WEB_USB_POLL_500_HZ = 2U,
 };
 
 typedef struct {
@@ -56,6 +63,7 @@ typedef struct {
     bool power_off_on_usb_suspend;
     uint8_t left_stick_deadzone_percent;
     uint8_t right_stick_deadzone_percent;
+    uint8_t usb_polling_rate_mode;
 } m61_web_config_t;
 
 typedef struct {
