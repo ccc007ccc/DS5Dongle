@@ -29,7 +29,7 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 不启用编译期超频。完整限制和实测状态见[功能矩阵](docs/FEATURES.zh-CN.md)。
 
 可通过M61专用WebHID配置器修改并持久化这些设置：
-<https://ccc007ccc.github.io/ds5dongle-config-web/>。请用Chromium内核浏览器通过HTTPS
+<https://ds5.766677.xyz/>。请用Chromium内核浏览器通过HTTPS
 打开，连接M61，先读取当前配置，再把完整配置保存到Flash。USB回报模式包括实时转发
 新报告，以及硬件实测通过的固定250 Hz和500 Hz；固定模式可能重复最近的蓝牙样本，
 不会提高手柄本身的原始采样率。

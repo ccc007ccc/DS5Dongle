@@ -33,7 +33,7 @@ overclock. See [the full feature matrix](docs/FEATURES.md) for limitations and
 validation status.
 
 Configure these persistent settings from the M61-specific WebHID application:
-<https://ccc007ccc.github.io/ds5dongle-config-web/>. Use a Chromium-based
+<https://ds5.766677.xyz/>. Use a Chromium-based
 browser over HTTPS, connect the M61, read the current configuration, then save
 the complete configuration to Flash. The USB report choices are realtime
 fresh-report forwarding and hardware-validated fixed 250 Hz or 500 Hz modes;
