@@ -6,8 +6,10 @@ Normal users do not need this build environment. Download
 `M61-Flasher-Windows.exe` from the project
 [Releases](https://github.com/ccc007ccc/DS5Dongle/releases), double-click it,
 and select a firmware version. It detects CH340, downloads and verifies the
-official WCH driver only when needed, verifies the selected three-file Release
-set, and guides reliable BOOT+RESET flashing.
+official WCH driver only when needed, verifies the selected complete Release
+ZIP, and guides reliable BOOT+RESET flashing. You can also download
+`M61-Firmware-<version>.zip` first and select Local firmware ZIP in the GUI for
+offline flashing.
 
 ## Supported release environment
 
@@ -45,6 +47,25 @@ Verify the SHA256 values, then follow the flashing section with
 `--windows-build`. This path needs neither a compiler nor an Opus build, but
 the locked `bl_mcu_sdk` must still be cloned next to the repository because it
 provides the flashing tool.
+
+Each formal Release also packages those files and the checksum manifest as
+`M61-Firmware-<version>.zip`. Online downloads and local ZIP installation use
+the same safe parser and verification path. Files may be at the ZIP root or in
+one subdirectory, but exactly one boot2, partition, and application BIN must be
+present.
+
+Maintainers can reproduce the archive with:
+
+```powershell
+python tools\package_m61_firmware_zip.py `
+  --input-dir C:\path\to\release-files `
+  --tag v0.8.1 `
+  --output M61-Firmware-v0.8.1.zip
+```
+
+The script verifies the checksum manifest first, then writes a fixed entry
+order, timestamp, and permissions so repeated runs with the same inputs produce
+the same file.
 
 ## Windows release build
 

@@ -54,7 +54,7 @@ Normal Windows users only need `M61-Flasher-Windows.exe` from the project
 open the graphical interface, select a firmware version from the complete
 verified Release list, and follow
 the BOOT+RESET instructions. It detects the M61 CH340 port, downloads and
-checks the selected three-file firmware set, and can download the signed
+checks the selected complete firmware ZIP, and can download the signed
 official WCH driver when the connected CH340 has no usable COM port.
 
 No repository clone, Python, Rust, SDK, or compiler is required. The community
@@ -65,6 +65,9 @@ published beside it. The manual three-BIN developer path remains documented in
 
 The flasher GUI supports Simplified Chinese and English, defaults from the
 Windows user locale, and provides an in-app language selector.
+For offline or custom flashing, select a downloaded
+`M61-Firmware-<version>.zip` directly; an advanced three-file directory option
+is also available. The log supports mouse selection and a Copy all button.
 
 ## Performance-reproducible build
 

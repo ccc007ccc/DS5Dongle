@@ -8,8 +8,8 @@
 运行时会：
 
 1. 校验内置刷写核心的 SHA256；
-2. 从 GitHub Releases 读取具有完整 boot2、partition 和应用 BIN 的固件列表；
-3. 下载用户选择的版本，并按 GitHub 提供的 SHA256 digest 校验每个文件；
+2. 从 GitHub Releases 读取具有`M61-Firmware-<版本>.zip`的固件列表；
+3. 下载用户选择的ZIP，先校验GitHub SHA256 digest，再校验ZIP内三件套和校验清单；
 4. 自动检测 `USB\VID_1A86&PID_7523` 的 CH340 和 COM 口；
 5. 检测到硬件但没有可用 COM 口时，从 WCH 官方 HTTPS 地址下载驱动；
 6. 校验驱动的 Authenticode 签名者后，请求 UAC 打开官方安装器；
@@ -18,18 +18,29 @@
 
 GUI包含固件下拉列表、CH340状态、串口与速度选择、ISP步骤确认、实时刷写日志以及失败
 重试窗口。首次启动按Windows用户区域语言自动选择简体中文或English，右上角可随时切换。
+操作日志支持鼠标选择和“复制全部”，ISP风险提示使用红色。
+
+## 在线与本地固件
+
+- `在线 Release`：工具只下载一个完整固件ZIP，再校验、解包和刷写；
+- `本地固件 ZIP`：选择从Release下载或自行制作的同格式ZIP，适合离线安装；
+- `本地目录（高级）`：选择同时包含boot2、`partition.bin`和应用BIN的目录。
+
+ZIP内允许三件套位于根目录或一个子目录。工具会拒绝路径穿越、重复三件套、错误partition
+大小、过大文件和不匹配的SHA256清单。正式Release ZIP必须带校验清单。
 
 ## 本地构建
 
-构建时只需要锁定 SDK 内的 `BLFlashCommand.exe`：
+构建时把环境变量指向锁定SDK内的`BLFlashCommand.exe`。构建脚本会同时从它旁边读取
+`chips/bl616`所需的loader配置和flash参数：
 
 ```powershell
 $env:M61_BLFLASHCOMMAND = 'C:\path\to\BLFlashCommand.exe'
 cargo build --manifest-path tools\m61-flasher\Cargo.toml --release
 ```
 
-构建脚本只读取该工具并嵌入 EXE，不会把二进制加入 Git。固件始终在运行时从 Release
-列表中选择和下载。
+这些SDK文件只嵌入最终EXE，不会加入Git。固件始终在运行时从Release列表下载，或由用户
+选择本地ZIP/目录。
 
 ## 开发检查
 
@@ -39,6 +50,7 @@ cargo build --manifest-path tools\m61-flasher\Cargo.toml
 tools\m61-flasher\target\debug\m61-flasher.exe --assets-info
 tools\m61-flasher\target\debug\m61-flasher.exe --list-releases
 tools\m61-flasher\target\debug\m61-flasher.exe --release v0.8.1 --verify-release --yes
+tools\m61-flasher\target\debug\m61-flasher.exe --release v0.8.1 --tool-preflight --yes
 tools\m61-flasher\target\debug\m61-flasher.exe --list
 tools\m61-flasher\target\debug\m61-flasher.exe --dry-run
 ```

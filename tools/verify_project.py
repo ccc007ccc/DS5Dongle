@@ -17,6 +17,7 @@ def main() -> int:
     required_files = [
         "README.md",
         "README.zh-CN.md",
+        ".github/workflows/windows-flasher.yml",
         "CONTRIBUTING.md",
         "CONTRIBUTING.zh-CN.md",
         "THIRD_PARTY_NOTICES.md",
@@ -43,6 +44,8 @@ def main() -> int:
         "m61/dualsense_hidp_probe/prepare_opus_source.ps1",
         "tools/verify_m61_build_environment.py",
         "tools/generate_m61_build_manifest.py",
+        "tools/package_m61_firmware_zip.py",
+        "tools/test_package_m61_firmware_zip.py",
         "tools/m61-flasher/Cargo.toml",
         "tools/m61-flasher/Cargo.lock",
         "tools/m61-flasher/README.md",
@@ -174,6 +177,16 @@ def main() -> int:
         ".github/workflows/firmware-ci.yml": (
             "build_out/boot2_bl616_*.bin",
             "build_out/partition.bin",
+        ),
+        ".github/workflows/windows-flasher.yml": (
+            "tools/package_m61_firmware_zip.py",
+            "M61-Firmware-${RELEASE_TAG}.zip",
+            "--tool-preflight",
+        ),
+        "tools/m61-flasher/src/main.rs": (
+            'asset.name.starts_with("M61-Firmware-")',
+            "read_firmware_zip",
+            "chips/bl616/eflash_loader/eflash_loader_cfg.ini",
         ),
     }
     for relative_path, markers in release_artifact_markers.items():

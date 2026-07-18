@@ -5,7 +5,8 @@
 普通用户不需要搭建本文的构建环境。从项目
 [Releases](https://github.com/ccc007ccc/DS5Dongle/releases)下载
 `M61-Flasher-Windows.exe`，双击后选择固件版本即可。工具会自动识别CH340、在确实缺少
-驱动时下载并验证WCH官方安装器、校验所选Release三件套，并引导BOOT+RESET刷写。
+驱动时下载并验证WCH官方安装器、下载并校验所选Release固件ZIP，并引导BOOT+RESET
+刷写。也可以先下载`M61-Firmware-<版本>.zip`，再在GUI中选择“本地固件ZIP”离线刷写。
 
 ## 支持的release环境
 
@@ -40,6 +41,22 @@ m61/dualsense_hidp_probe/build-win/build_out/
 
 校验SHA256后，按本文“刷写”一节使用`--windows-build`。该流程不需要编译器或Opus，
 但仓库同级仍需锁定提交的`bl_mcu_sdk`，因为刷写工具来自SDK。
+
+正式Release还会把上述文件和校验清单打包成单个`M61-Firmware-<版本>.zip`。GUI在线下载
+和本地ZIP安装使用同一个安全解析与校验流程；ZIP可把文件放在根目录或同一个子目录，
+但必须只有一份boot2、partition和应用BIN。
+
+维护者可复现生成ZIP：
+
+```powershell
+python tools\package_m61_firmware_zip.py `
+  --input-dir C:\path\to\release-files `
+  --tag v0.8.1 `
+  --output M61-Firmware-v0.8.1.zip
+```
+
+脚本先验证校验清单，再用固定条目顺序、时间戳和权限生成ZIP；相同输入重复运行得到相同
+文件。
 
 ## Windows release构建
 

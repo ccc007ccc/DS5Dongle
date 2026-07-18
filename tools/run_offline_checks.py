@@ -58,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[tuple[str, list[str]]] = [
         ("project structure", [sys.executable, "tools/verify_project.py"]),
         ("M61 flash artifact preflight", [sys.executable, "tools/test_flash_m61_firmware.py"]),
+        ("M61 firmware ZIP packaging", [sys.executable, "tools/test_package_m61_firmware_zip.py"]),
         ("DualSense parser vectors", [sys.executable, "tools/test_dualsense_protocol.py"]),
         ("DualSense CRC vectors", [sys.executable, "tools/test_dualsense_crc32_nibble.py"]),
         ("M61 Feature bridge", [sys.executable, "tools/test_m61_feature_bridge.py"]),

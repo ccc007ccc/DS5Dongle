@@ -9,6 +9,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -17,6 +18,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const PRODUCT_NAME: &str = "M61 DualSense Adapter Flasher";
 const FLASHER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -47,6 +51,20 @@ address = @partition
 
 const BLFLASH_BYTES: &[u8] = include_bytes!(env!("M61_BLFLASHCOMMAND_EMBED"));
 const BLFLASH_SHA256: &str = "2c6f2578883166467395f58dee451e7e03c898c731de2f50bf21ea358f2235c3";
+const EFLASH_LOADER_INI_BYTES: &[u8] = include_bytes!(env!("M61_EFLASH_LOADER_INI_EMBED"));
+const EFLASH_LOADER_INI_SHA256: &str =
+    "9ec4ef908ab929d01f42bdc93b454bd6b4d489081db4af0a138c6cad38bfaab5";
+const EFLASH_LOADER_CONF_BYTES: &[u8] = include_bytes!(env!("M61_EFLASH_LOADER_CONF_EMBED"));
+const EFLASH_LOADER_CONF_SHA256: &str =
+    "78a33e4ffecb682673328135d87bb413f9c0b92bcdd330463e5934843fc8de0c";
+const FLASH_PARA_BYTES: &[u8] = include_bytes!(env!("M61_FLASH_PARA_EMBED"));
+const FLASH_PARA_SHA256: &str = "002c41f38bb652bdaf89136183aaef70ae11abbf85f554a59d7242748f32e1e0";
+const PARTITION_NAME: &str = "partition.bin";
+const FIRMWARE_NAME: &str = "m61_dualsense_hidp_probe_bl616.bin";
+const MAX_FIRMWARE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_BOOT2_BYTES: usize = 1024 * 1024;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Debug, Deserialize)]
 struct GithubAsset {
@@ -74,9 +92,39 @@ struct FlashRelease {
     url: String,
     published_at: Option<String>,
     prerelease: bool,
-    boot2: GithubAsset,
-    partition: GithubAsset,
-    firmware: GithubAsset,
+    archive: GithubAsset,
+}
+
+#[derive(Clone, Debug)]
+struct FirmwareSet {
+    label: String,
+    boot2_name: String,
+    boot2: Vec<u8>,
+    partition: Vec<u8>,
+    firmware: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FirmwareMode {
+    Online,
+    LocalZip,
+    LocalDirectory,
+}
+
+#[derive(Clone, Debug)]
+enum SelectedFirmware {
+    Online(FlashRelease),
+    Local(FirmwareSet),
+}
+
+impl FirmwareMode {
+    fn tr(self, language: Language) -> &'static str {
+        match self {
+            Self::Online => language.tr("在线 Release", "Online Release"),
+            Self::LocalZip => language.tr("本地固件 ZIP", "Local firmware ZIP"),
+            Self::LocalDirectory => language.tr("本地目录（高级）", "Local directory (advanced)"),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -91,6 +139,7 @@ struct Options {
     install_driver: bool,
     release: Option<String>,
     verify_release: bool,
+    tool_preflight: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +227,12 @@ fn run() -> Result<()> {
         let _runtime = prepare_runtime(&client, &release)?;
         println!("\n{} 的完整刷写文件已下载并通过 SHA256 校验。", release.tag);
         println!("Verification completed; no device was opened and nothing was flashed.");
+        return Ok(());
+    }
+    if options.tool_preflight {
+        let runtime = prepare_runtime(&client, &release)?;
+        run_tool_preflight(&runtime.path)?;
+        println!("Bouffalo support-file preflight passed; no real COM port was opened.");
         return Ok(());
     }
 
@@ -299,6 +354,7 @@ fn print_help() {
            --list-releases   List complete firmware Releases\n  \
            --release TAG     Select a Release without the menu\n  \
            --verify-release  Download and verify a Release without flashing\n  \
+           --tool-preflight  Verify embedded Bouffalo support files without a board\n  \
            --assets-info     Print the embedded flashing-tool hash\n  \
            --install-driver  Download, verify, and launch the official WCH driver\n  \
            --dry-run         Check everything without starting the flash process\n  \
@@ -349,6 +405,7 @@ fn parse_options(arguments: impl Iterator<Item = String>) -> Result<Options> {
             "--assets-info" => options.assets_info = true,
             "--install-driver" => options.install_driver = true,
             "--verify-release" => options.verify_release = true,
+            "--tool-preflight" => options.tool_preflight = true,
             _ => bail!("unknown option: {argument} (use --help)"),
         }
     }
@@ -360,13 +417,24 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn verify_embedded_tool() -> Result<()> {
-    let actual = sha256(BLFLASH_BYTES);
-    if actual != BLFLASH_SHA256 {
-        bail!(
-            "embedded BLFlashCommand.exe checksum mismatch: expected {}, got {}",
-            BLFLASH_SHA256,
-            actual
-        );
+    for (name, bytes, expected) in [
+        ("BLFlashCommand.exe", BLFLASH_BYTES, BLFLASH_SHA256),
+        (
+            "eflash_loader_cfg.ini",
+            EFLASH_LOADER_INI_BYTES,
+            EFLASH_LOADER_INI_SHA256,
+        ),
+        (
+            "eflash_loader_cfg.conf",
+            EFLASH_LOADER_CONF_BYTES,
+            EFLASH_LOADER_CONF_SHA256,
+        ),
+        ("flash_para.bin", FLASH_PARA_BYTES, FLASH_PARA_SHA256),
+    ] {
+        let actual = sha256(bytes);
+        if actual != expected {
+            bail!("embedded {name} checksum mismatch: expected {expected}, got {actual}");
+        }
     }
     Ok(())
 }
@@ -378,7 +446,10 @@ fn print_tool_info() {
         BLFLASH_SHA256,
         BLFLASH_BYTES.len()
     );
-    println!("Firmware is selected and downloaded from GitHub Releases at runtime.");
+    println!("{}  eflash_loader_cfg.ini", EFLASH_LOADER_INI_SHA256);
+    println!("{}  eflash_loader_cfg.conf", EFLASH_LOADER_CONF_SHA256);
+    println!("{}  flash_para.bin", FLASH_PARA_SHA256);
+    println!("Firmware ZIP is selected from GitHub Releases or local storage at runtime.");
 }
 
 fn github_client() -> Result<Client> {
@@ -406,23 +477,16 @@ fn fetch_flash_releases(client: &Client) -> Result<Vec<FlashRelease>> {
 
     let mut releases = Vec::new();
     for release in github_releases.into_iter().filter(|release| !release.draft) {
-        let boot2: Vec<&GithubAsset> = release
+        let archives: Vec<&GithubAsset> = release
             .assets
             .iter()
             .filter(|asset| {
-                asset.name.starts_with("boot2_bl616_")
-                    && asset.name.ends_with(".bin")
+                asset.name.starts_with("M61-Firmware-")
+                    && asset.name.ends_with(".zip")
                     && sha256_digest(asset).is_some()
             })
             .collect();
-        let partition = release
-            .assets
-            .iter()
-            .find(|asset| asset.name == "partition.bin" && sha256_digest(asset).is_some());
-        let firmware = release.assets.iter().find(|asset| {
-            asset.name == "m61_dualsense_hidp_probe_bl616.bin" && sha256_digest(asset).is_some()
-        });
-        if boot2.len() != 1 || partition.is_none() || firmware.is_none() {
+        if archives.len() != 1 {
             continue;
         }
 
@@ -432,16 +496,12 @@ fn fetch_flash_releases(client: &Client) -> Result<Vec<FlashRelease>> {
             url: release.html_url,
             published_at: release.published_at,
             prerelease: release.prerelease,
-            boot2: boot2[0].clone(),
-            partition: partition.expect("checked").clone(),
-            firmware: firmware.expect("checked").clone(),
+            archive: archives[0].clone(),
         });
     }
 
     if releases.is_empty() {
-        bail!(
-            "no complete Release contains boot2, partition.bin, application BIN, and GitHub SHA256 digests"
-        );
+        bail!("no Release contains exactly one verified M61-Firmware-*.zip asset");
     }
     Ok(releases)
 }
@@ -459,14 +519,13 @@ fn print_releases(releases: &[FlashRelease]) {
             .as_deref()
             .and_then(|value| value.get(..10))
             .unwrap_or("unknown date");
-        let total = release.boot2.size + release.partition.size + release.firmware.size;
         println!(
             "  {}. {} | {} | {} | {:.1} KiB\n     {}",
             index + 1,
             release.tag,
             channel,
             date,
-            total as f64 / 1024.0,
+            release.archive.size as f64 / 1024.0,
             release.name
         );
     }
@@ -555,8 +614,235 @@ fn download_release_asset(client: &Client, asset: &GithubAsset, destination: &Pa
     Ok(())
 }
 
+fn validate_firmware_set(
+    label: String,
+    boot2_name: String,
+    boot2: Vec<u8>,
+    partition: Vec<u8>,
+    firmware: Vec<u8>,
+    checksum_manifest: Option<&str>,
+) -> Result<FirmwareSet> {
+    if !boot2_name.starts_with("boot2_bl616_") || !boot2_name.ends_with(".bin") {
+        bail!("invalid BL616 boot2 filename: {boot2_name}");
+    }
+    if !boot2_name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
+        bail!("unsafe BL616 boot2 filename: {boot2_name}");
+    }
+    if boot2.len() < 16 * 1024 || boot2.len() > MAX_BOOT2_BYTES {
+        bail!("invalid boot2 size: {} bytes", boot2.len());
+    }
+    if partition.len() != 308 {
+        bail!(
+            "invalid partition.bin size: {} bytes; expected 308",
+            partition.len()
+        );
+    }
+    if firmware.len() < 64 * 1024 || firmware.len() > MAX_FIRMWARE_BYTES {
+        bail!(
+            "invalid application firmware size: {} bytes",
+            firmware.len()
+        );
+    }
+
+    if let Some(manifest) = checksum_manifest {
+        let expected = manifest
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((
+                    fields.next()?.to_ascii_lowercase(),
+                    fields.next()?.replace('*', ""),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (name, bytes) in [
+            (boot2_name.as_str(), boot2.as_slice()),
+            (PARTITION_NAME, partition.as_slice()),
+            (FIRMWARE_NAME, firmware.as_slice()),
+        ] {
+            let expected_hash = expected
+                .iter()
+                .find(|(_, manifest_name)| {
+                    Path::new(manifest_name)
+                        .file_name()
+                        .is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case(name))
+                })
+                .map(|(hash, _)| hash)
+                .ok_or_else(|| anyhow!("checksum manifest is missing {name}"))?;
+            let actual = sha256(bytes);
+            if &actual != expected_hash {
+                bail!("checksum mismatch for {name}: expected {expected_hash}, got {actual}");
+            }
+        }
+    }
+
+    Ok(FirmwareSet {
+        label,
+        boot2_name,
+        boot2,
+        partition,
+        firmware,
+    })
+}
+
+fn read_zip_entry_limited(
+    entry: &mut zip::read::ZipFile<'_, File>,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(usize::try_from(entry.size()).unwrap_or(0).min(limit));
+    entry
+        .take(u64::try_from(limit + 1).unwrap())
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        bail!("ZIP entry exceeds the {}-byte safety limit", limit);
+    }
+    Ok(bytes)
+}
+
+fn read_firmware_zip(path: &Path, require_manifest: bool) -> Result<FirmwareSet> {
+    let file = File::open(path)
+        .with_context(|| format!("failed to open firmware ZIP: {}", path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).context("invalid or unsupported firmware ZIP")?;
+    if archive.len() > 128 {
+        bail!("firmware ZIP has too many entries: {}", archive.len());
+    }
+
+    let mut boot2: Option<(String, Vec<u8>)> = None;
+    let mut partition: Option<Vec<u8>> = None;
+    let mut firmware: Option<Vec<u8>> = None;
+    let mut manifest: Option<String> = None;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| anyhow!("unsafe path in firmware ZIP: {}", entry.name()))?;
+        let Some(file_name) = enclosed
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+        else {
+            continue;
+        };
+        let lower = file_name.to_ascii_lowercase();
+        let size = usize::try_from(entry.size()).context("ZIP entry is too large")?;
+        if lower.starts_with("boot2_bl616_") && lower.ends_with(".bin") {
+            if boot2.is_some() {
+                bail!("firmware ZIP contains multiple BL616 boot2 files");
+            }
+            if size > MAX_BOOT2_BYTES {
+                bail!("boot2 entry is too large: {size} bytes");
+            }
+            let bytes = read_zip_entry_limited(&mut entry, MAX_BOOT2_BYTES)?;
+            boot2 = Some((file_name, bytes));
+        } else if lower == PARTITION_NAME {
+            if partition.is_some() {
+                bail!("firmware ZIP contains multiple partition.bin files");
+            }
+            if size > 64 * 1024 {
+                bail!("partition entry is too large: {size} bytes");
+            }
+            let bytes = read_zip_entry_limited(&mut entry, 64 * 1024)?;
+            partition = Some(bytes);
+        } else if lower == FIRMWARE_NAME {
+            if firmware.is_some() {
+                bail!("firmware ZIP contains multiple application BIN files");
+            }
+            if size > MAX_FIRMWARE_BYTES {
+                bail!("application entry is too large: {size} bytes");
+            }
+            let bytes = read_zip_entry_limited(&mut entry, MAX_FIRMWARE_BYTES)?;
+            firmware = Some(bytes);
+        } else if lower.ends_with(".sha256") {
+            if manifest.is_some() {
+                bail!("firmware ZIP contains multiple SHA256 manifests");
+            }
+            if size > 64 * 1024 {
+                bail!("SHA256 manifest is too large");
+            }
+            let bytes = read_zip_entry_limited(&mut entry, 64 * 1024)?;
+            manifest = Some(String::from_utf8(bytes).context("SHA256 manifest is not UTF-8")?);
+        }
+    }
+
+    if require_manifest && manifest.is_none() {
+        bail!("official firmware ZIP is missing its SHA256 manifest");
+    }
+    let (boot2_name, boot2) = boot2.ok_or_else(|| anyhow!("firmware ZIP is missing boot2"))?;
+    validate_firmware_set(
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        boot2_name,
+        boot2,
+        partition.ok_or_else(|| anyhow!("firmware ZIP is missing partition.bin"))?,
+        firmware.ok_or_else(|| anyhow!("firmware ZIP is missing {FIRMWARE_NAME}"))?,
+        manifest.as_deref(),
+    )
+}
+
+fn read_firmware_directory(path: &Path) -> Result<FirmwareSet> {
+    let mut boot2_paths = fs::read_dir(path)
+        .with_context(|| format!("failed to read firmware directory: {}", path.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .map(|name| {
+                    let name = name.to_string_lossy().to_ascii_lowercase();
+                    name.starts_with("boot2_bl616_") && name.ends_with(".bin")
+                })
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    boot2_paths.sort();
+    if boot2_paths.len() != 1 {
+        bail!(
+            "firmware directory must contain exactly one boot2_bl616_*.bin; found {}",
+            boot2_paths.len()
+        );
+    }
+    let boot2_path = &boot2_paths[0];
+    let manifest_path = fs::read_dir(path)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .find(|entry| {
+            entry
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("sha256"))
+        });
+    let manifest = manifest_path
+        .as_deref()
+        .map(fs::read_to_string)
+        .transpose()
+        .context("failed to read SHA256 manifest")?;
+    validate_firmware_set(
+        path.display().to_string(),
+        boot2_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        fs::read(boot2_path)?,
+        fs::read(path.join(PARTITION_NAME)).context("missing partition.bin")?,
+        fs::read(path.join(FIRMWARE_NAME)).with_context(|| format!("missing {FIRMWARE_NAME}"))?,
+        manifest.as_deref(),
+    )
+}
+
+fn background_command(program: impl AsRef<OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
 fn powershell_output(script: &str) -> Result<std::process::Output> {
-    Command::new("powershell.exe")
+    background_command("powershell.exe")
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -727,7 +1013,7 @@ fn install_ch340_driver(assume_yes: bool) -> Result<()> {
     let temp_path = env::temp_dir().join(format!("CH341SER-M61-{}.EXE", std::process::id()));
     println!("正在下载官方驱动 / Downloading official WCH driver...");
     let client = Client::builder()
-        .user_agent("M61-Flasher/0.8.1")
+        .user_agent(format!("M61-Flasher/{FLASHER_VERSION}"))
         .build()
         .context("failed to initialize HTTPS client")?;
     let mut response = client
@@ -773,7 +1059,7 @@ fn install_ch340_driver(assume_yes: bool) -> Result<()> {
     let install_script = format!(
         "$p=Start-Process -FilePath {quoted} -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
     );
-    let install_status = Command::new("powershell.exe")
+    let install_status = background_command("powershell.exe")
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -802,28 +1088,148 @@ fn unique_runtime_path() -> Result<PathBuf> {
     )))
 }
 
-fn prepare_runtime(client: &Client, release: &FlashRelease) -> Result<RuntimeDirectory> {
+fn write_checked(path: &Path, bytes: &[u8], expected_sha256: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+    let actual = sha256(&fs::read(path)?);
+    if actual != expected_sha256 {
+        bail!(
+            "temporary asset checksum mismatch for {}: expected {}, got {}",
+            path.display(),
+            expected_sha256,
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn create_runtime_base() -> Result<RuntimeDirectory> {
     let path = unique_runtime_path()?;
     fs::create_dir(&path).with_context(|| format!("failed to create {}", path.display()))?;
-    let tool_path = path.join("BLFlashCommand.exe");
-    fs::write(&tool_path, BLFLASH_BYTES).context("failed to extract BLFlashCommand.exe")?;
-    if sha256(&fs::read(&tool_path)?) != BLFLASH_SHA256 {
-        bail!("temporary BLFlashCommand.exe checksum mismatch");
-    }
+    write_checked(
+        &path.join("BLFlashCommand.exe"),
+        BLFLASH_BYTES,
+        BLFLASH_SHA256,
+    )?;
+    write_checked(
+        &path.join("chips/bl616/eflash_loader/eflash_loader_cfg.ini"),
+        EFLASH_LOADER_INI_BYTES,
+        EFLASH_LOADER_INI_SHA256,
+    )?;
+    write_checked(
+        &path.join("chips/bl616/eflash_loader/eflash_loader_cfg.conf"),
+        EFLASH_LOADER_CONF_BYTES,
+        EFLASH_LOADER_CONF_SHA256,
+    )?;
+    write_checked(
+        &path.join("chips/bl616/efuse_bootheader/flash_para.bin"),
+        FLASH_PARA_BYTES,
+        FLASH_PARA_SHA256,
+    )?;
     fs::write(path.join("flash_prog_cfg.ini"), FLASH_CONFIG)?;
-
-    for asset in [&release.boot2, &release.partition, &release.firmware] {
-        download_release_asset(client, asset, &path.join(&asset.name))?;
-    }
     Ok(RuntimeDirectory {
         path,
         preserve: false,
     })
 }
 
+fn write_firmware_set(runtime: &RuntimeDirectory, set: &FirmwareSet) -> Result<()> {
+    write_checked(
+        &runtime.path.join(&set.boot2_name),
+        &set.boot2,
+        &sha256(&set.boot2),
+    )?;
+    write_checked(
+        &runtime.path.join(PARTITION_NAME),
+        &set.partition,
+        &sha256(&set.partition),
+    )?;
+    write_checked(
+        &runtime.path.join(FIRMWARE_NAME),
+        &set.firmware,
+        &sha256(&set.firmware),
+    )?;
+    Ok(())
+}
+
+fn prepare_runtime(client: &Client, release: &FlashRelease) -> Result<RuntimeDirectory> {
+    let runtime = create_runtime_base()?;
+    let archive_path = runtime.path.join(&release.archive.name);
+    download_release_asset(client, &release.archive, &archive_path)?;
+    let set = read_firmware_zip(&archive_path, true)?;
+    write_firmware_set(&runtime, &set)?;
+    fs::remove_file(&archive_path).ok();
+    Ok(runtime)
+}
+
+fn prepare_local_runtime(set: &FirmwareSet) -> Result<RuntimeDirectory> {
+    let runtime = create_runtime_base()?;
+    write_firmware_set(&runtime, set)?;
+    Ok(runtime)
+}
+
+fn preflight_runtime_layout(runtime: &Path) -> Result<()> {
+    for relative in [
+        "BLFlashCommand.exe",
+        "flash_prog_cfg.ini",
+        "chips/bl616/eflash_loader/eflash_loader_cfg.ini",
+        "chips/bl616/eflash_loader/eflash_loader_cfg.conf",
+        "chips/bl616/efuse_bootheader/flash_para.bin",
+        PARTITION_NAME,
+        FIRMWARE_NAME,
+    ] {
+        if !runtime.join(relative).is_file() {
+            bail!("runtime preflight is missing {relative}");
+        }
+    }
+    let boot2_count = fs::read_dir(runtime)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            name.starts_with("boot2_bl616_") && name.ends_with(".bin")
+        })
+        .count();
+    if boot2_count != 1 {
+        bail!("runtime preflight expected one boot2 file, found {boot2_count}");
+    }
+    Ok(())
+}
+
+fn run_tool_preflight(runtime: &Path) -> Result<()> {
+    preflight_runtime_layout(runtime)?;
+    let output = background_command(runtime.join("BLFlashCommand.exe"))
+        .args([
+            "--interface=uart",
+            "--baudrate=460800",
+            "--port=COM_M61_PREFLIGHT_DOES_NOT_EXIST",
+            "--chipname=bl616",
+            "--config=flash_prog_cfg.ini",
+            "--reset",
+        ])
+        .current_dir(runtime)
+        .stdin(Stdio::null())
+        .output()
+        .context("failed to start Bouffalo support-file preflight")?;
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if text.contains("CONFIG FILE NOT FOUND") || text.contains("Config file is not found") {
+        bail!("Bouffalo support-file preflight still reports CONFIG FILE NOT FOUND");
+    }
+    if !text.contains("The chip type is bl616") {
+        bail!("Bouffalo support-file preflight did not reach BL616 loader initialization");
+    }
+    Ok(())
+}
+
 fn run_flash(runtime: &Path, port: &str, baud: u32) -> Result<std::process::ExitStatus> {
+    preflight_runtime_layout(runtime)?;
     println!("\n开始刷写 / Flashing {port} @ {baud} baud...");
-    Command::new(runtime.join("BLFlashCommand.exe"))
+    background_command(runtime.join("BLFlashCommand.exe"))
         .args([
             "--interface=uart",
             &format!("--baudrate={baud}"),
@@ -937,6 +1343,8 @@ struct FlasherApp {
     releases: Vec<FlashRelease>,
     devices: Vec<Ch340Device>,
     selected_release: usize,
+    firmware_mode: FirmwareMode,
+    local_firmware: Option<FirmwareSet>,
     selected_port: Option<String>,
     baud: u32,
     loading_releases: bool,
@@ -962,6 +1370,8 @@ impl FlasherApp {
             releases: Vec::new(),
             devices: Vec::new(),
             selected_release: 0,
+            firmware_mode: FirmwareMode::Online,
+            local_firmware: None,
             selected_port: None,
             baud: 460_800,
             loading_releases: false,
@@ -1033,6 +1443,97 @@ impl FlasherApp {
 
     fn selected_release(&self) -> Option<FlashRelease> {
         self.releases.get(self.selected_release).cloned()
+    }
+
+    fn selected_firmware(&self) -> Option<SelectedFirmware> {
+        match self.firmware_mode {
+            FirmwareMode::Online => self.selected_release().map(SelectedFirmware::Online),
+            FirmwareMode::LocalZip | FirmwareMode::LocalDirectory => {
+                self.local_firmware.clone().map(SelectedFirmware::Local)
+            }
+        }
+    }
+
+    fn choose_local_zip(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(
+                self.language
+                    .tr("选择 M61 固件 ZIP", "Select M61 firmware ZIP"),
+            )
+            .add_filter("M61 firmware ZIP", &["zip"])
+            .pick_file()
+        else {
+            return;
+        };
+        match read_firmware_zip(&path, false) {
+            Ok(set) => {
+                self.status = match self.language {
+                    Language::ZhCn => format!("已读取本地固件：{}", set.label),
+                    Language::En => format!("Loaded local firmware: {}", set.label),
+                };
+                self.append_log(match self.language {
+                    Language::ZhCn => format!(
+                        "本地 ZIP 校验通过：boot2={}，partition={}，firmware={}",
+                        sha256(&set.boot2),
+                        sha256(&set.partition),
+                        sha256(&set.firmware)
+                    ),
+                    Language::En => format!(
+                        "Local ZIP validated: boot2={}, partition={}, firmware={}",
+                        sha256(&set.boot2),
+                        sha256(&set.partition),
+                        sha256(&set.firmware)
+                    ),
+                });
+                self.local_firmware = Some(set);
+            }
+            Err(error) => {
+                self.local_firmware = None;
+                self.status = self
+                    .language
+                    .tr("本地固件 ZIP 无效。", "The local firmware ZIP is invalid.")
+                    .to_owned();
+                self.append_log(match self.language {
+                    Language::ZhCn => format!("ZIP 错误：{error:#}"),
+                    Language::En => format!("ZIP error: {error:#}"),
+                });
+            }
+        }
+    }
+
+    fn choose_local_directory(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(
+                self.language
+                    .tr("选择 M61 完整固件目录", "Select M61 firmware-set directory"),
+            )
+            .pick_folder()
+        else {
+            return;
+        };
+        match read_firmware_directory(&path) {
+            Ok(set) => {
+                self.status = match self.language {
+                    Language::ZhCn => format!("已读取本地固件目录：{}", set.label),
+                    Language::En => format!("Loaded local firmware directory: {}", set.label),
+                };
+                self.local_firmware = Some(set);
+            }
+            Err(error) => {
+                self.local_firmware = None;
+                self.status = self
+                    .language
+                    .tr(
+                        "本地固件目录无效。",
+                        "The local firmware directory is invalid.",
+                    )
+                    .to_owned();
+                self.append_log(match self.language {
+                    Language::ZhCn => format!("目录错误：{error:#}"),
+                    Language::En => format!("Directory error: {error:#}"),
+                });
+            }
+        }
     }
 
     fn relocalize_status(&mut self) {
@@ -1112,10 +1613,10 @@ impl FlasherApp {
     }
 
     fn start_flash(&mut self) {
-        let Some(release) = self.selected_release() else {
+        let Some(firmware_selection) = self.selected_firmware() else {
             self.status = self
                 .language
-                .tr("请先选择固件版本。", "Select a firmware version first.")
+                .tr("请先选择固件。", "Select firmware first.")
                 .to_owned();
             return;
         };
@@ -1131,34 +1632,61 @@ impl FlasherApp {
         };
         let language = self.language;
         let baud = self.baud;
+        let firmware_label = match &firmware_selection {
+            SelectedFirmware::Online(release) => release.tag.clone(),
+            SelectedFirmware::Local(set) => set.label.clone(),
+        };
         self.busy = Some(match language {
-            Language::ZhCn => format!("正在准备并刷写 {}...", release.tag),
-            Language::En => format!("Preparing and flashing {}...", release.tag),
+            Language::ZhCn => format!("正在准备并刷写 {}...", firmware_label),
+            Language::En => format!("Preparing and flashing {}...", firmware_label),
         });
-        self.status = language
-            .tr(
-                "正在下载并校验所选 Release，请勿断开开发板。",
-                "Downloading and verifying the selected Release. Do not disconnect the board.",
-            )
-            .to_owned();
+        self.status = match &firmware_selection {
+            SelectedFirmware::Online(_) => language
+                .tr(
+                    "正在下载并校验所选固件 ZIP，请勿断开开发板。",
+                    "Downloading and verifying the selected firmware ZIP. Do not disconnect the board.",
+                )
+                .to_owned(),
+            SelectedFirmware::Local(_) => language
+                .tr(
+                    "正在校验本地固件并准备刷写，请勿断开开发板。",
+                    "Validating local firmware and preparing to flash. Do not disconnect the board.",
+                )
+                .to_owned(),
+        };
         self.append_log(match language {
-            Language::ZhCn => format!("准备刷写 {} 到 {} @ {} baud", release.tag, port, baud),
-            Language::En => format!("Preparing {} for {} @ {} baud", release.tag, port, baud),
+            Language::ZhCn => format!("准备刷写 {} 到 {} @ {} baud", firmware_label, port, baud),
+            Language::En => format!("Preparing {} for {} @ {} baud", firmware_label, port, baud),
         });
         let tx = self.tx.clone();
         thread::spawn(move || {
             let outcome = (|| -> Result<(std::process::ExitStatus, RuntimeDirectory)> {
-                let client = github_client()?;
-                let _ = tx.send(GuiEvent::Log(match language {
-                    Language::ZhCn => {
-                        format!("从 GitHub Release 下载并校验 {} 三件套...", release.tag)
+                let runtime = match firmware_selection {
+                    SelectedFirmware::Online(release) => {
+                        let client = github_client()?;
+                        let _ = tx.send(GuiEvent::Log(match language {
+                            Language::ZhCn => {
+                                format!("从 GitHub Release 下载并校验 {}...", release.archive.name)
+                            }
+                            Language::En => format!(
+                                "Downloading and verifying {} from GitHub Release...",
+                                release.archive.name
+                            ),
+                        }));
+                        prepare_runtime(&client, &release)?
                     }
-                    Language::En => format!(
-                        "Downloading and verifying the complete {} flash set...",
-                        release.tag
-                    ),
-                }));
-                let runtime = prepare_runtime(&client, &release)?;
+                    SelectedFirmware::Local(set) => {
+                        let _ = tx.send(GuiEvent::Log(
+                            language
+                                .tr(
+                                    "校验并载入本地完整固件...",
+                                    "Validating and loading the local firmware set...",
+                                )
+                                .to_owned(),
+                        ));
+                        prepare_local_runtime(&set)?
+                    }
+                };
                 let _ = tx.send(GuiEvent::Log(
                     language
                         .tr(
@@ -1318,8 +1846,8 @@ impl FlasherApp {
                         }
                     };
                     self.append_log(self.language.tr(
-                        "GitHub 固件列表已更新。仅显示三件套齐全且带 SHA256 的版本。",
-                        "The GitHub firmware list was updated. Only complete three-file sets with SHA256 are shown.",
+                        "GitHub 固件列表已更新。仅显示带 GitHub SHA256 的完整固件 ZIP。",
+                        "The GitHub firmware list was updated. Only complete firmware ZIPs with GitHub SHA256 are shown.",
                     ));
                 }
                 GuiEvent::Releases(Err(error)) => {
@@ -1502,8 +2030,8 @@ impl eframe::App for FlasherApp {
                     });
             });
             ui.label(language.tr(
-                "选择 GitHub Release 固件，自动检测 CH340，并安全刷写 BL616/BL618",
-                "Select a GitHub Release, detect CH340 automatically, and safely flash BL616/BL618",
+                "选择在线 Release 或本地固件 ZIP，自动检测 CH340，并安全刷写 BL616/BL618",
+                "Use an online Release or local firmware ZIP, detect CH340 automatically, and safely flash BL616/BL618",
             ));
             ui.add_space(8.0);
         });
@@ -1511,8 +2039,8 @@ impl eframe::App for FlasherApp {
         eframe::egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.small(language.tr(
-                "固件不内置于 EXE；只从 ccc007ccc/DS5Dongle Releases 下载完整且带 SHA256 的版本。下载/刷写时请保持联网。WebUI：https://ds5.766677.xyz/",
-                "Firmware is not embedded. Only complete Releases with SHA256 are downloaded from ccc007ccc/DS5Dongle. Keep the PC online while downloading/flashing. WebUI: https://ds5.766677.xyz/",
+                "固件不内置于 EXE；可下载主仓库完整固件 ZIP，也可选择本地 ZIP/目录。在线下载时请保持联网。WebUI：https://ds5.766677.xyz/",
+                "Firmware is not embedded. Download a complete ZIP from the main repository, or choose a local ZIP/directory. Stay online for Release downloads. WebUI: https://ds5.766677.xyz/",
             ));
             ui.add_space(4.0);
         });
@@ -1527,47 +2055,108 @@ impl eframe::App for FlasherApp {
                 .num_columns(2)
                 .spacing([18.0, 12.0])
                 .show(ui, |ui| {
-                    ui.label(language.tr("固件版本", "Firmware"));
+                    ui.label(language.tr("固件来源", "Firmware source"));
+                    let previous_firmware_mode = self.firmware_mode;
                     ui.horizontal(|ui| {
-                        if self.loading_releases {
-                            ui.spinner();
-                        }
-                        let selected_text = self
-                            .selected_release()
-                            .map(|release| format!("{} — {}", release.tag, release.name))
-                            .unwrap_or_else(|| {
-                                language.tr("暂无可用固件", "Unavailable").to_owned()
-                            });
-                        ui.add_enabled_ui(!busy && !self.releases.is_empty(), |ui| {
-                            eframe::egui::ComboBox::from_id_salt("release_combo")
-                                .selected_text(selected_text)
-                                .width(430.0)
-                                .show_ui(ui, |ui| {
-                                    for (index, release) in self.releases.iter().enumerate() {
-                                        let channel = if release.prerelease {
-                                            language.tr(" [预发布]", " [prerelease]")
-                                        } else {
-                                            ""
-                                        };
-                                        ui.selectable_value(
-                                            &mut self.selected_release,
-                                            index,
-                                            format!(
-                                                "{}{} — {}",
-                                                release.tag, channel, release.name
-                                            ),
-                                        );
-                                    }
-                                });
+                        ui.add_enabled_ui(!busy, |ui| {
+                            for mode in [
+                                FirmwareMode::Online,
+                                FirmwareMode::LocalZip,
+                                FirmwareMode::LocalDirectory,
+                            ] {
+                                ui.radio_value(&mut self.firmware_mode, mode, mode.tr(language));
+                            }
                         });
-                        if ui
-                            .add_enabled(
-                                !busy,
-                                eframe::egui::Button::new(language.tr("刷新", "Refresh")),
-                            )
-                            .clicked()
-                        {
-                            self.refresh_releases();
+                    });
+                    if self.firmware_mode != previous_firmware_mode {
+                        self.local_firmware = None;
+                    }
+                    ui.end_row();
+
+                    ui.label(language.tr("固件版本", "Firmware"));
+                    ui.horizontal(|ui| match self.firmware_mode {
+                        FirmwareMode::Online => {
+                            if self.loading_releases {
+                                ui.spinner();
+                            }
+                            let selected_text = self
+                                .selected_release()
+                                .map(|release| format!("{} — {}", release.tag, release.name))
+                                .unwrap_or_else(|| {
+                                    language.tr("暂无可用固件", "Unavailable").to_owned()
+                                });
+                            ui.add_enabled_ui(!busy && !self.releases.is_empty(), |ui| {
+                                eframe::egui::ComboBox::from_id_salt("release_combo")
+                                    .selected_text(selected_text)
+                                    .width(390.0)
+                                    .show_ui(ui, |ui| {
+                                        for (index, release) in self.releases.iter().enumerate() {
+                                            let channel = if release.prerelease {
+                                                language.tr(" [预发布]", " [prerelease]")
+                                            } else {
+                                                ""
+                                            };
+                                            ui.selectable_value(
+                                                &mut self.selected_release,
+                                                index,
+                                                format!(
+                                                    "{}{} — {}",
+                                                    release.tag, channel, release.name
+                                                ),
+                                            );
+                                        }
+                                    });
+                            });
+                            if ui
+                                .add_enabled(
+                                    !busy,
+                                    eframe::egui::Button::new(language.tr("刷新", "Refresh")),
+                                )
+                                .clicked()
+                            {
+                                self.refresh_releases();
+                            }
+                        }
+                        FirmwareMode::LocalZip => {
+                            if ui
+                                .add_enabled(
+                                    !busy,
+                                    eframe::egui::Button::new(
+                                        language.tr("选择固件 ZIP...", "Choose firmware ZIP..."),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.choose_local_zip();
+                            }
+                            ui.label(
+                                self.local_firmware
+                                    .as_ref()
+                                    .map(|set| set.label.as_str())
+                                    .unwrap_or(language.tr("尚未选择", "Not selected")),
+                            );
+                        }
+                        FirmwareMode::LocalDirectory => {
+                            if ui
+                                .add_enabled(
+                                    !busy,
+                                    eframe::egui::Button::new(
+                                        language.tr(
+                                            "选择完整固件目录...",
+                                            "Choose firmware directory...",
+                                        ),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.choose_local_directory();
+                            }
+                            ui.label(
+                                self.local_firmware
+                                    .as_ref()
+                                    .map(|set| set.label.as_str())
+                                    .unwrap_or(language.tr("尚未选择", "Not selected")),
+                            );
                         }
                     });
                     ui.end_row();
@@ -1641,7 +2230,7 @@ impl eframe::App for FlasherApp {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let can_flash =
-                    !busy && self.selected_release().is_some() && self.selected_port.is_some();
+                    !busy && self.selected_firmware().is_some() && self.selected_port.is_some();
                 if ui
                     .add_enabled(
                         can_flash,
@@ -1668,17 +2257,22 @@ impl eframe::App for FlasherApp {
             ui.add_space(8.0);
             ui.label(&self.status);
             ui.separator();
-            ui.label(language.tr("操作日志", "Log"));
+            ui.horizontal(|ui| {
+                ui.label(language.tr("操作日志", "Log"));
+                if ui.button(language.tr("复制全部", "Copy all")).clicked() {
+                    ui.ctx().copy_text(self.log.clone());
+                }
+            });
             eframe::egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
                 .max_height(170.0)
                 .show(ui, |ui| {
                     ui.add(
-                        eframe::egui::TextEdit::multiline(&mut self.log)
-                            .font(eframe::egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(7)
-                            .interactive(false),
+                        eframe::egui::Label::new(
+                            eframe::egui::RichText::new(&self.log).monospace(),
+                        )
+                        .selectable(true)
+                        .wrap(),
                     );
                 });
         });
@@ -1700,7 +2294,7 @@ impl eframe::App for FlasherApp {
                     ui.label(language.tr("3. 松开 BOOT", "3. Release BOOT"));
                     ui.add_space(8.0);
                     ui.colored_label(
-                        eframe::egui::Color32::YELLOW,
+                        eframe::egui::Color32::RED,
                         language.tr(
                             "刷写开始后不要拔线、不要按 Reset。",
                             "Do not disconnect the cable or press Reset after flashing starts.",
@@ -1834,7 +2428,8 @@ fn run_flash_streaming(
     baud: u32,
     tx: &Sender<GuiEvent>,
 ) -> Result<std::process::ExitStatus> {
-    let mut child = Command::new(runtime.join("BLFlashCommand.exe"))
+    preflight_runtime_layout(runtime)?;
+    let mut child = background_command(runtime.join("BLFlashCommand.exe"))
         .args([
             "--interface=uart",
             &format!("--baudrate={baud}"),
@@ -1874,8 +2469,8 @@ fn run_gui() -> Result<()> {
     verify_embedded_tool()?;
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([820.0, 680.0])
-            .with_min_inner_size([720.0, 580.0]),
+            .with_inner_size([900.0, 760.0])
+            .with_min_inner_size([820.0, 680.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -1927,5 +2522,96 @@ mod tests {
         assert_eq!(Language::En.tr("中文", "English"), "English");
         assert_eq!(Language::ZhCn.display_name(), "简体中文");
         assert_eq!(Language::En.display_name(), "English");
+    }
+
+    #[test]
+    fn firmware_zip_and_bouffalo_runtime_preflight_are_complete() {
+        let boot2 = vec![0x42; 52_576];
+        let partition = vec![0x50; 308];
+        let firmware = vec![0x61; 65_536];
+        let boot2_name = "boot2_bl616_test.bin";
+        let manifest = format!(
+            "{}  {}\n{}  {}\n{}  {}\n",
+            sha256(&boot2),
+            boot2_name,
+            sha256(&partition),
+            PARTITION_NAME,
+            sha256(&firmware),
+            FIRMWARE_NAME
+        );
+        let zip_path = env::temp_dir().join(format!(
+            "m61-flasher-test-{}-{}.zip",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        {
+            let file = File::create(&zip_path).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, bytes) in [
+                (boot2_name, boot2.as_slice()),
+                (PARTITION_NAME, partition.as_slice()),
+                (FIRMWARE_NAME, firmware.as_slice()),
+                ("test-flash-files.sha256", manifest.as_bytes()),
+            ] {
+                writer.start_file(name, options).unwrap();
+                writer.write_all(bytes).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let set = read_firmware_zip(&zip_path, true).unwrap();
+        assert_eq!(set.boot2_name, boot2_name);
+        assert_eq!(set.partition.len(), 308);
+        let runtime = prepare_local_runtime(&set).unwrap();
+        preflight_runtime_layout(&runtime.path).unwrap();
+        assert!(
+            runtime
+                .path
+                .join("chips/bl616/eflash_loader/eflash_loader_cfg.ini")
+                .is_file()
+        );
+        fs::remove_file(zip_path).unwrap();
+    }
+
+    #[test]
+    fn local_firmware_validation_rejects_unsafe_names_and_bad_hashes() {
+        let boot2 = vec![0x42; 52_576];
+        let partition = vec![0x50; 308];
+        let firmware = vec![0x61; 65_536];
+        assert!(
+            validate_firmware_set(
+                "unsafe".to_owned(),
+                "boot2_bl616_:stream.bin".to_owned(),
+                boot2.clone(),
+                partition.clone(),
+                firmware.clone(),
+                None,
+            )
+            .is_err()
+        );
+        let bad_manifest = format!(
+            "{}  boot2_bl616_test.bin\n{}  {}\n{}  {}\n",
+            "0".repeat(64),
+            sha256(&partition),
+            PARTITION_NAME,
+            sha256(&firmware),
+            FIRMWARE_NAME
+        );
+        assert!(
+            validate_firmware_set(
+                "bad hash".to_owned(),
+                "boot2_bl616_test.bin".to_owned(),
+                boot2,
+                partition,
+                firmware,
+                Some(&bad_manifest),
+            )
+            .is_err()
+        );
     }
 }

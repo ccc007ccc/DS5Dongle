@@ -45,12 +45,14 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 下载`M61-Flasher-Windows.exe`并双击运行图形界面。刷写器会：
 
 1. 显示三件套齐全且带SHA256的固件Release列表；
-2. 下载并校验你选择的固件版本；
+2. 下载并校验你选择版本的完整固件ZIP；
 3. 自动识别M61的CH340串口；
 4. 缺少驱动时，从WCH官方下载、验证数字签名并请求UAC安装；
 5. 引导BOOT+RESET进入ISP，然后默认以460800 baud刷写，失败可回退115200。
 
 界面支持简体中文和English，默认跟随Windows用户区域语言，也可在右上角切换。
+没有网络或需要刷写自定义版本时，可直接选择Release下载的`M61-Firmware-<版本>.zip`；
+工具也保留了读取三件套目录的高级入口。操作日志可鼠标选中，并提供“复制全部”。
 
 不需要克隆仓库，也不需要Python、Rust、SDK或编译器。Windows可能对未代码签名的社区
 EXE显示SmartScreen提示；请只从本项目Release下载，并核对同页SHA256。手工下载三个BIN

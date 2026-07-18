@@ -2,6 +2,24 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const SUPPORT_ASSETS: &[(&str, &str, &str)] = &[
+    (
+        "chips/bl616/eflash_loader/eflash_loader_cfg.ini",
+        "M61_EFLASH_LOADER_INI_EMBED",
+        "eflash_loader_cfg.ini",
+    ),
+    (
+        "chips/bl616/eflash_loader/eflash_loader_cfg.conf",
+        "M61_EFLASH_LOADER_CONF_EMBED",
+        "eflash_loader_cfg.conf",
+    ),
+    (
+        "chips/bl616/efuse_bootheader/flash_para.bin",
+        "M61_FLASH_PARA_EMBED",
+        "flash_para.bin",
+    ),
+];
+
 fn copy_asset(source: &Path, destination: &Path) {
     if !source.is_file() {
         panic!(
@@ -36,4 +54,14 @@ fn main() {
         "cargo:rustc-env=M61_BLFLASHCOMMAND_EMBED={}",
         flash_destination.display()
     );
+
+    let flash_root = flash_source.parent().unwrap_or_else(|| {
+        panic!("M61_BLFLASHCOMMAND must point to BLFlashCommand.exe inside bouffalo_flash_cube")
+    });
+    for (relative, variable, output_name) in SUPPORT_ASSETS {
+        let source = flash_root.join(relative);
+        let destination = out_dir.join(output_name);
+        copy_asset(&source, &destination);
+        println!("cargo:rustc-env={variable}={}", destination.display());
+    }
 }

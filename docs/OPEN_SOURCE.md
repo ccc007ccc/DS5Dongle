@@ -55,6 +55,7 @@ Publish:
 
 - source commit/tag;
 - matching boot2, partition table, application BIN, and checksum list;
+- `M61-Firmware-<version>.zip` containing that complete verified set;
 - ELF and MAP when appropriate;
 - generated `.manifest.json`;
 - MIT license and `THIRD_PARTY_NOTICES.md`;

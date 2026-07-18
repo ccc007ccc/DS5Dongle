@@ -37,7 +37,7 @@ by source/offline tests but still needs broader hardware regression, and
 | Power | Controller shutdown after host suspend | Implemented | Requires final PC sleep/resume qualification |
 | Input | Independent scaled radial stick deadzones | Verified | Left/right 0–30%; schema v3 and Flash persistence |
 | Input | Selectable USB report rate | Verified | Realtime fresh Bluetooth reports or hardware-measured fixed 250/500 Hz latest-sample repeat; schema v4 migrates the retired experimental value to 500 Hz |
-| Recovery | UART ISP software reboot and flashing tool | Implemented | Warm reboot can fail BootROM eFuse reads; manual BOOT/RESET is the reliable path |
+| Recovery | Bilingual Windows GUI flasher | Verified without board | Online/local verified firmware ZIPs, CH340 detection/driver repair, 460800/115200 baud, selectable logs; manual BOOT/RESET remains the reliable ISP path |
 | Board UI | RGB connection status LED | Verified | Green idle, blue connecting/connected policy |
 
 ## Production defaults
