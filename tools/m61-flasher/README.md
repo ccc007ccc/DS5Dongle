@@ -38,7 +38,7 @@ a COM port or starting a flash operation.
 files reach BL616 loader initialization while using a deliberately nonexistent
 COM port.
 The generated `eflash_loader_cfg.ini` starts from the SDK's tracked `.conf`
-template, so clean CI checkouts do not depend on ignored state from a previous
-flash run.
+template and normalizes it to LF, so clean CI checkouts do not depend on
+ignored state from a previous flash run or Git line-ending settings.
 Use the debug build for these developer CLI checks. The Release build uses the
 Windows GUI subsystem and opens no command-prompt window when double-clicked.
