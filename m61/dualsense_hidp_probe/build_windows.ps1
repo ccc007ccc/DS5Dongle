@@ -43,6 +43,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# GitHub's Windows runner exports SHELL=/usr/bin/bash. Bouffalo's MinGW make
+# inherits it and then sends native Windows paths through Git Bash, which
+# strips backslashes. The Windows build must use make's native command shell.
+Remove-Item Env:SHELL -ErrorAction SilentlyContinue
+
 $ProjectDir = Split-Path -Parent $PSCommandPath
 $RepoRoot = (Resolve-Path (Join-Path $ProjectDir '..\..')).Path
 $WorkspaceRoot = (Resolve-Path (Join-Path $ProjectDir '..\..\..')).Path
