@@ -30,6 +30,7 @@ by source/offline tests but still needs broader hardware regression, and
 | DVFS | Persist/clear resident frequency policy | Verified | EasyFlash record; experimental clocks cannot be saved |
 | Diagnostics | `ds5 status` full transport/audio counters | Verified | Queue, codec, USB, BT, Feature proxy and haptics counters |
 | Diagnostics | Compile-gated HPM/pipeline/runtime profiling | Verified | Disabled in release |
+| Diagnostics | Controller RSSI | Missing | HCI RSSI reads on the active HID link disturb input, so production firmware does not poll it; WebUI explicitly reports it unavailable |
 | WebHID | Versioned `0xF6`–`0xF9` management protocol | Verified | Capabilities, CRC-backed configuration, identity and telemetry |
 | WebHID | Pair, disconnect, forget and controller power-off | Verified | Management result and sequence are reported in telemetry |
 | Persistence | Unified M61 runtime configuration | Verified | Versioned EasyFlash record with CRC32 and v1 migration |
@@ -66,7 +67,6 @@ These are real product gaps, not hidden build options:
 - Windows wake/Game Bar shortcut emulation;
 - adaptive-trigger reduction settings;
 - USB remote wake qualification;
-- trustworthy controller RSSI qualification on hardware;
 - real PC suspend/resume power-policy qualification;
 - long-duration full-duplex qualification with zero audible stutter at the
   default 320 MHz profile.

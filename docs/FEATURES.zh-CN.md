@@ -29,6 +29,7 @@
 | DVFS | 常驻频率策略保存/清除 | 已验证 | EasyFlash记录；实验频率不能保存 |
 | 诊断 | `ds5 status`完整计数 | 已验证 | 队列、codec、USB、BT、Feature代理、haptics |
 | 诊断 | 编译期开关HPM/pipeline/runtime profile | 已验证 | release关闭 |
+| 诊断 | 手柄RSSI | 缺失 | 活跃HID链路上的HCI RSSI读取会干扰输入，正式固件不轮询；WebUI明确显示不可用 |
 | WebHID | 版本化`0xF6`–`0xF9`管理协议 | 已验证 | 能力、CRC持久配置、固件身份与遥测 |
 | WebHID | 配对、断开、忘记及关闭手柄 | 已验证 | 遥测返回管理结果和序号 |
 | 持久化 | M61统一运行时配置 | 已验证 | 带CRC32的EasyFlash版本记录及v1迁移 |
@@ -63,7 +64,6 @@
 - Windows唤醒/Game Bar快捷键模拟；
 - 自适应扳机削减配置；
 - USB remote wake验收；
-- 手柄RSSI真机可信度验收；
 - 真实PC挂起/恢复电源策略验收；
 - 默认320 MHz下长时间全双工零可闻卡顿验收。
 
