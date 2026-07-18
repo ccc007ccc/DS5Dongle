@@ -150,10 +150,14 @@ allowed for development but marks the manifest as `custom`.
 
 Normal users run `M61-Flasher-Windows.exe`, select a firmware from its list,
 and follow the on-screen steps. It uses 460800 baud by default and offers a
-115200-baud compatibility retry after a failure.
+115200-baud compatibility retry after a failure. Keep native USB unplugged
+while flashing: connect only Type-C/CH340, then unplug Type-C before connecting
+the four-wire native USB cable for normal use. This prevents two USB paths from
+supplying 5 V at the same time.
 
 The command below is the source-developer fallback. Enter ISP by holding BOOT,
-tapping and releasing RESET, then releasing BOOT.
+tapping and releasing RESET, then releasing BOOT. The same single-source power
+rule applies to manual flashing.
 
 ```powershell
 python tools\flash_m61_firmware.py -p COM5 --windows-build

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-这是一个面向Ai-M61-32S（BL616/BL618系列）的开源单芯片DualSense转USB项目。
+这是一个面向Ai-M61-32s-Kit（BL616/BL618系列）的开源单芯片DualSense转USB项目。
 M61通过Bluetooth Classic HIDP连接真实DualSense，再通过原生USB向电脑枚举为
 `054C:0CE6` DualSense复合设备。
 
@@ -12,6 +12,9 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 
 这是独立社区项目，与Sony Interactive Entertainment没有隶属或背书关系。
 “DualSense”是其相应权利人的商标。
+
+第一次使用请直接阅读[快速入门](docs/QUICK_START.zh-CN.md)：下载图形化刷写器、进入
+BOOT+RESET、连接开发板独立的`USB_DP`/`USB_DM`排针、配对手柄并保存WebUI配置。
 
 ## 当前功能
 
@@ -107,13 +110,18 @@ m61/dualsense_hidp_probe/build-win/build_out/
 
 ## 硬件
 
-电脑必须接到BL616/BL618原生`USB_DP`和`USB_DM`。很多Ai-M61开发板的USB口只连接
-CH340串口，不能让固件枚举成手柄。请按[硬件与接线](docs/HARDWARE.zh-CN.md)操作；
-严禁把CH340的USB数据线与SoC原生USB引脚硬并联。
+Ai-M61-32s-Kit排针已经直接标出`USB_DP`、`USB_DM`、`5V`和`GND`，不需要使用GPIO
+编号。板载Type-C口连接CH340，只用于UART刷写、日志和供电，不能枚举成手柄。
+
+正常使用时推荐只插原生USB线，由`5V`、`GND`、`USB_DP`、`USB_DM`同时完成供电和
+手柄数据。刷入固件时拔掉原生USB，只插Type-C/CH340；不要让两根USB同时输入5V。
+完整接线图和安全说明见[快速入门](docs/QUICK_START.zh-CN.md)与
+[硬件与接线](docs/HARDWARE.zh-CN.md)。
 
 ## 刷写与验证
 
-普通用户直接运行Release中的`M61-Flasher-Windows.exe`，选择固件后按界面提示操作。
+普通用户直接运行Release中的`M61-Flasher-Windows.exe`，选择固件后按界面提示操作。刷写时
+拔掉原生USB，只连接Type-C/CH340；刷写成功后先拔掉Type-C，再连接四线原生USB正常使用。
 
 源码开发和硬件诊断时，才需要在仓库根目录运行：
 
@@ -128,6 +136,7 @@ python tools\validate_m61_usb_hardware.py -p COM5
 
 ## 文档
 
+- [快速入门](docs/QUICK_START.zh-CN.md)
 - [功能与限制](docs/FEATURES.zh-CN.md)
 - [架构](docs/ARCHITECTURE.zh-CN.md)
 - [构建与刷写](docs/BUILDING.zh-CN.md)

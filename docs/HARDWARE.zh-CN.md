@@ -1,59 +1,79 @@
-# 硬件与接线
+# Ai-M61-32s-Kit硬件与接线
 
 [English](HARDWARE.md)
 
-## 目标身份
+## 目标开发板
 
-本固件针对Ai-M61-32S系列，使用Bouffalo SDK的`CHIP=bl616`目标构建。厂商材料会同时
-使用BL616/BL618系列术语；对本仓库而言，编译目标和生成的BL616镜像格式是权威。更换
-board definition前必须重新验证USB引脚、RF校准、Flash布局、时钟和内存。
+正式固件面向Ai-M61-32s-Kit，使用Bouffalo SDK的`CHIP=bl616`目标构建。开发板和
+模组资料中可能同时出现BL616、BL618或Ai-M61-32S字样；本项目发布的BL616镜像、
+仓库锁定的板级配置以及开发板实际排针图是权威依据。
 
-## 必须使用原生USB
+不要把其他Ai-M61模组或不同开发板当作可直接替换目标。更换板型后必须重新验证Flash
+布局、RF参数、USB引脚、时钟和内存。
 
-SoC USB Device引脚：
+## 原生USB排针
 
-| 信号 | 固件引脚 |
+Ai-M61-32s-Kit已经把原生USB信号直接引出为独立排针，不需要使用GPIO编号：
+
+| USB线信号 | 开发板排针 |
 | --- | --- |
-| USB D+ | GPIO32 / `USB_DP` |
-| USB D- | GPIO33 / `USB_DM` |
-| Ground | GND |
+| D+ | `USB_DP` |
+| D- | `USB_DM` |
+| 电源 | `5V` |
+| 地 | `GND` |
 
-很多Ai-M61-32S-Kit的USB-C口连接CH340串口桥。该接口仍用于供电、日志和UART刷写，但
-固件无法把CH340变成手柄。
+![Ai-M61-32s-Kit原生USB接线](assets/m61-usb-wiring.png)
 
-电脑必须通过第二路原生USB看到：
+开发板自带Type-C口连接CH340串口桥，负责UART刷写、日志和供电，但不能枚举为USB手柄。
+电脑必须连接独立的`USB_DP`和`USB_DM`，才能看到：
 
 - USB Composite Device；
 - HID-compliant game controller，`VID_054C&PID_0CE6`；
-- DualSense speaker/headset输出；
-- DualSense microphone输入。
+- DualSense扬声器/耳机输出；
+- DualSense麦克风输入。
 
-严禁把CH340 D+/D-与SoC D+/D-硬并联。
+严禁把CH340的USB D+/D-与开发板原生`USB_DP`/`USB_DM`硬并联。
 
-## 供电
+## 供电方式
 
-如果开发板已通过CH340接口供电，第二条原生USB线只连接D+、D-和GND，避免两个未受控
-5 V源。
+正常使用时，推荐只连接原生USB线的四根信号：`5V`、`GND`、`USB_DP`、`USB_DM`。
+这一根USB线同时给开发板供电并传输手柄数据，不需要再插Type-C/CH340线。
 
-如果原生USB同时供电，必须接开发板文档标注的`5V`/`VBUS`/`VIN`入口。不要向模组
-`VCC`直接输入5 V；模组VCC通常是3.3 V。
+刷入固件时，推荐拔掉原生USB，只保留Type-C/CH340刷写线。若必须保留原生USB的数据线，
+至少断开它的5V，确保只有一路5V电源。不要让Type-C/CH340和原生USB同时向开发板供电。
 
-## 推荐bring-up顺序
+5V只能接开发板标注的`5V`引脚。不要向`3V3`输入5V。USB转杜邦线的颜色不一定遵循
+常见红/白/绿/黑定义，接线前应核对线序。
 
-1. 保留CH340连接用于串口日志和刷写。
-2. 把原生D+、D-、GND接到可靠USB转接板/线。
-3. 构建并刷入锁定release固件。
-4. 松开BOOT后RESET进入正常启动。
-5. 运行`python tools/check_m61_usb_windows.py`。
-6. 配对/连接手柄，再运行
-   `python tools/validate_m61_usb_hardware.py -p COM5`。
+## 普通用户推荐顺序
 
-只看到COM5/CH340说明原生USB没有连接或未配置。看到USB composite但没有HID/audio子项，
-通常是描述符或主机驱动枚举失败。
+1. 暂时不要连接原生USB线。
+2. 只用Type-C数据线连接开发板，通过CH340进入BOOT+RESET刷写模式并刷入Release固件。
+3. 刷写成功后拔掉Type-C线。
+4. 按接线图连接`5V`、`GND`、`USB_DP`、`USB_DM`。
+5. 把原生USB插入电脑，开发板应正常供电并枚举为DualSense复合设备。
+6. 首次配对时让手柄进入创建键+PS键配对模式；已保存的手柄会自动重连。
+
+图形化刷写和配对步骤见[快速入门](QUICK_START.zh-CN.md)。
+
+## 开发和诊断
+
+需要串口日志时，可以让Type-C/CH340和原生USB数据同时连接，但必须断开原生USB的5V，
+只保留`USB_DP`、`USB_DM`和`GND`，避免双路供电。
+
+常用验证命令：
+
+```powershell
+python tools/check_m61_usb_windows.py
+python tools/validate_m61_usb_hardware.py -p COM5
+```
+
+只看到COM口/CH340，说明电脑尚未连接原生USB。看到USB Composite Device但没有HID或
+音频子设备，通常是D+/D-接反、线材问题或主机枚举失败。
 
 ## 状态灯
 
-默认Ai-M61-32S-Kit映射为红GPIO12、绿GPIO14、蓝GPIO15、active high。正常策略为绿色
+Ai-M61-32s-Kit默认映射为红GPIO12、绿GPIO14、蓝GPIO15、active high。正常策略为绿色
 空闲、连接中蓝灯闪烁、DualSense HIDP就绪后蓝灯常亮。板型差异应覆盖配置宏，不要修改
 运行时逻辑。
 
@@ -68,7 +88,8 @@ SoC USB Device引脚：
 ## 安全
 
 - 改接USB数据线或电源引脚前先断电。
-- 不要把超频镜像作为默认release发布。
+- 刷写时只保留一路5V供电。
+- 不要向`3V3`输入5V。
 - 保留UART ISP恢复路径。
 - 精确板卡版本的厂商PDF引脚图具有最高硬件权威。
 - 本项目未做商业或安全关键用途认证。

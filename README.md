@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-An open-source, single-chip DualSense-to-USB bridge for the Ai-M61-32S
+An open-source, single-chip DualSense-to-USB bridge for the Ai-M61-32s-Kit
 (BL616/BL618 family). The M61 connects to a real DualSense over Bluetooth
 Classic HIDP and exposes a native USB `054C:0CE6` DualSense composite device
 to the host PC.
@@ -14,6 +14,10 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- native USB --> PC
 This is an independent community project. It is not affiliated with or
 endorsed by Sony Interactive Entertainment. “DualSense” is a trademark of
 its respective owner.
+
+New users should begin with [Quick start](docs/QUICK_START.md): download the
+graphical flasher, enter BOOT+RESET, wire the board's dedicated
+`USB_DP`/`USB_DM` headers, pair the controller, and save the WebUI settings.
 
 ## Current capabilities
 
@@ -122,17 +126,25 @@ performance-equivalent release build.
 
 ## Hardware
 
-The PC must connect to the BL616/BL618 native `USB_DP` and `USB_DM` pins. The
-USB connector on many Ai-M61 development boards is wired to a CH340 UART and
-cannot enumerate the firmware as a game controller. Follow
-[Hardware and wiring](docs/HARDWARE.md); never electrically join CH340 USB
-data lines with the SoC native USB pins.
+The Ai-M61-32s-Kit header directly exposes `USB_DP`, `USB_DM`, `5V`, and
+`GND`; GPIO numbers are not needed. Its onboard Type-C connector is attached
+to CH340 and is used for UART flashing, logs, and power, not game-controller
+enumeration.
+
+For normal use, connect only native USB so `5V`, `GND`, `USB_DP`, and
+`USB_DM` provide both power and controller data. For flashing, unplug native
+USB and connect only Type-C/CH340. Never let both USB paths supply 5 V at the
+same time. See [Quick start](docs/QUICK_START.md) and
+[Hardware and wiring](docs/HARDWARE.md) for the diagram and safety details.
 
 ## Flash and verify
 
 Normal users run `M61-Flasher-Windows.exe`, select a firmware Release, and
-follow its on-screen instructions. Source development and hardware diagnostics
-use the repository commands below:
+follow its on-screen instructions. Disconnect native USB while flashing and
+connect only Type-C/CH340. After flashing succeeds, unplug Type-C before
+connecting the four-wire native USB cable for normal use.
+
+Source development and hardware diagnostics use the repository commands below:
 
 ```powershell
 python tools\flash_m61_firmware.py -p COM5 --windows-build
@@ -150,6 +162,7 @@ RESET, and releasing BOOT is the reliable recovery and flashing procedure.
 
 ## Documentation
 
+- [Quick start](docs/QUICK_START.md)
 - [Features and limitations](docs/FEATURES.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Building and flashing](docs/BUILDING.md)
