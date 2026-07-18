@@ -49,21 +49,22 @@ known limitation does not affect USB enumeration or controller input.
 
 ## Using a prebuilt Release
 
-If you do not need to rebuild the firmware, choose an entry that lists the
-complete flash set on the [Releases](https://github.com/ccc007ccc/DS5Dongle/releases)
-page and download all of these files from that same entry:
+Normal Windows users only need `M61-Flasher-Windows.exe` from the project
+[Releases](https://github.com/ccc007ccc/DS5Dongle/releases). Double-click it to
+open the graphical interface, select a firmware version from the complete
+verified Release list, and follow
+the BOOT+RESET instructions. It detects the M61 CH340 port, downloads and
+checks the selected three-file firmware set, and can download the signed
+official WCH driver when the connected CH340 has no usable COM port.
 
-- `boot2_bl616_isp_release_v8.1.8.bin`;
-- `partition.bin`;
-- `m61_dualsense_hidp_probe_bl616.bin`;
-- the matching `flash-files.sha256` checksum file.
+No repository clone, Python, Rust, SDK, or compiler is required. The community
+EXE is not Authenticode code-signed, so Windows SmartScreen may ask for
+confirmation. Download it only from this repository and verify the SHA256
+published beside it. The manual three-BIN developer path remains documented in
+[Building and flashing](docs/BUILDING.md).
 
-Place the three BIN files in
-`m61/dualsense_hidp_probe/build-win/build_out/`, verify their SHA256 values,
-then use the `--windows-build` flashing command below. The flasher still needs
-the locked `bl_mcu_sdk` cloned next to this repository, but no compiler or Opus
-build is required. Never mix boot2, partition, and application files from
-different Releases.
+The flasher GUI supports Simplified Chinese and English, defaults from the
+Windows user locale, and provides an in-app language selector.
 
 ## Performance-reproducible build
 
@@ -83,7 +84,7 @@ Every successful build emits a JSON provenance manifest beside the firmware.
 The complete lock is
 [`reproducible-build.lock.json`](m61/dualsense_hidp_probe/reproducible-build.lock.json).
 
-## Quick start (Windows)
+## Developer build (Windows)
 
 Clone the three repositories at their locked commits:
 
@@ -125,7 +126,9 @@ data lines with the SoC native USB pins.
 
 ## Flash and verify
 
-Enter UART download mode, then run from the repository root:
+Normal users run `M61-Flasher-Windows.exe`, select a firmware Release, and
+follow its on-screen instructions. Source development and hardware diagnostics
+use the repository commands below:
 
 ```powershell
 python tools\flash_m61_firmware.py -p COM5 --windows-build

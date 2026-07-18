@@ -5,9 +5,11 @@
 ## Repository boundary
 
 This repository intentionally contains only M61 application source, build
-metadata, tests, and maintained documentation. It does not vendor the
-1+ GiB Bouffalo SDK, compiler binaries, generated firmware, benchmark logs, or
-vendor PDF manuals.
+metadata, tests, and maintained documentation. It does not commit the 1+ GiB
+Bouffalo SDK, compiler binaries, generated firmware, benchmark logs, or vendor
+PDF manuals. Flasher CI reads `BLFlashCommand.exe` from the locked SDK and
+embeds it in the final Windows EXE; the vendor binary itself is not stored in
+Git.
 
 The SDK audit found one historical four-line linker-script edit and no local
 CherryUSB, FreeRTOS, or Bluetooth library source changes. That memory choice
@@ -29,6 +31,7 @@ source tree.
 | M61 application, tools, maintained docs | This repository | MIT |
 | Original DS5Dongle work | `awalol/DS5Dongle` history | MIT |
 | Bouffalo SDK | External locked checkout | Apache-2.0 plus component licenses |
+| `BLFlashCommand.exe` | Locked SDK, embedded while building the flasher | Bouffalo SDK Apache-2.0 notice |
 | CherryUSB | Through Bouffalo SDK | Apache-2.0 |
 | FreeRTOS | Through Bouffalo SDK | MIT |
 | Opus 1.2.1 and M61 patches | Downloaded source plus tracked patches | Opus BSD-style license/patent notices |
@@ -55,11 +58,12 @@ Publish:
 - ELF and MAP when appropriate;
 - generated `.manifest.json`;
 - MIT license and `THIRD_PARTY_NOTICES.md`;
+- `M61-Flasher-Windows.exe`, its SHA256, and the Bouffalo Apache-2.0 license;
 - bilingual release notes describing the exact hardware and profile.
 
 Do not publish:
 
-- SDK/toolchain binaries copied into this repository;
+- SDK/toolchain binaries copied into Git (except the locked flashing core embedded in the Release EXE as described above);
 - Opus build/cache directories;
 - private controller data or pairing keys;
 - local COM-port logs, absolute paths, or vendor PDFs without permission;

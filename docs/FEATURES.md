@@ -30,7 +30,6 @@ by source/offline tests but still needs broader hardware regression, and
 | DVFS | Persist/clear resident frequency policy | Verified | Unified EasyFlash record shared with Web settings; experimental clocks cannot be saved; legacy standalone records migrate at boot |
 | Diagnostics | `ds5 status` full transport/audio counters | Verified | Queue, codec, USB, BT, Feature proxy and haptics counters |
 | Diagnostics | Compile-gated HPM/pipeline/runtime profiling | Verified | Disabled in release |
-| Diagnostics | Controller RSSI | Missing | HCI RSSI reads on the active HID link disturb input, so production firmware does not poll it; WebUI explicitly reports it unavailable |
 | WebHID | Versioned `0xF6`–`0xF9` management protocol | Verified | Capabilities, CRC-backed configuration, identity and telemetry |
 | WebHID | Pair, disconnect, forget and controller power-off | Verified | Management result and sequence are reported in telemetry |
 | Persistence | Unified M61 runtime configuration | Verified | Versioned EasyFlash record with CRC32 and v1 migration |
@@ -63,8 +62,6 @@ reduction is accepted as a performance fix.
 
 - The supported controller target is the standard DualSense. DualSense Edge
   is not supported or hardware-qualified.
-- Controller RSSI is intentionally unavailable because active BL616 BR/EDR
-  RSSI queries disturbed HID input during hardware testing.
 - Microphone decode adds substantial realtime load. It is disabled by default,
   and 320 MHz full-duplex operation has less stutter margin than speaker-only.
 - During long wireless speaker playback, the sound can occasionally become

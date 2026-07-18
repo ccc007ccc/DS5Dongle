@@ -7,6 +7,7 @@
 ```text
 m61/dualsense_hidp_probe/   production firmware and build system
 tools/                      host tests, flashing, capture and analysis
+tools/m61-flasher/          Rust graphical Windows Release flasher
 benchmarks/                 promoted machine-readable performance results
 docs/                       maintained bilingual documentation
 ```
@@ -34,6 +35,11 @@ GitHub Actions repeats the offline gate on Ubuntu and performs a clean Windows
 release build from the locked SDK/toolchain commits. Successful runs retain
 the BIN, hash image, ELF, MAP, and provenance manifest for 14 days. This CI is
 evidence of build reproducibility; it does not replace the hardware gate.
+
+A separate Windows-flasher workflow embeds the flashing core from the locked
+SDK, runs Rust tests, verifies the live Release list and download SHA256s, and
+produces one GUI EXE. It uploads to the main repository Release only for a
+release event or an explicitly publish-enabled manual run.
 
 ## Hardware gate
 

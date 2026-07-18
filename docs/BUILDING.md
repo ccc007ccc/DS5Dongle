@@ -2,6 +2,13 @@
 
 [简体中文](BUILDING.zh-CN.md)
 
+Normal users do not need this build environment. Download
+`M61-Flasher-Windows.exe` from the project
+[Releases](https://github.com/ccc007ccc/DS5Dongle/releases), double-click it,
+and select a firmware version. It detects CH340, downloads and verifies the
+official WCH driver only when needed, verifies the selected three-file Release
+set, and guides reliable BOOT+RESET flashing.
+
 ## Supported release environment
 
 The release build is defined by
@@ -19,7 +26,7 @@ not by whichever SDK or compiler happens to be installed.
 Python 3, Git, CMake/Ninja/Make from the SDK, and `tar` are also required.
 Windows 10/11 and PowerShell 7 are the primary tested host.
 
-## Flashing prebuilt Release files
+## Manually flashing Release files (developer fallback)
 
 To skip compilation, choose one
 [Release](https://github.com/ccc007ccc/DS5Dongle/releases) that lists the
@@ -120,7 +127,12 @@ allowed for development but marks the manifest as `custom`.
 
 ## Flashing
 
-Manual ISP entry: hold BOOT, tap and release RESET, then release BOOT.
+Normal users run `M61-Flasher-Windows.exe`, select a firmware from its list,
+and follow the on-screen steps. It uses 460800 baud by default and offers a
+115200-baud compatibility retry after a failure.
+
+The command below is the source-developer fallback. Enter ISP by holding BOOT,
+tapping and releasing RESET, then releasing BOOT.
 
 ```powershell
 python tools\flash_m61_firmware.py -p COM5 --windows-build

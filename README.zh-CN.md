@@ -41,17 +41,20 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 
 ## 使用Release预编译固件
 
-不需要自行编译时，可从[Releases](https://github.com/ccc007ccc/DS5Dongle/releases)
-中选择列出完整刷写文件的版本，并下载同一版本的以下文件：
+普通Windows用户只需从[Releases](https://github.com/ccc007ccc/DS5Dongle/releases)
+下载`M61-Flasher-Windows.exe`并双击运行图形界面。刷写器会：
 
-- `boot2_bl616_isp_release_v8.1.8.bin`；
-- `partition.bin`；
-- `m61_dualsense_hidp_probe_bl616.bin`；
-- 对应的`flash-files.sha256`校验文件。
+1. 显示三件套齐全且带SHA256的固件Release列表；
+2. 下载并校验你选择的固件版本；
+3. 自动识别M61的CH340串口；
+4. 缺少驱动时，从WCH官方下载、验证数字签名并请求UAC安装；
+5. 引导BOOT+RESET进入ISP，然后默认以460800 baud刷写，失败可回退115200。
 
-把三个BIN放到`m61/dualsense_hidp_probe/build-win/build_out/`，核对SHA256后即可使用
-后文的`--windows-build`刷写命令。刷写工具仍需要把锁定的`bl_mcu_sdk`克隆到项目同级
-目录，但不需要安装工具链或构建Opus。不要混用不同Release的boot2、partition和应用BIN。
+界面支持简体中文和English，默认跟随Windows用户区域语言，也可在右上角切换。
+
+不需要克隆仓库，也不需要Python、Rust、SDK或编译器。Windows可能对未代码签名的社区
+EXE显示SmartScreen提示；请只从本项目Release下载，并核对同页SHA256。手工下载三个BIN
+和开发者命令保留在[构建与刷写](docs/BUILDING.zh-CN.md)中。
 
 ## 性能可复现构建
 
@@ -69,7 +72,7 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 固件旁生成JSON来源清单。完整锁文件为
 [`reproducible-build.lock.json`](m61/dualsense_hidp_probe/reproducible-build.lock.json)。
 
-## Windows快速开始
+## Windows开发者构建
 
 按锁定提交克隆三个仓库：
 
@@ -107,7 +110,9 @@ CH340串口，不能让固件枚举成手柄。请按[硬件与接线](docs/HARD
 
 ## 刷写与验证
 
-进入UART下载模式后，在仓库根目录运行：
+普通用户直接运行Release中的`M61-Flasher-Windows.exe`，选择固件后按界面提示操作。
+
+源码开发和硬件诊断时，才需要在仓库根目录运行：
 
 ```powershell
 python tools\flash_m61_firmware.py -p COM5 --windows-build

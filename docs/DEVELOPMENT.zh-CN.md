@@ -7,6 +7,7 @@
 ```text
 m61/dualsense_hidp_probe/   正式固件和构建系统
 tools/                      host测试、刷写、采集和分析
+tools/m61-flasher/          Rust Windows图形化Release刷写器
 benchmarks/                 已晋升的机器可读性能结果
 docs/                       持续维护的中英文文档
 ```
@@ -31,6 +32,10 @@ git diff --check
 GitHub Actions会在Ubuntu重复离线门禁，并从锁定SDK/工具链提交执行干净Windows release
 构建。成功任务会保留BIN、hash镜像、ELF、MAP和来源清单14天。CI可证明构建可复现，
 但不能替代真机门禁。
+
+独立的Windows刷写器工作流从锁定SDK嵌入刷写核心，运行Rust测试，验证在线Release列表和
+下载SHA256，再生成单文件GUI EXE。只有release事件或明确启用发布的手工工作流才会把
+它上传到主仓库Release。
 
 ## 真机门禁
 

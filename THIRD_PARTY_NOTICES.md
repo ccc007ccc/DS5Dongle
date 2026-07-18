@@ -19,6 +19,21 @@ notices. It is an external build dependency and is not vendored here. Binary
 distributors must review the exact locked SDK tree and reproduce all notices
 required by the linked components.
 
+The Windows one-file flasher embeds `BLFlashCommand.exe` from the locked
+Bouffalo SDK checkout. Its source repository is distributed under Apache-2.0;
+the flasher Release must include the corresponding Apache-2.0 license and this
+notice. Firmware binaries are not embedded and are downloaded from this
+project's selected GitHub Release at runtime.
+
+## Rust flasher dependencies
+
+The Windows flasher also links the Rust crates recorded exactly in
+`tools/m61-flasher/Cargo.lock`, including egui/eframe, reqwest, rustls, serde,
+sha2, and their transitive dependencies. These crates retain their respective
+MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, and other upstream licenses. Source
+and license metadata are available through each package entry on
+https://crates.io/ and its linked source repository.
+
 ## FreeRTOS
 
 FreeRTOS is supplied through the Bouffalo SDK under the MIT License. Refer to

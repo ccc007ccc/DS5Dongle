@@ -18,4 +18,5 @@ sdkconfig.raw_hidp.old
 __pycache__/
 .pytest_cache/
 artifacts/
+tools/m61-flasher/target/
 docs/vendor/*.pdf

@@ -43,6 +43,10 @@ def main() -> int:
         "m61/dualsense_hidp_probe/prepare_opus_source.ps1",
         "tools/verify_m61_build_environment.py",
         "tools/generate_m61_build_manifest.py",
+        "tools/m61-flasher/Cargo.toml",
+        "tools/m61-flasher/Cargo.lock",
+        "tools/m61-flasher/README.md",
+        "tools/m61-flasher/README.zh-CN.md",
     ]
     forbidden_paths = [
         ".gitmodules",
@@ -72,6 +76,7 @@ def main() -> int:
         *(ROOT / "docs").glob("*.md"),
         *(ROOT / "benchmarks").glob("*.md"),
         *(ROOT / "m61" / "dualsense_hidp_probe").glob("*.md"),
+        *(ROOT / "tools" / "m61-flasher").glob("*.md"),
     ]
     bilingual_files = [
         ROOT / "README.md",
@@ -79,6 +84,7 @@ def main() -> int:
         *(ROOT / "docs").glob("*.md"),
         *(ROOT / "benchmarks").glob("*.md"),
         ROOT / "m61" / "dualsense_hidp_probe" / "README.md",
+        ROOT / "tools" / "m61-flasher" / "README.md",
     ]
     for english in bilingual_files:
         if english.name.endswith(".zh-CN.md"):
@@ -187,7 +193,7 @@ def main() -> int:
     for extension in ("*.bin", "*.elf", "*.a"):
         for artifact in ROOT.rglob(extension):
             if not any(
-                part in {"build", "build-win", ".cache", "artifacts"}
+                part in {"build", "build-win", "target", ".cache", "artifacts"}
                 for part in artifact.parts
             ):
                 failures.append(
