@@ -112,6 +112,37 @@ def main() -> int:
             if marker not in opus_cmake:
                 failures.append(f"Opus CMake missing release marker: {marker}")
 
+    release_artifact_markers = {
+        "tools/generate_m61_build_manifest.py": (
+            'parser.add_argument("--boot2"',
+            'parser.add_argument("--partition"',
+            '"boot2":',
+            '"partition":',
+        ),
+        "m61/dualsense_hidp_probe/build_windows.ps1": (
+            "'--boot2'",
+            "'--partition'",
+        ),
+        "m61/dualsense_hidp_probe/build.sh": (
+            '--boot2 "$boot2_file"',
+            '--partition "$partition_file"',
+        ),
+        ".github/workflows/firmware-ci.yml": (
+            "build_out/boot2_bl616_*.bin",
+            "build_out/partition.bin",
+        ),
+    }
+    for relative_path, markers in release_artifact_markers.items():
+        path = ROOT / relative_path
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in content:
+                failures.append(
+                    f"complete release artifact flow missing {marker!r} in {relative_path}"
+                )
+
     for pdf in ROOT.rglob("*.pdf"):
         if ".git" not in pdf.parts and "vendor" not in pdf.parts:
             failures.append(f"vendor PDF must not be in the public tree: {pdf.relative_to(ROOT)}")

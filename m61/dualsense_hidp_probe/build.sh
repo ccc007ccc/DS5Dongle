@@ -207,13 +207,15 @@ build_project() {
     bin_file="$(find "$PROJECT_DIR/build/build_out" -maxdepth 1 -name 'm61_dualsense_hidp_probe_*.bin' | head -1 || true)"
     if [[ -n "$bin_file" ]]; then
         log "Firmware: $bin_file"
-        local elf_file map_file manifest_file bool_usb bool_crc bool_hpm
+        local elf_file map_file boot2_file partition_file manifest_file bool_usb bool_crc bool_hpm
         local bool_runtime bool_pipeline bool_stage bool_mic opus_variant_name
         elf_file="${bin_file%.bin}.elf"
         map_file="${bin_file%.bin}.map"
+        boot2_file="$(find "$PROJECT_DIR/build/build_out" -maxdepth 1 -name "boot2_${CHIP}_*.bin" | head -1 || true)"
+        partition_file="$PROJECT_DIR/build/build_out/partition.bin"
         manifest_file="${bin_file%.bin}.manifest.json"
-        [[ -f "$elf_file" && -f "$map_file" ]] ||
-            fail "ELF or map artifact is missing"
+        [[ -f "$elf_file" && -f "$map_file" && -f "$boot2_file" && -f "$partition_file" ]] ||
+            fail "ELF, map, boot2, or partition artifact is missing"
         [[ "$USB_GAMEPAD_O2" == "y" ]] && bool_usb=true || bool_usb=false
         [[ "$CRC32_NIBBLE_TABLE" == "1" ]] && bool_crc=true || bool_crc=false
         [[ "$HPM_PROFILE" == "y" ]] && bool_hpm=true || bool_hpm=false
@@ -224,6 +226,7 @@ build_project() {
         opus_variant_name="O2-LTO-e907-d4-fastpath"
         [[ "$OPUS_VARIANT" == "source-o2-lto" ]] || opus_variant_name="$OPUS_VARIANT"
         python3 "$PROJECT_DIR/../../tools/generate_m61_build_manifest.py" \
+            --boot2 "$boot2_file" --partition "$partition_file" \
             --firmware "$bin_file" --elf "$elf_file" --map "$map_file" \
             --sdk "$SDK_PATH" --toolchain-bin "$toolchain_bin" \
             --output "$manifest_file" \

@@ -52,6 +52,8 @@ def parse_setting(value: str) -> tuple[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--firmware", type=Path, required=True)
+    parser.add_argument("--boot2", type=Path, required=True)
+    parser.add_argument("--partition", type=Path, required=True)
     parser.add_argument("--elf", type=Path, required=True)
     parser.add_argument("--map", dest="map_file", type=Path, required=True)
     parser.add_argument("--sdk", type=Path, required=True)
@@ -104,6 +106,11 @@ def main() -> int:
         },
         "settings": settings,
         "artifacts": {
+            "boot2": {"name": args.boot2.name, "sha256": sha256(args.boot2)},
+            "partition": {
+                "name": args.partition.name,
+                "sha256": sha256(args.partition),
+            },
             "firmware": {"name": args.firmware.name, "sha256": sha256(args.firmware)},
             "elf": {"name": args.elf.name, "sha256": sha256(args.elf)},
             "map": {"name": args.map_file.name, "sha256": sha256(args.map_file)},

@@ -235,10 +235,18 @@ try {
         $Map = Get-ChildItem -LiteralPath (Join-Path $BuildFull 'build_out') `
             -Filter 'm61_dualsense_hidp_probe_bl616.map' -ErrorAction Stop |
             Select-Object -First 1
+        $Boot2 = Get-ChildItem -LiteralPath (Join-Path $BuildFull 'build_out') `
+            -Filter 'boot2_bl616_*.bin' -ErrorAction Stop |
+            Select-Object -First 1
+        $Partition = Get-ChildItem -LiteralPath (Join-Path $BuildFull 'build_out') `
+            -Filter 'partition.bin' -ErrorAction Stop |
+            Select-Object -First 1
         $Manifest = Join-Path $Firmware.DirectoryName `
             'm61_dualsense_hidp_probe_bl616.manifest.json'
         $ManifestArgs = @(
             (Join-Path $RepoRoot 'tools\generate_m61_build_manifest.py'),
+            '--boot2', $Boot2.FullName,
+            '--partition', $Partition.FullName,
             '--firmware', $Firmware.FullName,
             '--elf', $Elf.FullName,
             '--map', $Map.FullName,
