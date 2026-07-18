@@ -218,7 +218,7 @@ static uint8_t config_descriptor[] = {
     0x01,
     0x01, 0x01,
     0x06,
-    0x01,
+    AUDIO_INPUT_CHANNELS,
     0x33, 0x00,
     0x00,
     0x00,
@@ -233,7 +233,7 @@ static uint8_t config_descriptor[] = {
     0x09, 0x24, 0x03,
     0x03,
     0x01, 0x03,
-    0x01,
+    0x04,
     AUDIO_SPEAKER_FU_ID,
     0x00,
 
@@ -288,7 +288,7 @@ static uint8_t config_descriptor[] = {
     0x09,
     AUDIO_OUT_PACKET_SIZE & 0xFF,
     (AUDIO_OUT_PACKET_SIZE >> 8) & 0xFF,
-    0x04,
+    0x01,
     0x00,
     0x00,
 
@@ -324,7 +324,7 @@ static uint8_t config_descriptor[] = {
     0x05,
     AUDIO_IN_PACKET_SIZE & 0xFF,
     (AUDIO_IN_PACKET_SIZE >> 8) & 0xFF,
-    0x04,
+    0x01,
     0x00,
     0x00,
 

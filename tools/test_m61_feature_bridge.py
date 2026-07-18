@@ -65,6 +65,10 @@ def check_source_wiring() -> None:
         "report_id <= M61_WEB_TELEMETRY_REPORT_ID",
         "m61_web_config_encode(",
         "m61_web_telemetry_encode(",
+        "0x06,\n    AUDIO_INPUT_CHANNELS,",
+        "0x01, 0x03,\n    0x04,\n    AUDIO_SPEAKER_FU_ID,",
+        "AUDIO_OUT_PACKET_SIZE >> 8) & 0xFF,\n    0x01,",
+        "AUDIO_IN_PACKET_SIZE >> 8) & 0xFF,\n    0x01,",
     )
     required_main = (
         "buf->data + 1,",
