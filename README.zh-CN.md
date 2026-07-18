@@ -34,6 +34,20 @@ DualSense -- Bluetooth Classic HIDP --> M61 -- 原生USB --> PC
 新报告，以及硬件实测通过的固定250 Hz和500 Hz；固定模式可能重复最近的蓝牙样本，
 不会提高手柄本身的原始采样率。
 
+## 使用Release预编译固件
+
+不需要自行编译时，可从[Releases](https://github.com/ccc007ccc/DS5Dongle/releases)
+中选择列出完整刷写文件的版本，并下载同一版本的以下文件：
+
+- `boot2_bl616_isp_release_v8.1.8.bin`；
+- `partition.bin`；
+- `m61_dualsense_hidp_probe_bl616.bin`；
+- 对应的`flash-files.sha256`校验文件。
+
+把三个BIN放到`m61/dualsense_hidp_probe/build-win/build_out/`，核对SHA256后即可使用
+后文的`--windows-build`刷写命令。刷写工具仍需要把锁定的`bl_mcu_sdk`克隆到项目同级
+目录，但不需要安装工具链或构建Opus。不要混用不同Release的boot2、partition和应用BIN。
+
 ## 性能可复现构建
 
 默认构建就是经过实测的release性能配置，不会静默回退到SDK低性能实现：

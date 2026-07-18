@@ -19,6 +19,23 @@
 还需要Python 3、Git、SDK自带的CMake/Ninja/Make和`tar`。主要实测主机为
 Windows 10/11与PowerShell 7。
 
+## 直接刷写Release文件
+
+不自行构建时，从列出完整刷写文件的同一个
+[Release](https://github.com/ccc007ccc/DS5Dongle/releases)
+下载boot2、partition、应用BIN和对应的`flash-files.sha256`。三个BIN必须来自同一版本，
+并放入：
+
+```text
+m61/dualsense_hidp_probe/build-win/build_out/
+  boot2_bl616_isp_release_v8.1.8.bin
+  partition.bin
+  m61_dualsense_hidp_probe_bl616.bin
+```
+
+校验SHA256后，按本文“刷写”一节使用`--windows-build`。该流程不需要编译器或Opus，
+但仓库同级仍需锁定提交的`bl_mcu_sdk`，因为刷写工具来自SDK。
+
 ## Windows release构建
 
 ```powershell

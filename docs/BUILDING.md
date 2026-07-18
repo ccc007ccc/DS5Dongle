@@ -19,6 +19,26 @@ not by whichever SDK or compiler happens to be installed.
 Python 3, Git, CMake/Ninja/Make from the SDK, and `tar` are also required.
 Windows 10/11 and PowerShell 7 are the primary tested host.
 
+## Flashing prebuilt Release files
+
+To skip compilation, choose one
+[Release](https://github.com/ccc007ccc/DS5Dongle/releases) that lists the
+complete flash set, then download boot2, partition, the application BIN, and
+the matching `flash-files.sha256`. All three BIN files
+must come from the same version and be placed under:
+
+```text
+m61/dualsense_hidp_probe/build-win/build_out/
+  boot2_bl616_isp_release_v8.1.8.bin
+  partition.bin
+  m61_dualsense_hidp_probe_bl616.bin
+```
+
+Verify the SHA256 values, then follow the flashing section with
+`--windows-build`. This path needs neither a compiler nor an Opus build, but
+the locked `bl_mcu_sdk` must still be cloned next to the repository because it
+provides the flashing tool.
+
 ## Windows release build
 
 ```powershell

@@ -40,6 +40,24 @@ fresh-report forwarding and hardware-validated fixed 250 Hz or 500 Hz modes;
 fixed modes may repeat the latest Bluetooth sample and do not raise the
 controller's native sampling rate.
 
+## Using a prebuilt Release
+
+If you do not need to rebuild the firmware, choose an entry that lists the
+complete flash set on the [Releases](https://github.com/ccc007ccc/DS5Dongle/releases)
+page and download all of these files from that same entry:
+
+- `boot2_bl616_isp_release_v8.1.8.bin`;
+- `partition.bin`;
+- `m61_dualsense_hidp_probe_bl616.bin`;
+- the matching `flash-files.sha256` checksum file.
+
+Place the three BIN files in
+`m61/dualsense_hidp_probe/build-win/build_out/`, verify their SHA256 values,
+then use the `--windows-build` flashing command below. The flasher still needs
+the locked `bl_mcu_sdk` cloned next to this repository, but no compiler or Opus
+build is required. Never mix boot2, partition, and application files from
+different Releases.
+
 ## Performance-reproducible build
 
 The default build is the measured release profile, not an SDK fallback:
