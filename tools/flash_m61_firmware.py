@@ -10,10 +10,6 @@ import subprocess
 import sys
 import time
 
-import serial
-from serial.tools import list_ports
-
-
 ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = ROOT.parent / "bl_mcu_sdk"
 FLASH_TOOL = SDK_ROOT / "tools" / "bflb_tools" / "bouffalo_flash_cube" / "BLFlashCommand.exe"
@@ -54,6 +50,28 @@ FIRMWARE_APPS = {
 }
 
 
+def flash_artifact_errors(app: FirmwareApp, build_dir: str, chip: str) -> list[str]:
+    """Return actionable preflight errors for one BL616 flash directory."""
+    output_dir = app.directory / build_dir / "build_out"
+    errors: list[str] = []
+    firmware = output_dir / app.bl616_bin
+    partition = output_dir / "partition.bin"
+    boot2_matches = sorted(output_dir.glob(f"boot2_{chip}_*.bin"))
+
+    if not firmware.is_file():
+        errors.append(f"missing firmware: {firmware}")
+    if not partition.is_file():
+        errors.append(f"missing partition table: {partition}")
+    if not boot2_matches:
+        errors.append(f"missing boot2: {output_dir / f'boot2_{chip}_*.bin'}")
+    elif len(boot2_matches) > 1:
+        errors.append(
+            "multiple boot2 files match; keep exactly one: "
+            + ", ".join(str(path) for path in boot2_matches)
+        )
+    return errors
+
+
 def read_pending(ser: serial.Serial, timeout_ms: int) -> bytes:
     deadline = time.monotonic() + timeout_ms / 1000.0
     chunks: list[bytes] = []
@@ -72,6 +90,8 @@ def print_text_lossy(text: str) -> None:
 
 
 def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
+    import serial
+
     print(f"requesting M61 UART download reboot on {port} @ {baud}")
     try:
         with serial.Serial(port, baudrate=baud, timeout=0.05, rtscts=False, dsrdtr=False) as ser:
@@ -105,6 +125,8 @@ def try_reboot_isp(port: str, baud: int, wait_ms: int) -> bool:
 
 
 def describe_flash_port(port: str) -> None:
+    from serial.tools import list_ports
+
     match = next(
         (item for item in list_ports.comports() if item.device.casefold() == port.casefold()),
         None,
@@ -132,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app", choices=sorted(FIRMWARE_APPS), default="hidp-probe", help="M61 firmware app")
     parser.add_argument("-p", "--port", required=True, help="M61 UART COM port, for example COM5")
     parser.add_argument("-b", "--baud", type=int, default=460800, help="download baudrate")
-    parser.add_argument("--chip", default="bl616", help="Bouffalo chip name")
+    parser.add_argument("--chip", choices=("bl616",), default="bl616", help="Bouffalo chip name")
     parser.add_argument(
         "--windows-build",
         action="store_true",
@@ -181,12 +203,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"missing flash config: {flash_config}", file=sys.stderr)
         return 1
 
-    if args.chip == "bl616":
-        firmware = app.directory / build_dir / "build_out" / app.bl616_bin
-        if not firmware.is_file():
-            print(f"missing firmware: {firmware}", file=sys.stderr)
-            print(f"run: {app.build_command}", file=sys.stderr)
-            return 1
+    artifact_errors = flash_artifact_errors(app, build_dir, args.chip)
+    if artifact_errors:
+        for error in artifact_errors:
+            print(error, file=sys.stderr)
+        print(f"run: {app.build_command}", file=sys.stderr)
+        print(
+            "or download boot2, partition.bin, and the application BIN from "
+            "the same complete Release",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.manual_hint:
         print("Put M61 into UART download mode now:")
