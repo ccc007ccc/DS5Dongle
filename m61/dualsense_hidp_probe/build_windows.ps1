@@ -83,6 +83,17 @@ $GccAr = Resolve-ExistingPath (Join-Path $ToolchainBin 'riscv64-unknown-elf-gcc-
 $GccRanlib = Resolve-ExistingPath (Join-Path $ToolchainBin 'riscv64-unknown-elf-gcc-ranlib.exe') 'RISC-V GCC ranlib'
 $Python = (Get-Command python -ErrorAction Stop).Source
 
+# The locked SDK embeds __DATE__/__TIME__ in board and driver strings. GCC
+# derives those macros from SOURCE_DATE_EPOCH when it is set, so use the
+# source commit time instead of the local wall clock.
+if ([string]::IsNullOrWhiteSpace($env:SOURCE_DATE_EPOCH)) {
+    $env:SOURCE_DATE_EPOCH = (& git -C $RepoRoot show -s --format=%ct HEAD).Trim()
+}
+if ($env:SOURCE_DATE_EPOCH -notmatch '^\d+$') {
+    throw "SOURCE_DATE_EPOCH must be an integer Unix timestamp"
+}
+Write-Host "[m61-repro] SOURCE_DATE_EPOCH $env:SOURCE_DATE_EPOCH"
+
 if (-not $AllowUnverifiedDependencies) {
     & $Python (Join-Path $RepoRoot 'tools\verify_m61_build_environment.py') `
         --sdk $SdkPath --toolchain-bin $ToolchainBin
@@ -228,6 +239,7 @@ try {
             '--sdk', $SdkPath,
             '--toolchain-bin', $ToolchainBin,
             '--output', $Manifest,
+            '--source-date-epoch', $env:SOURCE_DATE_EPOCH,
             '--setting', 'chip=bl616',
             '--setting', 'board=bl616dk',
             '--setting', 'wramLengthBytes=163840',

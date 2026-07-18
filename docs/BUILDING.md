@@ -88,12 +88,15 @@ performance-equivalent release.
 Every successful build writes
 `m61_dualsense_hidp_probe_bl616.manifest.json` beside the BIN/ELF/MAP. It
 records source and dependency commits, all performance settings, the lock
-hash, patch hashes, and artifact SHA256 values. Publish the manifest together
-with a firmware binary.
+hash, patch hashes, the effective `SOURCE_DATE_EPOCH`, and artifact SHA256
+values. Publish the manifest together with a firmware binary.
 
-Two consecutive builds in the same checkout have been verified to produce
-identical BIN and ELF SHA256 values. The manifest is authoritative when
-comparing builds made on different machines.
+The build scripts default `SOURCE_DATE_EPOCH` to the source commit timestamp.
+This makes the SDK's `__DATE__`/`__TIME__` board and driver strings stable
+instead of embedding the local wall clock. Two consecutive clean builds must
+produce identical BIN and ELF SHA256 values. The manifest is authoritative
+when comparing builds made on different machines. Overriding the epoch is
+allowed for development but marks the manifest as `custom`.
 
 ## Flashing
 

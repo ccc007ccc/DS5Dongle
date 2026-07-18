@@ -2,7 +2,17 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
 SDK_PATH="${BL_SDK_BASE:-}"
+
+if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
+    SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" show -s --format=%ct HEAD)"
+fi
+[[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || {
+    printf '[m61-hidp-build] ERROR: SOURCE_DATE_EPOCH must be an integer Unix timestamp\n' >&2
+    exit 1
+}
+export SOURCE_DATE_EPOCH
 
 if [[ -z "$SDK_PATH" ]]; then
     SDK_PATH="$(cd "$PROJECT_DIR/../../../bl_mcu_sdk" && pwd)"
@@ -217,6 +227,7 @@ build_project() {
             --firmware "$bin_file" --elf "$elf_file" --map "$map_file" \
             --sdk "$SDK_PATH" --toolchain-bin "$toolchain_bin" \
             --output "$manifest_file" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --setting chip="$CHIP" --setting board="$BOARD" \
             --setting wramLengthBytes=163840 \
             --setting opusVariant="$opus_variant_name" \
