@@ -15,6 +15,19 @@ def bluetooth_feature_to_usb(packet: bytes) -> bytes:
     return packet[1:]
 
 
+def normalize_usb_feature_set(report_id: int, data: bytes) -> tuple[int, bytes]:
+    if data and (report_id == 0 or data[0] == report_id):
+        if report_id == 0:
+            report_id = data[0]
+        data = data[1:]
+    return report_id, data
+
+
+def usb_feature_set_is_controller_power_off(report_id: int, data: bytes) -> bool:
+    report_id, payload = normalize_usb_feature_set(report_id, data)
+    return report_id == 0x08 and bool(payload) and payload[0] == 0x02
+
+
 class FeatureCacheModel:
     def __init__(self) -> None:
         self.reports: dict[int, bytes] = {}
@@ -68,6 +81,14 @@ def check_linux_host_probe_prefetch() -> None:
     assert cache.host_probe_ready()
 
 
+def check_host_power_off_filter() -> None:
+    assert usb_feature_set_is_controller_power_off(0x08, bytes((0x02, 0x00)))
+    assert usb_feature_set_is_controller_power_off(0, bytes((0x08, 0x02, 0x00)))
+    assert not usb_feature_set_is_controller_power_off(0x08, bytes((0x01, 0x00)))
+    assert not usb_feature_set_is_controller_power_off(0x80, bytes((0x02, 0x00)))
+    assert not usb_feature_set_is_controller_power_off(0, bytes((0x80, 0x02, 0x00)))
+
+
 def check_source_wiring() -> None:
     gamepad = GAMEPAD_SOURCE.read_text(encoding="utf-8")
     main = MAIN_SOURCE.read_text(encoding="utf-8")
@@ -114,6 +135,8 @@ def check_source_wiring() -> None:
         "m61_usb_gamepad_set_haptics_gain_q8",
         "M61_WEB_COMMAND_POWER_OFF_CONTROLLER",
         "hidp_power_off_controller()",
+        "usb_feature_set_is_controller_power_off(",
+        "ignored host USB controller power-off feature",
         "M61_WEB_COMMAND_PAIR_CONTROLLER",
         "M61_WEB_COMMAND_DISCONNECT_CONTROLLER",
         "M61_WEB_COMMAND_FORGET_CONTROLLER",
@@ -143,6 +166,7 @@ def main() -> None:
     check_report_id_alignment()
     check_dynamic_page_invalidation()
     check_linux_host_probe_prefetch()
+    check_host_power_off_filter()
     check_source_wiring()
     print("M61 Feature Report bridge regression checks: PASS")
 

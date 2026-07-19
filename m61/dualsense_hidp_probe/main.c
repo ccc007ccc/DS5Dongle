@@ -1913,6 +1913,16 @@ static int hidp_set_feature_from_usb(uint8_t report_id, const uint8_t *data, siz
                                  K_NO_WAIT);
 }
 
+static bool usb_feature_set_is_controller_power_off(uint8_t report_id,
+                                                    const uint8_t *payload,
+                                                    size_t payload_len)
+{
+    return report_id == 0x08U &&
+           payload != NULL &&
+           payload_len > 0U &&
+           payload[0] == 0x02U;
+}
+
 static int hidp_power_off_controller(void)
 {
     uint8_t payload[47] = { 0 };
@@ -2243,6 +2253,13 @@ static void __attribute__((unused)) handle_usb_host_report(
             report_id = payload[0];
             payload++;
             payload_len--;
+        }
+        if (usb_feature_set_is_controller_power_off(report_id,
+                                                    payload,
+                                                    payload_len)) {
+            printf("ignored host USB controller power-off feature id=0x%02x\r\n",
+                   report_id);
+            return;
         }
         err = hidp_set_feature_from_usb(report_id, payload, payload_len);
         if (err) {
@@ -2697,6 +2714,14 @@ static void usb_hid_bridge_task(void *pvParameters)
                 }
                 payload++;
                 payload_len--;
+            }
+            if (usb_feature_set_is_controller_power_off(report_id,
+                                                        payload,
+                                                        payload_len)) {
+                printf("ignored host USB controller power-off feature id=0x%02x\r\n",
+                       report_id);
+                feature_set_pending = false;
+                continue;
             }
             err = hidp_set_feature_from_usb(report_id, payload, payload_len);
             if (err == 0) {
