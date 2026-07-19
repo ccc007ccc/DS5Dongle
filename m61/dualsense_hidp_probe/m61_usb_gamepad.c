@@ -58,6 +58,12 @@
 #define FEATURE_CACHE_SLOTS 32
 #define FEATURE_GET_QUEUE_DEPTH 16
 #define FEATURE_SET_QUEUE_DEPTH 8
+#define DS5_FEATURE_REPORT_CALIBRATION 0x05U
+#define DS5_FEATURE_REPORT_CALIBRATION_SIZE 41U
+#define DS5_FEATURE_REPORT_PAIRING_INFO 0x09U
+#define DS5_FEATURE_REPORT_PAIRING_INFO_SIZE 20U
+#define DS5_FEATURE_REPORT_FIRMWARE_INFO 0x20U
+#define DS5_FEATURE_REPORT_FIRMWARE_INFO_SIZE 64U
 #define AUDIO_INPUT_CHANNELS 4
 #define AUDIO_BYTES_PER_SAMPLE 2
 #define AUDIO_FRAME_BYTES (AUDIO_INPUT_CHANNELS * AUDIO_BYTES_PER_SAMPLE)
@@ -145,6 +151,17 @@ typedef struct {
     uint8_t report_id;
     uint32_t requested_len;
 } feature_get_request_t;
+
+typedef struct {
+    uint8_t report_id;
+    uint32_t required_len;
+} feature_requirement_t;
+
+static const feature_requirement_t host_probe_feature_requirements[] = {
+    { DS5_FEATURE_REPORT_PAIRING_INFO, DS5_FEATURE_REPORT_PAIRING_INFO_SIZE },
+    { DS5_FEATURE_REPORT_FIRMWARE_INFO, DS5_FEATURE_REPORT_FIRMWARE_INFO_SIZE },
+    { DS5_FEATURE_REPORT_CALIBRATION, DS5_FEATURE_REPORT_CALIBRATION_SIZE },
+};
 
 #if CONFIG_M61_USB_GAMEPAD_ENABLE
 static const uint8_t device_descriptor[] = {
@@ -2398,26 +2415,83 @@ static void make_payload_from_state(const dualsense_state_t *state, uint8_t *pay
     set_button_bit(&payload[9], 0x04, state->buttons, DS5_BUTTON_MUTE);
 }
 
+typedef int (*m61_usb_class_request_handler_t)(
+    uint8_t busid,
+    struct usb_setup_packet *setup,
+    uint8_t **data,
+    uint32_t *len);
+
+static m61_usb_class_request_handler_t sdk_audio_class_interface_handler;
+
+static int m61_audio_class_interface_request_handler(
+    uint8_t busid,
+    struct usb_setup_packet *setup,
+    uint8_t **data,
+    uint32_t *len)
+{
+    uint8_t entity_id = HI_BYTE(setup->wIndex);
+    uint8_t control_selector = HI_BYTE(setup->wValue);
+    bool feature_unit = entity_id == AUDIO_SPEAKER_FU_ID ||
+                        entity_id == AUDIO_MIC_FU_ID;
+    bool range_control = control_selector == AUDIO_FU_CONTROL_MUTE ||
+                         control_selector == AUDIO_FU_CONTROL_VOLUME;
+
+    /* Linux snd-usb-audio can issue UAC1 SET_MIN/SET_MAX/SET_RES while
+     * probing a Feature Unit. The pinned CherryUSB handler rejects those
+     * requests, and the BL616 device port does not reliably recover EP0 after
+     * that stall. The ranges are descriptor-defined and immutable here, so
+     * accept the writes as no-ops to keep the control pipe synchronized. */
+    if (feature_unit && range_control &&
+        (setup->bRequest == AUDIO_REQUEST_SET_MIN ||
+         setup->bRequest == AUDIO_REQUEST_SET_MAX ||
+         setup->bRequest == AUDIO_REQUEST_SET_RES)) {
+        return 0;
+    }
+
+    if (!sdk_audio_class_interface_handler) {
+        return -1;
+    }
+    return sdk_audio_class_interface_handler(busid, setup, data, len);
+}
+
+static struct usbd_interface *m61_audio_init_intf(
+    uint8_t busid,
+    struct usbd_interface *intf,
+    uint16_t uac_version,
+    struct audio_entity_info *table,
+    uint8_t num)
+{
+    struct usbd_interface *registered = usbd_audio_init_intf(
+        busid, intf, uac_version, table, num);
+
+    if (!sdk_audio_class_interface_handler) {
+        sdk_audio_class_interface_handler = registered->class_interface_handler;
+    }
+    registered->class_interface_handler =
+        m61_audio_class_interface_request_handler;
+    return registered;
+}
+
 static void register_usb_dualsense_device(void)
 {
     configure_hid_polling_interval();
     usbd_desc_register(0, &dualsense_descriptor);
 
-    usbd_add_interface(0, usbd_audio_init_intf(0,
-                                               &audio_control_intf,
-                                               0x0100,
-                                               audio_entity_table,
-                                               sizeof(audio_entity_table) / sizeof(audio_entity_table[0])));
-    usbd_add_interface(0, usbd_audio_init_intf(0,
-                                               &audio_stream_out_intf,
-                                               0x0100,
-                                               audio_entity_table,
-                                               sizeof(audio_entity_table) / sizeof(audio_entity_table[0])));
-    usbd_add_interface(0, usbd_audio_init_intf(0,
-                                               &audio_stream_in_intf,
-                                               0x0100,
-                                               audio_entity_table,
-                                               sizeof(audio_entity_table) / sizeof(audio_entity_table[0])));
+    usbd_add_interface(0, m61_audio_init_intf(0,
+                                              &audio_control_intf,
+                                              0x0100,
+                                              audio_entity_table,
+                                              sizeof(audio_entity_table) / sizeof(audio_entity_table[0])));
+    usbd_add_interface(0, m61_audio_init_intf(0,
+                                              &audio_stream_out_intf,
+                                              0x0100,
+                                              audio_entity_table,
+                                              sizeof(audio_entity_table) / sizeof(audio_entity_table[0])));
+    usbd_add_interface(0, m61_audio_init_intf(0,
+                                              &audio_stream_in_intf,
+                                              0x0100,
+                                              audio_entity_table,
+                                              sizeof(audio_entity_table) / sizeof(audio_entity_table[0])));
     usbd_add_interface(0, usbd_hid_init_intf(0,
                                              &hid_intf,
                                              dualsense_report_desc,
@@ -2616,6 +2690,40 @@ void m61_usb_gamepad_request_feature_report(uint8_t report_id,
                                             uint32_t requested_len)
 {
     (void)queue_feature_request(report_id, requested_len);
+}
+
+void m61_usb_gamepad_request_host_probe_features(void)
+{
+    for (size_t i = 0;
+         i < sizeof(host_probe_feature_requirements) /
+                 sizeof(host_probe_feature_requirements[0]);
+         i++) {
+        (void)queue_feature_request(
+            host_probe_feature_requirements[i].report_id,
+            host_probe_feature_requirements[i].required_len);
+    }
+}
+
+bool m61_usb_gamepad_host_probe_features_ready(void)
+{
+    uintptr_t flags = usb_lock();
+    bool ready = true;
+
+    for (size_t i = 0;
+         i < sizeof(host_probe_feature_requirements) /
+                 sizeof(host_probe_feature_requirements[0]);
+         i++) {
+        feature_cache_entry_t *entry = find_feature_cache(
+            host_probe_feature_requirements[i].report_id);
+
+        if (!entry ||
+            entry->len < host_probe_feature_requirements[i].required_len) {
+            ready = false;
+            break;
+        }
+    }
+    usb_unlock(flags);
+    return ready;
 }
 
 void m61_usb_gamepad_clear_feature_reports(void)
@@ -3522,6 +3630,8 @@ void m61_usb_gamepad_request_feature_report(uint8_t report_id, uint32_t requeste
     (void)report_id;
     (void)requested_len;
 }
+void m61_usb_gamepad_request_host_probe_features(void) {}
+bool m61_usb_gamepad_host_probe_features_ready(void) { return false; }
 void m61_usb_gamepad_clear_feature_reports(void) {}
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len)
 {

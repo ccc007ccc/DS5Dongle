@@ -1438,6 +1438,7 @@ static void hidp_l2cap_connected(struct bt_l2cap_chan *chan)
     if (hid_control.connected && hid_interrupt.connected) {
         pairing_mode_active = false;
         br_set_scan_mode(false, false, "hidp-ready");
+        m61_usb_gamepad_request_host_probe_features();
         auto_next_bringup_tick = xTaskGetTickCount();
         controller_last_activity_tick = xTaskGetTickCount();
         controller_poweroff_requested = false;
@@ -3176,12 +3177,22 @@ static void app_start_task(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(50));
         }
 
+        if (default_conn && hid_control.connected && hid_interrupt.connected) {
+            m61_usb_gamepad_request_host_probe_features();
+            while (full_report_seen && default_conn &&
+                   hid_control.connected && hid_interrupt.connected &&
+                   !m61_usb_gamepad_host_probe_features_ready()) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(CONFIG_M61_USB_START_DELAY_AFTER_BT_MS));
         if (full_report_seen && default_conn &&
-            hid_control.connected && hid_interrupt.connected) {
+            hid_control.connected && hid_interrupt.connected &&
+            m61_usb_gamepad_host_probe_features_ready()) {
             break;
         }
-        printf("Controller changed during USB start delay; waiting for a fresh full report\r\n");
+        printf("Controller or host-probe features changed during USB start delay; waiting\r\n");
     }
 
     printf("DualSense full report seen; starting USB composite device\r\n");
@@ -3222,15 +3233,20 @@ static void auto_connect_task(void *pvParameters)
             printf("USB DualSense composite detached after controller disconnect\r\n");
         }
 
-        if (!usb_controller_attached && default_conn &&
+        if (usb_start_after_dualsense_done &&
+            !usb_controller_attached && default_conn &&
             hid_control.connected && hid_interrupt.connected && full_report_seen) {
-            int usb_err;
+            if (!m61_usb_gamepad_host_probe_features_ready()) {
+                m61_usb_gamepad_request_host_probe_features();
+            } else {
+                int usb_err;
 
-            m61_usb_bus_detach_pulse(350);
-            usb_err = m61_usb_gamepad_reinit();
-            usb_controller_attached = (usb_err == 0);
-            printf("USB DualSense composite attach after controller report result=%d\r\n",
-                   usb_err);
+                m61_usb_bus_detach_pulse(350);
+                usb_err = m61_usb_gamepad_reinit();
+                usb_controller_attached = (usb_err == 0);
+                printf("USB DualSense composite attach after controller report result=%d\r\n",
+                       usb_err);
+            }
         }
 
         if (m61_usb_gamepad_usb_suspended()) {

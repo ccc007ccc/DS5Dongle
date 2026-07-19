@@ -56,6 +56,8 @@ void m61_usb_gamepad_send_report01(const uint8_t *payload, size_t len);
 void m61_usb_gamepad_send_state(const dualsense_state_t *state);
 void m61_usb_gamepad_store_feature_report(uint8_t report_id, const uint8_t *data, size_t len);
 void m61_usb_gamepad_request_feature_report(uint8_t report_id, uint32_t requested_len);
+void m61_usb_gamepad_request_host_probe_features(void);
+bool m61_usb_gamepad_host_probe_features_ready(void);
 void m61_usb_gamepad_clear_feature_reports(void);
 bool m61_usb_gamepad_take_feature_request(uint8_t *report_id, uint32_t *requested_len);
 bool m61_usb_gamepad_take_host_report(m61_usb_gamepad_host_report_t *report);

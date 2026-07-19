@@ -27,6 +27,13 @@ class FeatureCacheModel:
         if report_id == 0x80:
             self.reports.pop(0x81, None)
 
+    def host_probe_ready(self) -> bool:
+        required = {0x09: 20, 0x20: 64, 0x05: 41}
+        return all(
+            len(self.reports.get(report_id, b"")) >= length
+            for report_id, length in required.items()
+        )
+
 
 def check_report_id_alignment() -> None:
     expected_mac = bytes.fromhex("7c66ef4c6297")
@@ -51,6 +58,16 @@ def check_dynamic_page_invalidation() -> None:
     assert cache.reports[0x81][2] == 0x03
 
 
+def check_linux_host_probe_prefetch() -> None:
+    cache = FeatureCacheModel()
+    assert not cache.host_probe_ready()
+    cache.store_bluetooth(bytes((0xA3, 0x09)) + bytes(19))
+    cache.store_bluetooth(bytes((0xA3, 0x20)) + bytes(63))
+    assert not cache.host_probe_ready()
+    cache.store_bluetooth(bytes((0xA3, 0x05)) + bytes(40))
+    assert cache.host_probe_ready()
+
+
 def check_source_wiring() -> None:
     gamepad = GAMEPAD_SOURCE.read_text(encoding="utf-8")
     main = MAIN_SOURCE.read_text(encoding="utf-8")
@@ -65,6 +82,13 @@ def check_source_wiring() -> None:
         "report_id <= M61_WEB_TELEMETRY_REPORT_ID",
         "m61_web_config_encode(",
         "m61_web_telemetry_encode(",
+        "host_probe_feature_requirements[]",
+        "DS5_FEATURE_REPORT_PAIRING_INFO_SIZE 20U",
+        "DS5_FEATURE_REPORT_FIRMWARE_INFO_SIZE 64U",
+        "DS5_FEATURE_REPORT_CALIBRATION_SIZE 41U",
+        "m61_audio_class_interface_request_handler(",
+        "setup->bRequest == AUDIO_REQUEST_SET_RES",
+        "m61_audio_init_intf(0,",
         "0x06,\n    AUDIO_INPUT_CHANNELS,",
         "0x01, 0x03,\n    0x04,\n    AUDIO_SPEAKER_FU_ID,",
         "AUDIO_OUT_PACKET_SIZE >> 8) & 0xFF,\n    0x01,",
@@ -94,6 +118,9 @@ def check_source_wiring() -> None:
         "M61_WEB_COMMAND_DISCONNECT_CONTROLLER",
         "M61_WEB_COMMAND_FORGET_CONTROLLER",
         "bt_unpair(BT_ID_DEFAULT, NULL)",
+        "m61_usb_gamepad_request_host_probe_features();",
+        "m61_usb_gamepad_host_probe_features_ready()",
+        "if (usb_start_after_dualsense_done &&",
     )
     for snippet in required_gamepad:
         assert snippet in gamepad, f"missing gamepad bridge logic: {snippet}"
@@ -115,6 +142,7 @@ def check_source_wiring() -> None:
 def main() -> None:
     check_report_id_alignment()
     check_dynamic_page_invalidation()
+    check_linux_host_probe_prefetch()
     check_source_wiring()
     print("M61 Feature Report bridge regression checks: PASS")
 
